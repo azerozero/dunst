@@ -1,14 +1,136 @@
-//! VisualOps MCP server (stdio).
+//! VisualOps MCP — entrypoint.
 //!
-//! Integration owner: architect. Wires a [`Perceptor`] + the `visualops-graph`
-//! pipeline + an [`ActionExecutor`] behind the MCP tool surface:
-//! `get_scene_graph`, `find_element`, `query_affordances`, `click_element`,
-//! `type_into`, `hover_probe`, `verify_state`, `diff_since`, `export_trace`.
+//! Subcommands:
+//!   demo        Run the AX-first pipeline on the bundled Notes fixture
+//!               (device-free) and narrate scene -> affordance -> risk-gating
+//!               -> audit. Proves the thesis without macOS.
+//!   serve       Start the MCP stdio server (wired during integration).
 //!
-//! Until the MCP runtime is wired in, this binary self-checks the pipeline on
-//! the bundled Notes fixture so the scaffold is runnable end-to-end as the
-//! worker crates fill in.
+//! The real macOS backend (`visualops-platform`) is swapped in for a live
+//! target once WP-A lands; the engine code is identical.
+
+mod engine;
+
+use engine::Engine;
+use visualops_core::mock::{MockPerceptor, RecordingExecutor};
+use visualops_core::{ActionResult, SemanticAction, Target};
 
 fn main() {
-    eprintln!("visualops-mcp scaffold — pipeline wiring pending (see docs/ARCHITECTURE.md).");
+    let mode = std::env::args().nth(1).unwrap_or_else(|| "demo".into());
+    let code = match mode.as_str() {
+        "demo" => run_demo(),
+        "serve" => {
+            eprintln!("serve: MCP stdio transport is wired in the integration step.");
+            1
+        }
+        other => {
+            eprintln!("unknown mode '{other}' (expected: demo | serve)");
+            2
+        }
+    };
+    std::process::exit(code);
+}
+
+fn run_demo() -> i32 {
+    let perceptor = match MockPerceptor::notes_fixture() {
+        Ok(p) => Box::new(p),
+        Err(e) => {
+            eprintln!("fixture load failed: {e}");
+            return 1;
+        }
+    };
+    let target = Target { pid: 1363, window_id: 105 };
+    let mut eng = match Engine::new(perceptor, Box::new(RecordingExecutor::default()), target) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("engine init failed: {e}");
+            return 1;
+        }
+    };
+
+    let g = eng.scene_graph();
+    println!("# VisualOps demo — Notes (fixture, AX-only)\n");
+    println!("scene graph: {} nodes, {} root(s), window \"{}\"\n", g.nodes.len(), g.roots.len(), g.window.title);
+
+    // 1) Resolve a benign action by LABEL, not coordinates.
+    section("1. find_element(\"Nouvelle note\") + affordances");
+    if let Some(n) = pick(&eng, "Nouvelle note", None) {
+        let id = n.id.clone();
+        let bbox = n.bbox;
+        let aff = eng.affordance_graph().affordances.get(&id).cloned();
+        println!("  -> id={id}  role={:?}  bbox={:?}", role_of(&eng, &id), bbox);
+        if let Some(a) = &aff {
+            println!("     actions={:?}  risk={:?} (approval={})", a.actions, a.risk.level, a.risk.requires_approval);
+        }
+        section("2. click_element(\"btn_nouvelle_note\") — low risk, proceeds");
+        match eng.click_element(&id, Some("create a new note")) {
+            Ok(entry) => println!("  -> result={:?}", entry.result),
+            Err(e) => println!("  -> error: {e}"),
+        }
+    } else {
+        println!("  (not found — is visualops-graph implemented?)");
+        return 1;
+    }
+
+    // 2) A destructive action is GATED until approved.
+    section("3. click_element on \"Supprimer\" — high risk, DENIED pending approval");
+    if let Some(n) = pick(&eng, "Supprimer", None) {
+        let id = n.id.clone();
+        if let Some(a) = eng.affordance_graph().affordances.get(&id) {
+            println!("  risk={:?} approval={} reasons={:?}", a.risk.level, a.risk.requires_approval, a.risk.reasons);
+        }
+        match eng.click_element(&id, Some("user asked to delete")) {
+            Ok(entry) => {
+                println!("  -> result={:?}", entry.result);
+                if entry.result == ActionResult::PendingApproval {
+                    section("4. approve(id) then retry — proceeds");
+                    eng.approve(&id);
+                    match eng.click_element(&id, Some("approved by operator")) {
+                        Ok(e2) => println!("  -> result={:?}", e2.result),
+                        Err(e) => println!("  -> error: {e}"),
+                    }
+                }
+            }
+            Err(e) => println!("  -> error: {e}"),
+        }
+    }
+
+    // 3) Type into the note body.
+    section("5. type_into(text area, \"Bonjour\")");
+    if let Some(n) = pick(&eng, "Corps de la note", Some(SemanticAction::Type)) {
+        let id = n.id.clone();
+        match eng.type_into(&id, "Bonjour", Some("write greeting")) {
+            Ok(entry) => println!("  -> id={id}  result={:?}", entry.result),
+            Err(e) => println!("  -> error: {e}"),
+        }
+    }
+
+    // 4) Audit trail.
+    section("6. export_trace()");
+    match eng.export_trace() {
+        Ok(json) => println!("{json}"),
+        Err(e) => println!("  -> error: {e}"),
+    }
+    0
+}
+
+fn section(t: &str) {
+    println!("\n\x1b[1m{t}\x1b[0m");
+}
+
+/// Pick the best `find_element` match, optionally requiring an affordance.
+fn pick<'a>(eng: &'a Engine, query: &str, requires: Option<SemanticAction>) -> Option<&'a visualops_core::SceneNode> {
+    eng.find_element(query).into_iter().find(|n| match requires {
+        None => true,
+        Some(act) => eng
+            .affordance_graph()
+            .affordances
+            .get(&n.id)
+            .map(|a| a.actions.contains(&act))
+            .unwrap_or(false),
+    })
+}
+
+fn role_of(eng: &Engine, id: &str) -> Option<visualops_core::Role> {
+    eng.scene_graph().get(id).map(|n| n.role)
 }

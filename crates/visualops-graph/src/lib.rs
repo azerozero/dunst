@@ -9,6 +9,7 @@ pub mod affordance;
 pub mod audit;
 pub mod risk;
 pub mod scene;
+pub(crate) mod text;
 
 pub use affordance::derive_affordances;
 pub use audit::diff;
