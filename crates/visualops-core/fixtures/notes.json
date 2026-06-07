@@ -1,0 +1,151 @@
+[
+  {
+    "ax_role": "AXWindow",
+    "label": "Notes – Aucune note",
+    "ax_identifier": "_NS:6",
+    "ax_actions": ["raise"],
+    "frame": { "x": 728, "y": 236, "w": 1000, "h": 660 },
+    "children": [
+      {
+        "ax_role": "AXToolbar",
+        "ax_actions": ["showmenu"],
+        "frame": { "x": 728, "y": 236, "w": 1000, "h": 52 },
+        "children": [
+          {
+            "ax_role": "AXButton",
+            "label": "Ajouter un dossier",
+            "help": "Ajouter un dossier",
+            "ax_actions": ["press"],
+            "frame": { "x": 744, "y": 248, "w": 28, "h": 24 }
+          },
+          {
+            "ax_role": "AXButton",
+            "label": "Nouvelle note",
+            "help": "Créer une note",
+            "ax_actions": ["press"],
+            "frame": { "x": 980, "y": 248, "w": 28, "h": 24 }
+          },
+          {
+            "ax_role": "AXMenuButton",
+            "label": "Multimédia",
+            "help": "Ajouter des fichiers, du contenu multimédia et d’autres éléments",
+            "ax_actions": ["showmenu", "press"],
+            "frame": { "x": 1180, "y": 248, "w": 28, "h": 24 }
+          },
+          {
+            "ax_role": "AXButton",
+            "label": "Partager",
+            "ax_actions": ["press"],
+            "frame": { "x": 1280, "y": 248, "w": 28, "h": 24 }
+          },
+          {
+            "ax_role": "AXButton",
+            "label": "Rechercher",
+            "ax_actions": ["press"],
+            "frame": { "x": 1340, "y": 248, "w": 28, "h": 24 }
+          }
+        ]
+      },
+      {
+        "ax_role": "AXOutline",
+        "label": "Dossiers",
+        "ax_identifier": "_NS:50",
+        "ax_actions": ["showmenu"],
+        "frame": { "x": 728, "y": 288, "w": 220, "h": 608 },
+        "children": [
+          {
+            "ax_role": "AXRow",
+            "ax_actions": ["showdefaultui", "showalternateui"],
+            "frame": { "x": 736, "y": 320, "w": 204, "h": 28 },
+            "children": [
+              {
+                "ax_role": "AXCell",
+                "label": "Notes",
+                "ax_actions": ["showdefaultui"],
+                "frame": { "x": 740, "y": 322, "w": 196, "h": 24 }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "ax_role": "AXTextArea",
+        "label": "Corps de la note",
+        "ax_identifier": "Note Body Text View",
+        "value": "",
+        "ax_actions": ["showmenu", "icmactextviewaccessibilityactionmaketodo"],
+        "focused": true,
+        "frame": { "x": 952, "y": 288, "w": 776, "h": 608 }
+      }
+    ]
+  },
+  {
+    "ax_role": "AXMenuBar",
+    "ax_identifier": "_NS:332",
+    "ax_actions": ["cancel"],
+    "children": [
+      {
+        "ax_role": "AXMenuBarItem",
+        "label": "Édition",
+        "ax_actions": ["press", "pick", "cancel"],
+        "children": [
+          {
+            "ax_role": "AXMenu",
+            "ax_actions": ["cancel"],
+            "children": [
+              {
+                "ax_role": "AXMenuItem",
+                "label": "Copier",
+                "ax_identifier": "_NS:573",
+                "ax_actions": ["press", "pick", "cancel"]
+              },
+              {
+                "ax_role": "AXMenuItem",
+                "label": "Coller",
+                "ax_identifier": "_NS:581",
+                "ax_actions": ["press", "pick", "cancel"]
+              },
+              {
+                "ax_role": "AXMenuItem",
+                "label": "Supprimer",
+                "ax_identifier": "_NS:598",
+                "ax_actions": ["press", "pick", "cancel"]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "ax_role": "AXMenuBarItem",
+        "label": "Apple",
+        "ax_actions": ["press", "pick", "cancel"],
+        "children": [
+          {
+            "ax_role": "AXMenu",
+            "ax_actions": ["cancel"],
+            "children": [
+              {
+                "ax_role": "AXMenuItem",
+                "label": "Forcer à quitter Notes",
+                "ax_identifier": "_forceQuitRequested:",
+                "ax_actions": ["press", "pick", "cancel"]
+              },
+              {
+                "ax_role": "AXMenuItem",
+                "label": "Redémarrer…",
+                "ax_identifier": "_restartRequested:",
+                "ax_actions": ["press", "pick", "cancel"]
+              },
+              {
+                "ax_role": "AXMenuItem",
+                "label": "Éteindre",
+                "ax_identifier": "_shutDownNowRequested:",
+                "ax_actions": ["press", "pick", "cancel"]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]
