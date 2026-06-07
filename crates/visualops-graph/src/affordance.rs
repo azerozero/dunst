@@ -5,7 +5,7 @@
 //! `drag_targets` for draggable nodes (rows/cells) — for the POC, candidate
 //! drop zones are sibling rows and ancestor list/table/outline containers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use visualops_core::{Affordance, AffordanceGraph, Role, SceneGraph, SceneNode, SemanticAction};
 
@@ -68,41 +68,75 @@ pub fn derive_affordances(graph: &SceneGraph, risk: &RiskEngine) -> AffordanceGr
 }
 
 /// POC drag heuristic: only `Row`/`Cell` nodes are draggable. Candidate drop
-/// zones are sibling rows plus any ancestor `List`/`Table`/`Outline`.
+/// zones are the sibling rows of the node's *row context* plus any ancestor
+/// `List`/`Table`/`Outline`.
+///
+/// G4: for a `Cell`, the direct parent is its `Row`, so the row's siblings are
+/// other cells — not rows. We first climb to the nearest ancestor `Row` and
+/// enumerate *that* row's parent's other `Row` children. For a `Row` the node is
+/// its own row context.
+///
+/// G6: membership is tracked with a `BTreeSet` (O(log n)) instead of repeated
+/// `Vec::contains` (O(n²)); insertion order into the returned `Vec` stays
+/// deterministic (sibling rows first, then ancestors).
 fn drag_targets_for(graph: &SceneGraph, node: &SceneNode) -> Vec<String> {
     if !matches!(node.role, Role::Row | Role::Cell) {
         return Vec::new();
     }
 
     let mut targets: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
 
-    // Sibling rows (other children of this node's parent that are rows).
-    if let Some(parent_id) = &node.parent {
-        if let Some(parent) = graph.get(parent_id) {
-            for sibling_id in &parent.children {
-                if sibling_id == &node.id {
-                    continue;
-                }
-                if matches!(graph.get(sibling_id).map(|s| s.role), Some(Role::Row)) {
-                    push_unique_id(&mut targets, sibling_id.clone());
+    // Resolve the row context: the row itself, or (for a cell) the nearest
+    // ancestor row.
+    let row = match node.role {
+        Role::Row => Some(node),
+        _ => nearest_ancestor_row(graph, node),
+    };
+
+    // Sibling rows: the other `Row` children of the row context's parent.
+    if let Some(row) = row {
+        if let Some(parent_id) = &row.parent {
+            if let Some(parent) = graph.get(parent_id) {
+                for sibling_id in &parent.children {
+                    if sibling_id == &row.id {
+                        continue;
+                    }
+                    if matches!(graph.get(sibling_id).map(|s| s.role), Some(Role::Row)) {
+                        push_unique_id(&mut targets, &mut seen, sibling_id.clone());
+                    }
                 }
             }
         }
     }
 
-    // Ancestor containers (walk the parent chain to the root).
+    // Ancestor containers (walk the parent chain from the node to the root).
     let mut current = node.parent.clone();
     while let Some(parent_id) = current {
         let Some(parent) = graph.get(&parent_id) else {
             break;
         };
         if matches!(parent.role, Role::List | Role::Table | Role::Outline) {
-            push_unique_id(&mut targets, parent_id.clone());
+            push_unique_id(&mut targets, &mut seen, parent_id.clone());
         }
         current = parent.parent.clone();
     }
 
     targets
+}
+
+/// Climb the parent chain until the nearest [`Role::Row`] ancestor (the row a
+/// cell belongs to). Returns `None` if there is none.
+fn nearest_ancestor_row<'a>(graph: &'a SceneGraph, node: &SceneNode) -> Option<&'a SceneNode> {
+    let mut current = node.parent.clone();
+    while let Some(parent_id) = current {
+        let parent = graph.get(&parent_id)?;
+        if parent.role == Role::Row {
+            return Some(parent);
+        }
+        current = parent.parent.clone();
+    }
+    None
 }
 
 fn push_unique(actions: &mut Vec<SemanticAction>, action: SemanticAction) {
@@ -111,8 +145,8 @@ fn push_unique(actions: &mut Vec<SemanticAction>, action: SemanticAction) {
     }
 }
 
-fn push_unique_id(ids: &mut Vec<String>, id: String) {
-    if !ids.contains(&id) {
+fn push_unique_id(ids: &mut Vec<String>, seen: &mut BTreeSet<String>, id: String) {
+    if seen.insert(id.clone()) {
         ids.push(id);
     }
 }

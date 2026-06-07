@@ -22,17 +22,18 @@ impl MacosBackend {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::{ffi::c_void, ptr};
+    use std::{ffi::c_void, mem, ptr};
 
     use accessibility_sys::{
         error_string, kAXChildrenAttribute, kAXDescriptionAttribute, kAXEnabledAttribute,
         kAXErrorSuccess, kAXFocusedAttribute, kAXHelpAttribute, kAXIdentifierAttribute,
-        kAXMainWindowAttribute, kAXPositionAttribute, kAXPressAction, kAXRaiseAction,
-        kAXRoleAttribute, kAXShowMenuAction, kAXSizeAttribute, kAXTitleAttribute,
-        kAXValueAttribute, kAXValueTypeCGRect, kAXValueTypeCGPoint, kAXValueTypeCGSize,
-        kAXWindowsAttribute, AXError, AXIsProcessTrusted, AXUIElementCopyActionNames,
-        AXUIElementCopyAttributeValue, AXUIElementCreateApplication, AXUIElementPerformAction,
-        AXUIElementRef, AXUIElementSetAttributeValue, AXValueGetValue, AXValueRef,
+        kAXMainWindowAttribute, kAXMenuBarAttribute, kAXPositionAttribute, kAXPressAction,
+        kAXRaiseAction, kAXRoleAttribute, kAXShowMenuAction, kAXSizeAttribute,
+        kAXTitleAttribute, kAXValueAttribute, kAXValueTypeCGRect, kAXValueTypeCGPoint,
+        kAXValueTypeCGSize, kAXWindowsAttribute, AXError, AXIsProcessTrusted,
+        AXUIElementCopyActionNames, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
+        AXUIElementPerformAction, AXUIElementRef, AXUIElementSetAttributeValue, AXValueGetValue,
+        AXValueRef,
     };
     use core_foundation::{
         array::CFArray,
@@ -52,6 +53,39 @@ mod macos {
     const MAX_DEPTH: usize = 40;
     const AX_FRAME_ATTRIBUTE: &str = "AXFrame";
 
+    struct AxElement(AXUIElementRef);
+
+    impl AxElement {
+        fn as_ptr(&self) -> AXUIElementRef {
+            self.0
+        }
+
+    }
+
+    impl Drop for AxElement {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CFRelease(self.0 as CFTypeRef) };
+            }
+        }
+    }
+
+    struct AxValue(AXValueRef);
+
+    impl AxValue {
+        fn as_ptr(&self) -> AXValueRef {
+            self.0
+        }
+    }
+
+    impl Drop for AxValue {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CFRelease(self.0 as CFTypeRef) };
+            }
+        }
+    }
+
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
         fn _AXUIElementGetWindow(element: AXUIElementRef, window_id: *mut u32) -> AXError;
@@ -60,26 +94,29 @@ mod macos {
     pub fn capture(target: &Target) -> Result<Vec<RawAxNode>> {
         ensure_trusted()?;
         let app = app_element(target.pid)?;
-        let window = resolve_window(app, target.window_id)?;
+        let window = resolve_window(&app, target.window_id)?;
         let mut state = WalkState::default();
-        let root = walk_element(window, 0, &mut state)?;
+        let mut roots = vec![walk_element(&window, 0, &mut state)?];
+        if let Some(menu_bar) = attr_ax_element(&app, kAXMenuBarAttribute) {
+            roots.push(walk_element(&menu_bar, 0, &mut state)?);
+        }
         if state.capped {
             eprintln!(
                 "visualops-platform: AX tree capped at {MAX_NODES} nodes / depth {MAX_DEPTH}"
             );
         }
-        Ok(vec![root])
+        Ok(roots)
     }
 
     pub fn window_ref(target: &Target) -> Result<WindowRef> {
         ensure_trusted()?;
         let app = app_element(target.pid)?;
-        let window = resolve_window(app, target.window_id)?;
+        let window = resolve_window(&app, target.window_id)?;
         Ok(WindowRef {
             pid: target.pid,
             window_id: target.window_id,
-            app_name: attr_string(app, kAXTitleAttribute).unwrap_or_default(),
-            title: attr_string(window, kAXTitleAttribute).unwrap_or_default(),
+            app_name: attr_string(&app, kAXTitleAttribute).unwrap_or_default(),
+            title: attr_string(&window, kAXTitleAttribute).unwrap_or_default(),
         })
     }
 
@@ -91,7 +128,7 @@ mod macos {
     ) -> Result<()> {
         ensure_trusted()?;
         let app = app_element(target.pid)?;
-        let window = resolve_window(app, target.window_id)?;
+        let window = resolve_window(&app, target.window_id)?;
         let element = find_element(window, node)?.ok_or_else(|| {
             VisualOpsError::ElementNotFound(format!(
                 "role={:?} label={:?} identifier={:?}",
@@ -100,15 +137,16 @@ mod macos {
         })?;
 
         match action {
-            SemanticAction::Click | SemanticAction::Pick => perform_ax_action(element, kAXPressAction),
-            SemanticAction::OpenMenu => perform_ax_action(element, kAXShowMenuAction),
-            SemanticAction::Raise => perform_ax_action(element, kAXRaiseAction),
-            SemanticAction::Focus => set_bool_attr(element, kAXFocusedAttribute, true),
+            SemanticAction::Click | SemanticAction::Pick => perform_ax_action(&element, kAXPressAction),
+            SemanticAction::OpenMenu => perform_ax_action(&element, kAXShowMenuAction),
+            SemanticAction::Raise => perform_ax_action(&element, kAXRaiseAction),
+            SemanticAction::Focus => set_bool_attr(&element, kAXFocusedAttribute, true),
             SemanticAction::Type => {
                 let text = argument.ok_or_else(|| {
                     VisualOpsError::Execution("type action requires an argument".into())
                 })?;
-                set_string_attr(element, kAXValueAttribute, text)
+                // PERF/post-POC: add CGEvent text fallback after the AX set-value baseline.
+                set_string_attr(&element, kAXValueAttribute, text)
             }
             SemanticAction::Hover => hover(node),
             other => Err(VisualOpsError::Execution(format!(
@@ -128,7 +166,7 @@ mod macos {
         }
     }
 
-    fn app_element(pid: i32) -> Result<AXUIElementRef> {
+    fn app_element(pid: i32) -> Result<AxElement> {
         let app = unsafe { AXUIElementCreateApplication(pid) };
         if app.is_null() {
             Err(VisualOpsError::Perception(format!(
@@ -136,37 +174,38 @@ mod macos {
             )))
         } else {
             unsafe {
-                accessibility_sys::AXUIElementSetMessagingTimeout(app, 5.0);
+                accessibility_sys::AXUIElementSetMessagingTimeout(app, 1.0);
             }
-            Ok(app)
+            Ok(AxElement(app))
         }
     }
 
-    fn resolve_window(app: AXUIElementRef, requested_window_id: u32) -> Result<AXUIElementRef> {
-        if let Some(windows) = attr_array(app, kAXWindowsAttribute) {
-            for window in ax_elements(&windows) {
-                if let Some(window_id) = ax_window_id(window) {
-                    if window_id == requested_window_id {
-                        return Ok(window);
-                    }
-                }
-            }
+    fn resolve_window(app: &AxElement, requested_window_id: u32) -> Result<AxElement> {
+        let mut windows = attr_array(app, kAXWindowsAttribute)
+            .map(|windows| ax_elements(&windows))
+            .unwrap_or_default();
+
+        if let Some(index) = windows
+            .iter()
+            .position(|window| ax_window_id(window) == Some(requested_window_id))
+        {
+            return Ok(windows.remove(index));
         }
 
         if let Some(main_window) = attr_ax_element(app, kAXMainWindowAttribute) {
-            eprintln!(
-                "visualops-platform: window id {requested_window_id} not found; using AXMainWindow"
-            );
+            if requested_window_id != 0 {
+                eprintln!(
+                    "visualops-platform: window id {requested_window_id} not found; using AXMainWindow"
+                );
+            }
             return Ok(main_window);
         }
 
-        if let Some(windows) = attr_array(app, kAXWindowsAttribute) {
-            if let Some(first_window) = ax_elements(&windows).into_iter().next() {
-                eprintln!(
-                    "visualops-platform: window id {requested_window_id} not found; using first AX window"
-                );
-                return Ok(first_window);
-            }
+        if !windows.is_empty() {
+            eprintln!(
+                "visualops-platform: window id {requested_window_id} not found; using first AX window"
+            );
+            return Ok(windows.remove(0));
         }
 
         Err(VisualOpsError::Perception(format!(
@@ -174,9 +213,9 @@ mod macos {
         )))
     }
 
-    fn ax_window_id(element: AXUIElementRef) -> Option<u32> {
+    fn ax_window_id(element: &AxElement) -> Option<u32> {
         let mut window_id = 0;
-        let err = unsafe { _AXUIElementGetWindow(element, &mut window_id) };
+        let err = unsafe { _AXUIElementGetWindow(element.as_ptr(), &mut window_id) };
         (err == kAXErrorSuccess).then_some(window_id)
     }
 
@@ -187,18 +226,19 @@ mod macos {
     }
 
     fn walk_element(
-        element: AXUIElementRef,
+        element: &AxElement,
         depth: usize,
         state: &mut WalkState,
     ) -> Result<RawAxNode> {
+        // PERF/post-POC: batch hot attribute reads with AXUIElementCopyMultipleAttributeValues.
         state.count += 1;
         let ax_role = attr_string(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
         let value = attr_string(element, kAXValueAttribute);
-        let label = attr_string(element, kAXTitleAttribute)
-            .or_else(|| attr_string(element, kAXDescriptionAttribute))
+        let label = attr_label_string(element, kAXTitleAttribute)
+            .or_else(|| attr_label_string(element, kAXDescriptionAttribute))
             .or_else(|| {
                 if ax_role == "AXStaticText" {
-                    value.clone()
+                    value.clone().filter(|s| !s.is_empty())
                 } else {
                     None
                 }
@@ -228,14 +268,14 @@ mod macos {
                     state.capped = true;
                     break;
                 }
-                node.children.push(walk_element(child, depth + 1, state)?);
+                node.children.push(walk_element(&child, depth + 1, state)?);
             }
         }
 
         Ok(node)
     }
 
-    fn find_element(root: AXUIElementRef, wanted: &SceneNode) -> Result<Option<AXUIElementRef>> {
+    fn find_element(root: AxElement, wanted: &SceneNode) -> Result<Option<AxElement>> {
         let mut stack = vec![(root, 0usize)];
         let mut seen = 0usize;
 
@@ -246,11 +286,11 @@ mod macos {
                 break;
             }
 
-            if element_matches(element, wanted) {
+            if element_matches(&element, wanted) {
                 return Ok(Some(element));
             }
 
-            if let Some(children) = attr_array(element, kAXChildrenAttribute) {
+            if let Some(children) = attr_array(&element, kAXChildrenAttribute) {
                 let mut child_elements = ax_elements(&children);
                 child_elements.reverse();
                 for child in child_elements {
@@ -262,7 +302,7 @@ mod macos {
         Ok(None)
     }
 
-    fn element_matches(element: AXUIElementRef, wanted: &SceneNode) -> bool {
+    fn element_matches(element: &AxElement, wanted: &SceneNode) -> bool {
         let role_matches = attr_string(element, kAXRoleAttribute)
             .map(|role| role == wanted.ax_role)
             .unwrap_or(false);
@@ -275,25 +315,31 @@ mod macos {
             return false;
         }
 
-        let label = attr_string(element, kAXTitleAttribute)
-            .or_else(|| attr_string(element, kAXDescriptionAttribute))
-            .or_else(|| attr_string(element, kAXValueAttribute));
+        let label = attr_label_string(element, kAXTitleAttribute)
+            .or_else(|| attr_label_string(element, kAXDescriptionAttribute))
+            .or_else(|| {
+                if wanted.ax_role == "AXStaticText" {
+                    attr_string(element, kAXValueAttribute).filter(|s| !s.is_empty())
+                } else {
+                    None
+                }
+            });
 
         wanted.label.is_none() || label == wanted.label
     }
 
-    fn perform_ax_action(element: AXUIElementRef, action: &str) -> Result<()> {
+    fn perform_ax_action(element: &AxElement, action: &str) -> Result<()> {
         let action = CFString::new(action);
-        let err = unsafe { AXUIElementPerformAction(element, action.as_concrete_TypeRef()) };
+        let err = unsafe { AXUIElementPerformAction(element.as_ptr(), action.as_concrete_TypeRef()) };
         ax_result(err, "perform AX action")
     }
 
-    fn set_bool_attr(element: AXUIElementRef, attr: &str, value: bool) -> Result<()> {
+    fn set_bool_attr(element: &AxElement, attr: &str, value: bool) -> Result<()> {
         let attr = CFString::new(attr);
         let value = CFBoolean::from(value);
         let err = unsafe {
             AXUIElementSetAttributeValue(
-                element,
+                element.as_ptr(),
                 attr.as_concrete_TypeRef(),
                 value.as_CFTypeRef(),
             )
@@ -301,12 +347,12 @@ mod macos {
         ax_result(err, "set AX bool attribute")
     }
 
-    fn set_string_attr(element: AXUIElementRef, attr: &str, value: &str) -> Result<()> {
+    fn set_string_attr(element: &AxElement, attr: &str, value: &str) -> Result<()> {
         let attr = CFString::new(attr);
         let value = CFString::new(value);
         let err = unsafe {
             AXUIElementSetAttributeValue(
-                element,
+                element.as_ptr(),
                 attr.as_concrete_TypeRef(),
                 value.as_CFTypeRef(),
             )
@@ -343,11 +389,11 @@ mod macos {
         }
     }
 
-    fn attr_value(element: AXUIElementRef, attr: &str) -> Option<CFType> {
+    fn attr_value(element: &AxElement, attr: &str) -> Option<CFType> {
         let attr = CFString::new(attr);
         let mut value: CFTypeRef = ptr::null();
         let err = unsafe {
-            AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef(), &mut value)
+            AXUIElementCopyAttributeValue(element.as_ptr(), attr.as_concrete_TypeRef(), &mut value)
         };
         if err == kAXErrorSuccess && !value.is_null() {
             Some(unsafe { CFType::wrap_under_create_rule(value) })
@@ -356,38 +402,39 @@ mod macos {
         }
     }
 
-    fn attr_string(element: AXUIElementRef, attr: &str) -> Option<String> {
+    fn attr_string(element: &AxElement, attr: &str) -> Option<String> {
         let value = attr_value(element, attr)?;
-        value
-            .downcast::<CFString>()
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty())
+        value.downcast::<CFString>().map(|s| s.to_string())
     }
 
-    fn attr_bool(element: AXUIElementRef, attr: &str) -> Option<bool> {
+    fn attr_label_string(element: &AxElement, attr: &str) -> Option<String> {
+        attr_string(element, attr).filter(|s| !s.is_empty())
+    }
+
+    fn attr_bool(element: &AxElement, attr: &str) -> Option<bool> {
         let value = attr_value(element, attr)?;
         value.downcast::<CFBoolean>().map(bool::from)
     }
 
-    fn attr_array(element: AXUIElementRef, attr: &str) -> Option<CFArray> {
+    fn attr_array(element: &AxElement, attr: &str) -> Option<CFArray> {
         let value = attr_value(element, attr)?;
         value.downcast_into::<CFArray>()
     }
 
-    fn attr_ax_element(element: AXUIElementRef, attr: &str) -> Option<AXUIElementRef> {
+    fn attr_ax_element(element: &AxElement, attr: &str) -> Option<AxElement> {
         let value = attr_value(element, attr)?;
         if unsafe { CFGetTypeID(value.as_CFTypeRef()) } == unsafe { accessibility_sys::AXUIElementGetTypeID() } {
             let raw = value.as_CFTypeRef() as AXUIElementRef;
-            std::mem::forget(value);
-            Some(raw)
+            mem::forget(value);
+            Some(AxElement(raw))
         } else {
             None
         }
     }
 
-    fn action_names(element: AXUIElementRef) -> Vec<String> {
+    fn action_names(element: &AxElement) -> Vec<String> {
         let mut actions: CFArrayRef = ptr::null();
-        let err = unsafe { AXUIElementCopyActionNames(element, &mut actions) };
+        let err = unsafe { AXUIElementCopyActionNames(element.as_ptr(), &mut actions) };
         if err != kAXErrorSuccess || actions.is_null() {
             return Vec::new();
         }
@@ -420,7 +467,7 @@ mod macos {
         values
     }
 
-    fn ax_elements(array: &CFArray) -> Vec<AXUIElementRef> {
+    fn ax_elements(array: &CFArray) -> Vec<AxElement> {
         let mut elements = Vec::new();
         let len = unsafe { CFArrayGetCount(array.as_concrete_TypeRef()) };
         let ax_type = unsafe { accessibility_sys::AXUIElementGetTypeID() };
@@ -434,13 +481,13 @@ mod macos {
                 unsafe {
                     core_foundation_sys::base::CFRetain(cf_ref);
                 }
-                elements.push(cf_ref as AXUIElementRef);
+                elements.push(AxElement(cf_ref as AXUIElementRef));
             }
         }
         elements
     }
 
-    fn frame(element: AXUIElementRef) -> Option<Bbox> {
+    fn frame(element: &AxElement) -> Option<Bbox> {
         attr_cgrect(element, AX_FRAME_ATTRIBUTE).or_else(|| {
             let origin = attr_cgpoint(element, kAXPositionAttribute)?;
             let size = attr_cgsize(element, kAXSizeAttribute)?;
@@ -453,12 +500,12 @@ mod macos {
         })
     }
 
-    fn attr_cgrect(element: AXUIElementRef, attr: &str) -> Option<Bbox> {
+    fn attr_cgrect(element: &AxElement, attr: &str) -> Option<Bbox> {
         let value = attr_ax_value(element, attr)?;
         let mut rect = CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(0.0, 0.0));
         let ok = unsafe {
             AXValueGetValue(
-                value,
+                value.as_ptr(),
                 kAXValueTypeCGRect,
                 &mut rect as *mut CGRect as *mut c_void,
             )
@@ -471,12 +518,12 @@ mod macos {
         })
     }
 
-    fn attr_cgpoint(element: AXUIElementRef, attr: &str) -> Option<CGPoint> {
+    fn attr_cgpoint(element: &AxElement, attr: &str) -> Option<CGPoint> {
         let value = attr_ax_value(element, attr)?;
         let mut point = CGPoint::new(0.0, 0.0);
         let ok = unsafe {
             AXValueGetValue(
-                value,
+                value.as_ptr(),
                 kAXValueTypeCGPoint,
                 &mut point as *mut CGPoint as *mut c_void,
             )
@@ -484,12 +531,12 @@ mod macos {
         ok.then_some(point)
     }
 
-    fn attr_cgsize(element: AXUIElementRef, attr: &str) -> Option<CGSize> {
+    fn attr_cgsize(element: &AxElement, attr: &str) -> Option<CGSize> {
         let value = attr_ax_value(element, attr)?;
         let mut size = CGSize::new(0.0, 0.0);
         let ok = unsafe {
             AXValueGetValue(
-                value,
+                value.as_ptr(),
                 kAXValueTypeCGSize,
                 &mut size as *mut CGSize as *mut c_void,
             )
@@ -497,21 +544,14 @@ mod macos {
         ok.then_some(size)
     }
 
-    fn attr_ax_value(element: AXUIElementRef, attr: &str) -> Option<AXValueRef> {
+    fn attr_ax_value(element: &AxElement, attr: &str) -> Option<AxValue> {
         let value = attr_value(element, attr)?;
         if unsafe { CFGetTypeID(value.as_CFTypeRef()) } == unsafe { accessibility_sys::AXValueGetTypeID() } {
             let raw = value.as_CFTypeRef() as AXValueRef;
-            std::mem::forget(value);
-            Some(raw)
+            mem::forget(value);
+            Some(AxValue(raw))
         } else {
             None
-        }
-    }
-
-    #[allow(dead_code)]
-    fn release_ax_element(element: AXUIElementRef) {
-        if !element.is_null() {
-            unsafe { CFRelease(element as CFTypeRef) };
         }
     }
 }

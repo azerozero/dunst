@@ -96,16 +96,18 @@ fn slug(label: &str) -> String {
 }
 
 /// Short, stable hex of a structural path (child-index chain from the root).
-/// FNV-1a over the index bytes, truncated to 16 bits -> 4 hex chars.
+/// FNV-1a **64-bit** over the index bytes -> 16 hex chars (G7). 16 bits collided
+/// well within the 5000-node platform cap; 64 bits makes a collision (and thus
+/// an order-dependent `_2` suffix on label-less nodes) astronomically unlikely.
 fn path_hash(path: &[usize]) -> String {
-    let mut hash: u32 = 0x811c_9dc5;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a 64-bit offset basis
     for &idx in path {
         for b in (idx as u64).to_le_bytes() {
-            hash ^= u32::from(b);
-            hash = hash.wrapping_mul(0x0100_0193);
+            hash ^= u64::from(b);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3); // FNV-1a 64-bit prime
         }
     }
-    format!("{:04x}", hash & 0xffff)
+    format!("{hash:016x}")
 }
 
 /// Build the full scene graph from perceived roots.

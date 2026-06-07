@@ -14,12 +14,65 @@ use visualops_core::{RiskAssessment, RiskLevel, SceneNode};
 
 use crate::text::normalize;
 
+/// Original keyword lists (HIGH / MEDIUM), kept as `&'static str` so the
+/// `reasons` strings can report the human-readable form.
+const HIGH_KEYWORDS: &[&str] = &[
+    "supprimer",
+    "delete",
+    "effacer",
+    "remove",
+    "éteindre",
+    "shut down",
+    "redémarrer",
+    "restart",
+    "forcer à quitter",
+    "force quit",
+    "réinitialiser",
+    "reset",
+    "déconnexion",
+    "log out",
+    "formater",
+    "erase",
+    "vider",
+    "empty trash",
+];
+
+const MEDIUM_KEYWORDS: &[&str] = &[
+    "envoyer",
+    "send",
+    "publier",
+    "publish",
+    "deploy",
+    "déployer",
+    "enregistrer",
+    "save",
+    "coller",
+    "paste",
+    "déplacer",
+    "move",
+    "renommer",
+    "rename",
+    "partager",
+    "share",
+    "archiver",
+];
+
+/// A keyword compiled once: the `needle` is the normalised form matched against
+/// element text; `original` is the human-readable form used in `reasons`.
+#[derive(Debug, Clone)]
+struct Keyword {
+    needle: String,
+    original: &'static str,
+}
+
 /// Stateful so later phases can add policy/history; for the POC it is two
-/// keyword tables matched (accent-insensitively) against element text.
+/// keyword tables matched (accent-insensitively) against element text. The
+/// tables are **pre-normalised once** here (G5) so `assess` does no per-keyword
+/// allocation per node.
 #[derive(Debug, Clone)]
 pub struct RiskEngine {
-    high: Vec<&'static str>,
-    medium: Vec<&'static str>,
+    high: Vec<Keyword>,
+    medium: Vec<Keyword>,
 }
 
 impl Default for RiskEngine {
@@ -31,45 +84,8 @@ impl Default for RiskEngine {
 impl RiskEngine {
     pub fn new() -> Self {
         Self {
-            high: vec![
-                "supprimer",
-                "delete",
-                "effacer",
-                "remove",
-                "éteindre",
-                "shut down",
-                "redémarrer",
-                "restart",
-                "forcer à quitter",
-                "force quit",
-                "réinitialiser",
-                "reset",
-                "déconnexion",
-                "log out",
-                "formater",
-                "erase",
-                "vider",
-                "empty trash",
-            ],
-            medium: vec![
-                "envoyer",
-                "send",
-                "publier",
-                "publish",
-                "deploy",
-                "déployer",
-                "enregistrer",
-                "save",
-                "coller",
-                "paste",
-                "déplacer",
-                "move",
-                "renommer",
-                "rename",
-                "partager",
-                "share",
-                "archiver",
-            ],
+            high: compile(HIGH_KEYWORDS),
+            medium: compile(MEDIUM_KEYWORDS),
         }
     }
 
@@ -109,13 +125,26 @@ impl RiskEngine {
     }
 }
 
-/// Collect `"matched keyword: <kw>"` for every keyword (in table order) that
-/// appears in the normalised haystack. Returns `None` when nothing matched.
-fn match_tier(hay: &str, keywords: &[&str]) -> Option<Vec<String>> {
+/// Pre-normalise a keyword table once (G5): store the normalised needle next to
+/// the original text used for `reasons`.
+fn compile(keywords: &[&'static str]) -> Vec<Keyword> {
+    keywords
+        .iter()
+        .map(|&kw| Keyword {
+            needle: normalize(kw),
+            original: kw,
+        })
+        .collect()
+}
+
+/// Collect `"matched keyword: <kw>"` for every keyword (in table order) whose
+/// pre-normalised needle appears in the normalised haystack. Returns `None` when
+/// nothing matched. No per-keyword normalisation/allocation here.
+fn match_tier(hay: &str, keywords: &[Keyword]) -> Option<Vec<String>> {
     let reasons: Vec<String> = keywords
         .iter()
-        .filter(|kw| hay.contains(&normalize(kw)))
-        .map(|kw| format!("matched keyword: {kw}"))
+        .filter(|kw| hay.contains(kw.needle.as_str()))
+        .map(|kw| format!("matched keyword: {}", kw.original))
         .collect();
     if reasons.is_empty() {
         None

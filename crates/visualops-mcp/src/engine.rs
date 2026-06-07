@@ -10,9 +10,8 @@
 use std::collections::BTreeSet;
 
 use visualops_core::{
-    ActionExecutor, ActionResult, AffordanceGraph, AuditEntry, GraphDiff, Perceptor,
-    RiskAssessment, RiskLevel, SceneGraph, SceneNode, SemanticAction, Target, VisualOpsError,
-    WindowRef,
+    ActionExecutor, ActionResult, AffordanceGraph, AuditEntry, GraphDiff, Perceptor, RiskLevel,
+    SceneGraph, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
 };
 use visualops_graph::{audit, derive_affordances, scene, RiskEngine};
 
@@ -172,53 +171,47 @@ impl Engine {
                 action: format!("{action:?}"),
             });
         }
-        let risk: RiskAssessment = aff.risk.clone();
         let approved = self.approvals.contains(id);
 
-        // Gate: high-risk actions need prior approval.
-        if risk.requires_approval && !approved {
-            let entry = self.record(id, action, argument, reasoning, risk, ActionResult::PendingApproval, GraphDiff::default());
-            return Ok(entry);
-        }
-
-        // Execute, then re-perceive and diff.
-        let exec = self.executor.perform(&self.target, &node, action, argument);
-        let result = match &exec {
-            Ok(()) => ActionResult::Success,
-            Err(_) => ActionResult::Failed,
-        };
-        let _ = self.refresh();
-        let diff = self.diff_since();
-        let entry = self.record(id, action, argument, reasoning, risk, result, diff);
-        Ok(entry)
-    }
-
-    fn record(
-        &mut self,
-        id: &str,
-        action: SemanticAction,
-        argument: Option<&str>,
-        reasoning: Option<&str>,
-        risk: RiskAssessment,
-        result: ActionResult,
-        graph_diff: GraphDiff,
-    ) -> AuditEntry {
-        let entry = AuditEntry {
+        // Build the audit record once; the two outcome paths only differ in
+        // `result` and `graph_diff` (applied via struct update below).
+        let base = AuditEntry {
             ts_ms: visualops_core::now_ms(),
             target_id: id.to_string(),
             action,
             argument: argument.map(str::to_owned),
-            risk,
+            risk: aff.risk.clone(),
             reasoning: reasoning.map(str::to_owned),
-            result,
-            graph_diff,
+            result: ActionResult::PendingApproval,
+            graph_diff: GraphDiff::default(),
         };
+
+        // Gate: high-risk actions need prior approval. Note the executor is
+        // never invoked on this path.
+        if base.risk.requires_approval && !approved {
+            return Ok(self.push_entry(base));
+        }
+
+        // Execute, then re-perceive and diff.
+        let result = match self.executor.perform(&self.target, &node, action, argument) {
+            Ok(()) => ActionResult::Success,
+            Err(_) => ActionResult::Failed,
+        };
+        let _ = self.refresh();
+        let graph_diff = self.diff_since();
+        Ok(self.push_entry(AuditEntry { result, graph_diff, ..base }))
+    }
+
+    fn push_entry(&mut self, entry: AuditEntry) -> AuditEntry {
         self.trace.push(entry.clone());
         entry
     }
 
     // --- audit --------------------------------------------------------------
 
+    /// Public accessor over the audit trail; exercised by the gating tests and
+    /// part of the engine API the MCP layer may surface.
+    #[allow(dead_code)]
     pub fn trace(&self) -> &[AuditEntry] {
         &self.trace
     }
@@ -228,7 +221,97 @@ impl Engine {
     }
 }
 
-/// True if any element in the graph is high-risk (used by demos/reports).
+/// True if any element in the graph is high-risk (utility for demos/reports).
+#[allow(dead_code)]
 pub fn has_high_risk(g: &AffordanceGraph) -> bool {
     g.affordances.values().any(|a| a.risk.level == RiskLevel::High)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use visualops_core::mock::MockPerceptor;
+
+    /// Executor that counts invocations, so we can assert a gated action never
+    /// reaches the OS.
+    struct CountingExecutor(Arc<AtomicUsize>);
+    impl ActionExecutor for CountingExecutor {
+        fn perform(
+            &self,
+            _t: &Target,
+            _n: &SceneNode,
+            _a: SemanticAction,
+            _arg: Option<&str>,
+        ) -> visualops_core::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn engine_with_counter() -> (Engine, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let perceptor = Box::new(MockPerceptor::notes_fixture().unwrap());
+        let exec = Box::new(CountingExecutor(calls.clone()));
+        let eng = Engine::new(perceptor, exec, Target { pid: 1363, window_id: 105 }).unwrap();
+        (eng, calls)
+    }
+
+    fn id_for(eng: &Engine, query: &str) -> String {
+        eng.find_element(query)
+            .first()
+            .map(|n| n.id.clone())
+            .unwrap_or_else(|| panic!("no element for {query:?}"))
+    }
+
+    #[test]
+    fn low_risk_click_proceeds_and_executes() {
+        let (mut eng, calls) = engine_with_counter();
+        let id = id_for(&eng, "Nouvelle note");
+        let entry = eng.click_element(&id, Some("create")).unwrap();
+        assert_eq!(entry.result, ActionResult::Success);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn high_risk_click_is_gated_then_approved() {
+        let (mut eng, calls) = engine_with_counter();
+        let id = id_for(&eng, "Supprimer");
+
+        // 1. Denied pending approval — and the executor must NOT have run.
+        let e1 = eng.click_element(&id, Some("delete")).unwrap();
+        assert_eq!(e1.result, ActionResult::PendingApproval);
+        assert_eq!(e1.risk.level, RiskLevel::High);
+        assert!(e1.risk.requires_approval);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "executor must not run on a gated action"
+        );
+
+        // 2. Approve, retry — proceeds, executor called exactly once.
+        eng.approve(&id);
+        let e2 = eng.click_element(&id, Some("approved")).unwrap();
+        assert_eq!(e2.result, ActionResult::Success);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn unavailable_action_is_an_error() {
+        let (mut eng, calls) = engine_with_counter();
+        // A button has no Type affordance.
+        let id = id_for(&eng, "Nouvelle note");
+        let err = eng.type_into(&id, "x", None).unwrap_err();
+        assert!(matches!(err, VisualOpsError::ActionUnavailable { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn every_attempt_is_audited() {
+        let (mut eng, _c) = engine_with_counter();
+        let _ = eng.click_element(&id_for(&eng, "Supprimer"), None); // gated
+        let _ = eng.click_element(&id_for(&eng, "Nouvelle note"), None); // ok
+        assert_eq!(eng.trace().len(), 2);
+    }
 }
