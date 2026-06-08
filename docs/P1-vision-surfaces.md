@@ -123,10 +123,27 @@ on vision surfaces.
   window size.
 - **Coalesce**: debounce animations; OCR on settle, not every animation frame.
 
-## 7. Hybrid AX + Vision
+## 7. Hybrid AX + Vision — AX is the *prior* that masks OCR (P1d)
 When a window has *partial* AX (e.g. Electron), use AX nodes (conf 1.0) and vision
-only for gaps (pixels with no AX node). Fuse by spatial overlap; AX wins ties. A
-pure-vision app simply has zero AX nodes.
+only for gaps. Concretely: **AX tells the vision pipeline where it does *not* need
+to look.** The OCR region is `dirty ∩ fovea ∩ ¬(AX-covered)`.
+
+- **Why it's the key hybrid lever** (not just latency — OCR `.fast` is already
+  ~16 ms): (1) latency **scales with AX-blindness** — pure-Cocoa ≈ 0 added OCR,
+  pure-canvas = full OCR, proportional in between; (2) where AX works it is
+  *exact* (real role, `ax_identifier`, actions) so OCRing it only **adds noise**;
+  (3) it shrinks the id-churn and P1c role-inference surface to the AX-blind area.
+- **Guard 1 — mask by *useful* AX nodes only.** A bare `AXGroup`/`AXUnknown` with a
+  bbox but **no label and no actions** must NOT mask OCR — vision may recover text
+  AX didn't expose. Mask = union of AX bboxes that have a label *or* actions.
+- **Guard 2 — trust but verify.** AX can be stale (virtualised/recycled views whose
+  bbox no longer matches pixels). Low-rate-sample OCR over AX-covered area to detect
+  AX↔pixel drift. On fusion, any OCR box overlapping an AX node is dropped (**AX
+  wins**).
+- **Mechanics:** rasterise the useful-AX-bbox union onto the tile grid (geometry
+  over a few hundred rects → negligible), with a small **inward halo** so text
+  straddling the AX/blind seam still gets OCR'd (ties to §6's region+halo rule).
+  A pure-vision app simply has an empty AX mask → OCR everything.
 
 ## 8. Phasing
 - **P1a — Capture + OCR PoC + LATENCY TRUTH** (this round): SCK window grab + Apple
@@ -207,3 +224,33 @@ UI-density text. Plus the coord-transform with unit tests.
 **Gate:** region OCR < ~60 ms warm **and** capture < ~15 ms ⇒ GO to P1b; else
 fall back to `ort`/RapidOCR or rescope. Whole-chain-in-Rust existence proof:
 `andelf/picc`. Full feasibility + crate maturity: `docs/P1-vision-rust-feasibility.md`.
+
+## 11. P1a result — measured in Rust (2026-06-08)
+Spike crate `visualops-vision` (capture via Core Graphics after ScreenCaptureKit
+was dropped — see the SCK lesson below). Real run on Notes (window 93), 10 runs:
+
+| Stage | p50 | p95 |
+|---|---|---|
+| OCR `.fast` fovea 600×400 pt | 9.8 ms | **15.3 ms** |
+| OCR `.fast` full window | 16.2 ms | 17.1 ms |
+| capture (`CGWindowListCreateImage`) | 13.2 ms | 19.7 ms |
+
+Geometry resolved correctly (origin 728,236; 1000×660 pt; 2000×1320 px; scale 2.0);
+`coords` transform `cargo test -p visualops-vision` = **14 passed**.
+
+**Verdict: GO on the < 100 ms thesis.** The OCR — the contested crux — is ~15 ms;
+the public 131 ms `ocrmac` figure was pyobjc per-call overhead, Codex's in-process
+number stands. Steady-state capture+OCR ≈ 30 ms, leaving ample room for
+role-inference/build under 100 ms. The bench's own `NO-GO` flag is a **false
+negative**: it only missed the arbitrary 15 ms capture sub-gate (19.7 ms), which is
+the **deprecated `CGWindowListCreateImage` tax** — chosen to dodge the SCK issues
+below; proper SCK capture is ~3–12 ms (P1b).
+
+**SCK lesson (why Core Graphics, not ScreenCaptureKit, in the spike):**
+`SCShareableContent::get()` is a sync wrapper over an async completion-handler that
+ScreenCaptureKit delivers via XPC to a dispatch queue needing a running CFRunLoop —
+a headless Rust `main()` has none, so it **blocks forever, before the geometry**.
+And `screencapturekit` drags in `libswift_Concurrency` → the whole crate **fails to
+link** (Swift runtime). Both vanish with pure Core Graphics (`CGWindowListCopyWindowInfo`
++ `CGWindowListCreateImage`, synchronous, no run loop, no Swift). SCK is a P1b task
+(async runtime + run loop), not a P1a blocker.

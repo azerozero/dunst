@@ -5,6 +5,7 @@ members = [
     "crates/visualops-graph",
     "crates/visualops-platform",
     "crates/visualops-mcp",
+    "crates/visualops-vision",
 ]
 
 [workspace.package]
