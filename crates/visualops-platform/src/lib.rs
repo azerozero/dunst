@@ -53,7 +53,8 @@ mod macos {
     use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
     use core_foundation_sys::base::CFNullGetTypeID;
     use core_graphics::{
-        event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton},
+        display::CGDisplay,
+        event::{CGEvent, CGEventType, CGMouseButton},
         event_source::{CGEventSource, CGEventSourceStateID},
         geometry::{CGPoint, CGRect, CGSize},
     };
@@ -188,13 +189,14 @@ mod macos {
         path: &mut &'static str,
     ) -> Result<()> {
         if matches!(action, SemanticAction::Hover | SemanticAction::Drag) {
-            return perform_on_element(None, node, action, argument).map_err(ActionFailure::into);
+            return perform_on_element(None, target.pid, node, action, argument)
+                .map_err(ActionFailure::into);
         }
 
         if env::var_os("VO_ACTION_DISABLE_CACHE").is_none() {
             if let Some(element) = cached_element(key) {
                 *path = "cached";
-                match perform_on_element(Some(&element), node, action, argument) {
+                match perform_on_element(Some(&element), target.pid, node, action, argument) {
                     Ok(()) => return Ok(()),
                     Err(err) if err.is_stale() => {
                         remove_cached_element(key);
@@ -213,16 +215,20 @@ mod macos {
                 node.ax_role, node.label, node.ax_identifier
             ))
         })?;
-        perform_on_element(Some(&element), node, action, argument).map_err(ActionFailure::into)
+        perform_on_element(Some(&element), target.pid, node, action, argument)
+            .map_err(ActionFailure::into)
     }
 
     fn perform_on_element(
         element: Option<&AxElement>,
+        pid: i32,
         node: &SceneNode,
         action: SemanticAction,
         argument: Option<&str>,
     ) -> std::result::Result<(), ActionFailure> {
         match action {
+            // AX actions/set-attribute are non-intrusive: no global cursor movement
+            // and no foreground activation. `Raise` below is the intentional exception.
             SemanticAction::Click | SemanticAction::Pick => {
                 perform_ax_action(element.expect("AX element required"), kAXPressAction)
             }
@@ -241,10 +247,10 @@ mod macos {
                 let text = argument.ok_or_else(|| {
                     ActionFailure::Execution("type action requires an argument".into())
                 })?;
-                type_text(element.expect("AX element required"), text)
+                type_text(element.expect("AX element required"), pid, text)
             }
-            SemanticAction::Hover => hover(node),
-            SemanticAction::Drag => drag(node, argument),
+            SemanticAction::Hover => hover(pid, node),
+            SemanticAction::Drag => drag(pid, node, argument),
             other => Err(ActionFailure::Execution(format!(
                 "semantic action {other:?} is not supported by macOS AX backend"
             ))),
@@ -668,7 +674,11 @@ mod macos {
         }
     }
 
-    fn type_text(element: &AxElement, text: &str) -> std::result::Result<(), ActionFailure> {
+    fn type_text(
+        element: &AxElement,
+        pid: i32,
+        text: &str,
+    ) -> std::result::Result<(), ActionFailure> {
         if attr_settable(element, kAXValueAttribute) {
             let err = set_string_attr_raw(element, kAXValueAttribute, text);
             if err == kAXErrorSuccess {
@@ -686,7 +696,7 @@ mod macos {
 
         // AX set-value replaces text; synthetic Unicode keystrokes append to the focused editor.
         set_bool_attr(element, kAXFocusedAttribute, true)?;
-        post_unicode_text(text)
+        post_unicode_text(pid, text)
     }
 
     fn attr_settable(element: &AxElement, attr: &str) -> bool {
@@ -702,7 +712,7 @@ mod macos {
         err == kAXErrorSuccess && settable != 0
     }
 
-    fn post_unicode_text(text: &str) -> std::result::Result<(), ActionFailure> {
+    fn post_unicode_text(pid: i32, text: &str) -> std::result::Result<(), ActionFailure> {
         let source = event_source("create keyboard CGEventSource")?;
         for ch in text.chars() {
             let s = ch.to_string();
@@ -710,31 +720,44 @@ mod macos {
                 ActionFailure::Execution(format!("create key down CGEvent: {err:?}"))
             })?;
             down.set_string(&s);
-            down.post(CGEventTapLocation::HID);
+            down.post_to_pid(pid);
 
             let up = CGEvent::new_keyboard_event(source.clone(), 0, false).map_err(|err| {
                 ActionFailure::Execution(format!("create key up CGEvent: {err:?}"))
             })?;
             up.set_string(&s);
-            up.post(CGEventTapLocation::HID);
+            up.post_to_pid(pid);
         }
         Ok(())
     }
 
-    fn hover(node: &SceneNode) -> std::result::Result<(), ActionFailure> {
+    fn hover(pid: i32, node: &SceneNode) -> std::result::Result<(), ActionFailure> {
         let Some(bbox) = node.bbox else {
             return Ok(());
         };
         let source = event_source("create hover CGEventSource")?;
         let point = CGPoint::new(bbox.x + bbox.w / 2.0, bbox.y + bbox.h / 2.0);
-        let event =
-            CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
-                .map_err(|err| ActionFailure::Execution(format!("create hover CGEvent: {err:?}")))?;
-        event.post(CGEventTapLocation::HID);
-        Ok(())
+        let saved_cursor = current_cursor_position(&source)?;
+        let result = (|| {
+            let event = CGEvent::new_mouse_event(
+                source,
+                CGEventType::MouseMoved,
+                point,
+                CGMouseButton::Left,
+            )
+            .map_err(|err| ActionFailure::Execution(format!("create hover CGEvent: {err:?}")))?;
+            event.post_to_pid(pid);
+            Ok(())
+        })();
+        restore_cursor_position(saved_cursor)?;
+        result
     }
 
-    fn drag(node: &SceneNode, argument: Option<&str>) -> std::result::Result<(), ActionFailure> {
+    fn drag(
+        pid: i32,
+        node: &SceneNode,
+        argument: Option<&str>,
+    ) -> std::result::Result<(), ActionFailure> {
         let start_bbox = node
             .bbox
             .ok_or_else(|| ActionFailure::Execution("Drag requires a source bbox".into()))?;
@@ -744,20 +767,24 @@ mod macos {
             start_bbox.y + start_bbox.h / 2.0,
         );
         let source = event_source("create drag CGEventSource")?;
+        let saved_cursor = current_cursor_position(&source)?;
 
-        // Synthetic drag moves the real cursor; this is inherent to CGEvent mouse input.
-        post_mouse(source.clone(), CGEventType::LeftMouseDown, start)?;
-        thread::sleep(DRAG_STEP_DELAY);
-        for step in 1..=DRAG_STEPS {
-            let t = step as f64 / DRAG_STEPS as f64;
-            let point = CGPoint::new(
-                start.x + (end.x - start.x) * t,
-                start.y + (end.y - start.y) * t,
-            );
-            post_mouse(source.clone(), CGEventType::LeftMouseDragged, point)?;
+        let result = (|| {
+            post_mouse(source.clone(), pid, CGEventType::LeftMouseDown, start)?;
             thread::sleep(DRAG_STEP_DELAY);
-        }
-        post_mouse(source, CGEventType::LeftMouseUp, end)
+            for step in 1..=DRAG_STEPS {
+                let t = step as f64 / DRAG_STEPS as f64;
+                let point = CGPoint::new(
+                    start.x + (end.x - start.x) * t,
+                    start.y + (end.y - start.y) * t,
+                );
+                post_mouse(source.clone(), pid, CGEventType::LeftMouseDragged, point)?;
+                thread::sleep(DRAG_STEP_DELAY);
+            }
+            post_mouse(source, pid, CGEventType::LeftMouseUp, end)
+        })();
+        restore_cursor_position(saved_cursor)?;
+        result
     }
 
     fn parse_drop_point(argument: Option<&str>) -> std::result::Result<CGPoint, ActionFailure> {
@@ -779,13 +806,27 @@ mod macos {
 
     fn post_mouse(
         source: CGEventSource,
+        pid: i32,
         event_type: CGEventType,
         point: CGPoint,
     ) -> std::result::Result<(), ActionFailure> {
         let event = CGEvent::new_mouse_event(source, event_type, point, CGMouseButton::Left)
             .map_err(|err| ActionFailure::Execution(format!("create mouse CGEvent: {err:?}")))?;
-        event.post(CGEventTapLocation::HID);
+        event.post_to_pid(pid);
         Ok(())
+    }
+
+    fn current_cursor_position(
+        source: &CGEventSource,
+    ) -> std::result::Result<CGPoint, ActionFailure> {
+        let event = CGEvent::new(source.clone())
+            .map_err(|err| ActionFailure::Execution(format!("read cursor CGEvent: {err:?}")))?;
+        Ok(event.location())
+    }
+
+    fn restore_cursor_position(point: CGPoint) -> std::result::Result<(), ActionFailure> {
+        CGDisplay::warp_mouse_cursor_position(point)
+            .map_err(|err| ActionFailure::Execution(format!("restore cursor position: {err:?}")))
     }
 
     fn event_source(operation: &'static str) -> std::result::Result<CGEventSource, ActionFailure> {

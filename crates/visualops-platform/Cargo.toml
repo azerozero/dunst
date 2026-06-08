@@ -11,7 +11,7 @@ visualops-core = { workspace = true }
 accessibility-sys = "0.2"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
-core-graphics = "0.24"
+core-graphics = { version = "0.24", features = ["elcapitan"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
