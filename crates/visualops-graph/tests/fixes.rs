@@ -44,18 +44,18 @@ fn synth_id_hash_fallback_is_16_hex() {
     let used = BTreeSet::new();
 
     // No label -> hash fallback, 16 hex chars (G7).
-    let id = synth_id(Role::Menu, None, &[1, 0, 0], &used);
+    let id = synth_id(Role::Menu, None, None, &[1, 0, 0], &used);
     assert!(id.starts_with("menu_"), "got {id}");
     assert_eq!(id.len(), "menu_".len() + 16, "expected 16-hex hash: {id}");
     assert!(id["menu_".len()..].chars().all(|c| c.is_ascii_hexdigit()));
 
     // Empty label -> hash fallback.
-    let id = synth_id(Role::TextArea, Some(""), &[0, 2], &used);
+    let id = synth_id(Role::TextArea, Some(""), None, &[0, 2], &used);
     assert!(id.starts_with("text_"));
     assert_eq!(id.len(), "text_".len() + 16);
 
     // Punctuation-only label (slugs to nothing) -> hash fallback.
-    let id = synth_id(Role::Button, Some("!!! … —"), &[3], &used);
+    let id = synth_id(Role::Button, Some("!!! … —"), None, &[3], &used);
     assert!(id.starts_with("btn_"));
     assert_eq!(id.len(), "btn_".len() + 16);
 }
@@ -64,24 +64,24 @@ fn synth_id_hash_fallback_is_16_hex() {
 fn synth_id_resolves_collisions_with_numeric_suffix() {
     let mut used = BTreeSet::new();
 
-    let id1 = synth_id(Role::Button, Some("Partager"), &[0, 3], &used);
+    let id1 = synth_id(Role::Button, Some("Partager"), None, &[0, 3], &used);
     assert_eq!(id1, "btn_partager");
     used.insert(id1);
 
     // Same label, different path -> base collides -> `_2`.
-    let id2 = synth_id(Role::Button, Some("Partager"), &[0, 4], &used);
+    let id2 = synth_id(Role::Button, Some("Partager"), None, &[0, 4], &used);
     assert_eq!(id2, "btn_partager_2");
     used.insert(id2);
 
-    let id3 = synth_id(Role::Button, Some("Partager"), &[1], &used);
+    let id3 = synth_id(Role::Button, Some("Partager"), None, &[1], &used);
     assert_eq!(id3, "btn_partager_3");
 }
 
 #[test]
 fn synth_id_distinct_paths_distinct_hashes() {
     let used = BTreeSet::new();
-    let a = synth_id(Role::Menu, None, &[1, 0, 0], &used);
-    let b = synth_id(Role::Menu, None, &[1, 1, 0], &used);
+    let a = synth_id(Role::Menu, None, None, &[1, 0, 0], &used);
+    let b = synth_id(Role::Menu, None, None, &[1, 1, 0], &used);
     assert_ne!(a, b, "distinct structural paths must hash differently");
 }
 

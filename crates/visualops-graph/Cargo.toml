@@ -19,3 +19,9 @@ bench = ["dep:criterion"]
 name = "graph_bench"
 harness = false
 required-features = ["bench"]
+
+# WP-D4: pure-pipeline baseline (build_scene_graph -> derive_affordances -> risk).
+[[bench]]
+name = "pipeline"
+harness = false
+required-features = ["bench"]

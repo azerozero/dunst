@@ -43,21 +43,43 @@ pub fn map_role(ax_role: &str) -> Role {
 }
 
 /// Synthesise a stable, human-readable, unique-within-graph ID for a node.
-/// Format: `"{role_prefix}_{slug(label)}"`, falling back to a short hash of the
-/// structural path when no label exists. `used` tracks already-emitted IDs so a
-/// numeric suffix can disambiguate collisions (`btn_partager`, `btn_partager_2`).
+///
+/// Priority of the id *source* (D1):
+/// 1. A **developer-assigned** `ax_identifier` ([`is_stable_identifier`]) →
+///    `"{role_prefix}_{slug(ax_identifier)}"`. This makes the id stable *by
+///    construction*: it survives a label/value change, so a rename surfaces as a
+///    single `Changed{label}` instead of Remove+Add (see [`crate::audit`] G3).
+/// 2. Otherwise the node `label` → `"{role_prefix}_{slug(label)}"` (unchanged).
+/// 3. Otherwise a short hash of the structural `path` (unchanged).
+///
+/// The role prefix is always kept so ids stay glanceable (`btn_…`, `mi_…`), and
+/// `used` tracks already-emitted IDs so a numeric suffix can disambiguate
+/// collisions (`btn_partager`, `btn_partager_2`) — including two siblings that
+/// share one `ax_identifier`.
 pub fn synth_id(
     role: Role,
     label: Option<&str>,
+    ax_identifier: Option<&str>,
     path: &[usize],
     used: &std::collections::BTreeSet<String>,
 ) -> String {
     let prefix = role.id_prefix();
-    let base = match label.map(slug) {
-        Some(ref s) if !s.is_empty() => format!("{prefix}_{s}"),
-        // No label, or a label that slugs to nothing (all punctuation): use a
-        // short deterministic hash of the structural path.
-        _ => format!("{prefix}_{}", path_hash(path)),
+
+    // Prefer a developer-assigned AXIdentifier when it slugs to something
+    // non-empty; fall back to the (unchanged) label-slug / path-hash scheme.
+    let from_identifier = ax_identifier
+        .filter(|id| is_stable_identifier(id))
+        .map(slug)
+        .filter(|s| !s.is_empty());
+
+    let base = match from_identifier {
+        Some(s) => format!("{prefix}_{s}"),
+        None => match label.map(slug) {
+            Some(ref s) if !s.is_empty() => format!("{prefix}_{s}"),
+            // No label, or a label that slugs to nothing (all punctuation): use a
+            // short deterministic hash of the structural path.
+            _ => format!("{prefix}_{}", path_hash(path)),
+        },
     };
 
     if !used.contains(&base) {
@@ -72,6 +94,29 @@ pub fn synth_id(
         }
         n += 1;
     }
+}
+
+/// Is `ax_identifier` a **developer-assigned** identifier we can trust as a
+/// rename-invariant id source?
+///
+/// AppKit auto-generates ordinal `_NS:<n>` accessibility identifiers (e.g.
+/// `_NS:573`) that are **not** stable across launches or framework versions —
+/// using them as an id source would reintroduce the very churn stable ids are
+/// meant to remove. We therefore treat the `_NS:<digits>` pattern as "no usable
+/// identifier" and fall back to the label-slug / path-hash scheme. Anything else
+/// non-empty (`"Note Body Text View"`, `"_forceQuitRequested:"`) is honoured.
+pub(crate) fn is_stable_identifier(ax_identifier: &str) -> bool {
+    !ax_identifier.is_empty() && !is_appkit_auto(ax_identifier)
+}
+
+/// Matches AppKit's auto-generated `_NS:<digits>` identifier pattern (no regex
+/// dependency): a `_NS:` prefix followed by one or more ASCII digits and nothing
+/// else.
+fn is_appkit_auto(s: &str) -> bool {
+    matches!(
+        s.strip_prefix("_NS:"),
+        Some(rest) if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+    )
 }
 
 /// Turn a human label into a slug: lowercase ASCII, accents folded, runs of
@@ -143,7 +188,7 @@ fn flatten(
     nodes: &mut BTreeMap<String, SceneNode>,
 ) -> String {
     let role = map_role(&node.ax_role);
-    let id = synth_id(role, node.label.as_deref(), path, used);
+    let id = synth_id(role, node.label.as_deref(), node.ax_identifier.as_deref(), path, used);
     // Reserve the ID before recursing so children see it for collision checks.
     used.insert(id.clone());
 

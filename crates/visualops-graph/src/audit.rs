@@ -11,11 +11,18 @@ use visualops_core::{Bbox, GraphDiff, NodeChange, SceneGraph, SceneNode};
 /// - a change to [`SceneGraph::roots`] -> one `Changed { id: "<graph>", field:
 ///   "roots" }` (G2).
 ///
-/// **Reconciliation (G3).** Because `synth_id` is label-derived, renaming a node
+/// **Reconciliation (G3).** When a node's id is **label-derived**, renaming it
 /// changes its ID, which would naively surface as `Removed` + `Added`. After the
 /// naive pass, an unmatched `Removed`/`Added` pair that shares
 /// `(parent, role, ax_identifier)` and a close bbox is rewritten into a single
 /// `Changed { field: "label", before, after }` carrying the **new** id.
+///
+/// **D2 — not triggered for identifier-backed nodes.** A node whose id derives
+/// from a developer-assigned `ax_identifier` ([`crate::scene::synth_id`]) keeps
+/// that id across a label change, so it matches in pass 1 (common id) and emits
+/// `Changed{label}` directly — it never reaches this pass. The reconciliation is
+/// retained only for the label-derived (identifier-less, or AppKit `_NS:` auto)
+/// nodes that still rely on it; a `debug_assert!` below enforces the invariant.
 ///
 /// `freshness_ms` / `last_seen_ms` are **ignored** (always differ). Output order
 /// is deterministic: field changes (in `before` key order), then
@@ -55,6 +62,17 @@ pub fn diff(before: &SceneGraph, after: &SceneGraph) -> GraphDiff {
             Some(i) => {
                 added_consumed[i] = true;
                 let a = added[i];
+                // D2 invariant: reaching here means the id changed across the
+                // rename, so it cannot have been derived from a stable
+                // AXIdentifier (that would have kept the id fixed and matched in
+                // pass 1). Identifier-backed nodes never need reconciliation.
+                debug_assert!(
+                    a.ax_identifier
+                        .as_deref()
+                        .is_none_or(|id| !crate::scene::is_stable_identifier(id)),
+                    "identifier-backed node {} kept a label-unstable id; reconciliation should be unreachable",
+                    a.id
+                );
                 changes.push(changed(&a.id, "label", opt(&b.label), opt(&a.label)));
             }
             None => changes.push(NodeChange::Removed {
