@@ -1,4 +1,4 @@
-use std::{env, process};
+use std::{env, process, time::Instant};
 
 use visualops_core::{Perceptor, Target};
 use visualops_platform::MacosBackend;
@@ -28,9 +28,24 @@ fn run() -> visualops_core::Result<()> {
     }
 
     let backend = MacosBackend::new();
+    let started = Instant::now();
     let nodes = backend.capture(&Target { pid, window_id })?;
+    if env::var_os("VO_DUMP_TIMING").is_some() {
+        eprintln!(
+            "captured {} nodes in {:.3} ms",
+            count_nodes(&nodes),
+            started.elapsed().as_secs_f64() * 1_000.0
+        );
+    }
     println!("{}", serde_json::to_string_pretty(&nodes)?);
     Ok(())
+}
+
+fn count_nodes(nodes: &[visualops_core::RawAxNode]) -> usize {
+    nodes
+        .iter()
+        .map(|node| 1 + count_nodes(&node.children))
+        .sum()
 }
 
 fn usage(message: &str) -> visualops_core::VisualOpsError {

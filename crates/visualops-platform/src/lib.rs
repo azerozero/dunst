@@ -26,14 +26,15 @@ mod macos {
 
     use accessibility_sys::{
         error_string, kAXChildrenAttribute, kAXDescriptionAttribute, kAXEnabledAttribute,
-        kAXErrorSuccess, kAXFocusedAttribute, kAXHelpAttribute, kAXIdentifierAttribute,
-        kAXMainWindowAttribute, kAXMenuBarAttribute, kAXPositionAttribute, kAXPressAction,
-        kAXRaiseAction, kAXRoleAttribute, kAXShowMenuAction, kAXSizeAttribute,
-        kAXTitleAttribute, kAXValueAttribute, kAXValueTypeCGRect, kAXValueTypeCGPoint,
-        kAXValueTypeCGSize, kAXWindowsAttribute, AXError, AXIsProcessTrusted,
-        AXUIElementCopyActionNames, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
-        AXUIElementPerformAction, AXUIElementRef, AXUIElementSetAttributeValue, AXValueGetValue,
-        AXValueRef,
+        kAXErrorNoValue, kAXErrorSuccess, kAXFocusedAttribute, kAXHelpAttribute,
+        kAXIdentifierAttribute, kAXMainWindowAttribute, kAXMenuBarAttribute, kAXPositionAttribute,
+        kAXPressAction, kAXRaiseAction, kAXRoleAttribute, kAXShowMenuAction, kAXSizeAttribute,
+        kAXTitleAttribute, kAXValueAttribute, kAXValueTypeAXError, kAXValueTypeCGPoint,
+        kAXValueTypeCGRect, kAXValueTypeCGSize, kAXWindowsAttribute, AXError, AXIsProcessTrusted,
+        AXUIElementCopyActionNames, AXUIElementCopyAttributeValue,
+        AXUIElementCopyMultipleAttributeValues, AXUIElementCreateApplication,
+        AXUIElementPerformAction, AXUIElementRef, AXUIElementSetAttributeValue, AXValueGetType,
+        AXValueGetValue, AXValueRef,
     };
     use core_foundation::{
         array::CFArray,
@@ -42,16 +43,20 @@ mod macos {
         string::CFString,
     };
     use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
+    use core_foundation_sys::base::CFNullGetTypeID;
     use core_graphics::{
         event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton},
         event_source::{CGEventSource, CGEventSourceStateID},
         geometry::{CGPoint, CGRect, CGSize},
     };
-    use visualops_core::{Bbox, RawAxNode, Result, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef};
+    use visualops_core::{
+        Bbox, RawAxNode, Result, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
+    };
 
     const MAX_NODES: usize = 5_000;
     const MAX_DEPTH: usize = 40;
     const AX_FRAME_ATTRIBUTE: &str = "AXFrame";
+    const BATCH_ATTR_COUNT: usize = 12;
 
     struct AxElement(AXUIElementRef);
 
@@ -59,26 +64,9 @@ mod macos {
         fn as_ptr(&self) -> AXUIElementRef {
             self.0
         }
-
     }
 
     impl Drop for AxElement {
-        fn drop(&mut self) {
-            if !self.0.is_null() {
-                unsafe { CFRelease(self.0 as CFTypeRef) };
-            }
-        }
-    }
-
-    struct AxValue(AXValueRef);
-
-    impl AxValue {
-        fn as_ptr(&self) -> AXValueRef {
-            self.0
-        }
-    }
-
-    impl Drop for AxValue {
         fn drop(&mut self) {
             if !self.0.is_null() {
                 unsafe { CFRelease(self.0 as CFTypeRef) };
@@ -95,10 +83,11 @@ mod macos {
         ensure_trusted()?;
         let app = app_element(target.pid)?;
         let window = resolve_window(&app, target.window_id)?;
+        let walk_attrs = WalkAttributes::new();
         let mut state = WalkState::default();
-        let mut roots = vec![walk_element(&window, 0, &mut state)?];
+        let mut roots = vec![walk_element(&window, 0, &mut state, &walk_attrs)?];
         if let Some(menu_bar) = attr_ax_element(&app, kAXMenuBarAttribute) {
-            roots.push(walk_element(&menu_bar, 0, &mut state)?);
+            roots.push(walk_element(&menu_bar, 0, &mut state, &walk_attrs)?);
         }
         if state.capped {
             eprintln!(
@@ -137,7 +126,9 @@ mod macos {
         })?;
 
         match action {
-            SemanticAction::Click | SemanticAction::Pick => perform_ax_action(&element, kAXPressAction),
+            SemanticAction::Click | SemanticAction::Pick => {
+                perform_ax_action(&element, kAXPressAction)
+            }
             SemanticAction::OpenMenu => perform_ax_action(&element, kAXShowMenuAction),
             SemanticAction::Raise => perform_ax_action(&element, kAXRaiseAction),
             SemanticAction::Focus => set_bool_attr(&element, kAXFocusedAttribute, true),
@@ -225,13 +216,133 @@ mod macos {
         capped: bool,
     }
 
+    struct WalkAttributes {
+        request: CFArray<CFString>,
+    }
+
+    impl WalkAttributes {
+        fn new() -> Self {
+            Self {
+                request: CFArray::from_CFTypes(&[
+                    CFString::new(kAXRoleAttribute),
+                    CFString::new(kAXValueAttribute),
+                    CFString::new(kAXTitleAttribute),
+                    CFString::new(kAXDescriptionAttribute),
+                    CFString::new(kAXHelpAttribute),
+                    CFString::new(kAXIdentifierAttribute),
+                    CFString::new(AX_FRAME_ATTRIBUTE),
+                    CFString::new(kAXPositionAttribute),
+                    CFString::new(kAXSizeAttribute),
+                    CFString::new(kAXEnabledAttribute),
+                    CFString::new(kAXFocusedAttribute),
+                    CFString::new(kAXChildrenAttribute),
+                ]),
+            }
+        }
+    }
+
+    struct BatchValues {
+        values: CFArray,
+        len: usize,
+    }
+
+    impl BatchValues {
+        fn read(element: &AxElement, attrs: &WalkAttributes) -> Option<Self> {
+            let mut values: CFArrayRef = ptr::null();
+            let err = unsafe {
+                AXUIElementCopyMultipleAttributeValues(
+                    element.as_ptr(),
+                    attrs.request.as_concrete_TypeRef(),
+                    0,
+                    &mut values,
+                )
+            };
+            if err == kAXErrorSuccess && !values.is_null() {
+                let values = unsafe { CFArray::wrap_under_create_rule(values) };
+                let len = unsafe { CFArrayGetCount(values.as_concrete_TypeRef()) as usize };
+                Some(Self { values, len })
+            } else {
+                None
+            }
+        }
+
+        fn get(&self, index: usize) -> Option<CFTypeRef> {
+            if index >= BATCH_ATTR_COUNT || index >= self.len {
+                return None;
+            }
+            let value = unsafe {
+                CFArrayGetValueAtIndex(self.values.as_concrete_TypeRef(), index as isize)
+                    as CFTypeRef
+            };
+            normalize_batch_value(value)
+        }
+    }
+
     fn walk_element(
         element: &AxElement,
         depth: usize,
         state: &mut WalkState,
+        attrs: &WalkAttributes,
     ) -> Result<RawAxNode> {
-        // PERF/post-POC: batch hot attribute reads with AXUIElementCopyMultipleAttributeValues.
         state.count += 1;
+        let Some(batch) = BatchValues::read(element, attrs) else {
+            return walk_element_single(element, depth, state, attrs);
+        };
+        let ax_role = batch
+            .get(0)
+            .and_then(cf_string)
+            .unwrap_or_else(|| "AXUnknown".into());
+        let value = batch.get(1).and_then(cf_string);
+        let label = batch
+            .get(2)
+            .and_then(cf_label_string)
+            .or_else(|| batch.get(3).and_then(cf_label_string))
+            .or_else(|| {
+                if ax_role == "AXStaticText" {
+                    value.clone().filter(|s| !s.is_empty())
+                } else {
+                    None
+                }
+            });
+
+        let mut node = RawAxNode {
+            ax_role,
+            label,
+            help: batch.get(4).and_then(cf_string),
+            value,
+            ax_identifier: batch.get(5).and_then(cf_string),
+            ax_actions: action_names(element),
+            frame: frame_from_batch(&batch),
+            enabled: batch.get(9).and_then(cf_bool).unwrap_or(true),
+            focused: batch.get(10).and_then(cf_bool).unwrap_or(false),
+            children: Vec::new(),
+        };
+
+        if depth >= MAX_DEPTH || state.count >= MAX_NODES {
+            state.capped = true;
+            return Ok(node);
+        }
+
+        if let Some(children) = batch.get(11).and_then(cf_array) {
+            for child in ax_elements(&children) {
+                if state.count >= MAX_NODES {
+                    state.capped = true;
+                    break;
+                }
+                node.children
+                    .push(walk_element(&child, depth + 1, state, attrs)?);
+            }
+        }
+
+        Ok(node)
+    }
+
+    fn walk_element_single(
+        element: &AxElement,
+        depth: usize,
+        state: &mut WalkState,
+        attrs: &WalkAttributes,
+    ) -> Result<RawAxNode> {
         let ax_role = attr_string(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
         let value = attr_string(element, kAXValueAttribute);
         let label = attr_label_string(element, kAXTitleAttribute)
@@ -268,7 +379,8 @@ mod macos {
                     state.capped = true;
                     break;
                 }
-                node.children.push(walk_element(&child, depth + 1, state)?);
+                node.children
+                    .push(walk_element(&child, depth + 1, state, attrs)?);
             }
         }
 
@@ -330,7 +442,8 @@ mod macos {
 
     fn perform_ax_action(element: &AxElement, action: &str) -> Result<()> {
         let action = CFString::new(action);
-        let err = unsafe { AXUIElementPerformAction(element.as_ptr(), action.as_concrete_TypeRef()) };
+        let err =
+            unsafe { AXUIElementPerformAction(element.as_ptr(), action.as_concrete_TypeRef()) };
         ax_result(err, "perform AX action")
     }
 
@@ -373,7 +486,7 @@ mod macos {
             point,
             CGMouseButton::Left,
         )
-            .map_err(|err| VisualOpsError::Execution(format!("create hover CGEvent: {err:?}")))?;
+        .map_err(|err| VisualOpsError::Execution(format!("create hover CGEvent: {err:?}")))?;
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -404,7 +517,7 @@ mod macos {
 
     fn attr_string(element: &AxElement, attr: &str) -> Option<String> {
         let value = attr_value(element, attr)?;
-        value.downcast::<CFString>().map(|s| s.to_string())
+        cf_string(value.as_CFTypeRef())
     }
 
     fn attr_label_string(element: &AxElement, attr: &str) -> Option<String> {
@@ -413,17 +526,19 @@ mod macos {
 
     fn attr_bool(element: &AxElement, attr: &str) -> Option<bool> {
         let value = attr_value(element, attr)?;
-        value.downcast::<CFBoolean>().map(bool::from)
+        cf_bool(value.as_CFTypeRef())
     }
 
     fn attr_array(element: &AxElement, attr: &str) -> Option<CFArray> {
         let value = attr_value(element, attr)?;
-        value.downcast_into::<CFArray>()
+        cf_array(value.as_CFTypeRef())
     }
 
     fn attr_ax_element(element: &AxElement, attr: &str) -> Option<AxElement> {
         let value = attr_value(element, attr)?;
-        if unsafe { CFGetTypeID(value.as_CFTypeRef()) } == unsafe { accessibility_sys::AXUIElementGetTypeID() } {
+        if unsafe { CFGetTypeID(value.as_CFTypeRef()) }
+            == unsafe { accessibility_sys::AXUIElementGetTypeID() }
+        {
             let raw = value.as_CFTypeRef() as AXUIElementRef;
             mem::forget(value);
             Some(AxElement(raw))
@@ -500,12 +615,51 @@ mod macos {
         })
     }
 
+    fn frame_from_batch(values: &BatchValues) -> Option<Bbox> {
+        cgrect_from_value(values.get(6)?).or_else(|| {
+            let origin = cgpoint_from_value(values.get(7)?)?;
+            let size = cgsize_from_value(values.get(8)?)?;
+            Some(Bbox {
+                x: origin.x,
+                y: origin.y,
+                w: size.width,
+                h: size.height,
+            })
+        })
+    }
+
     fn attr_cgrect(element: &AxElement, attr: &str) -> Option<Bbox> {
-        let value = attr_ax_value(element, attr)?;
+        let value = attr_value(element, attr)?;
+        cgrect_from_value(value.as_CFTypeRef())
+    }
+
+    fn attr_cgpoint(element: &AxElement, attr: &str) -> Option<CGPoint> {
+        let value = attr_value(element, attr)?;
+        cgpoint_from_value(value.as_CFTypeRef())
+    }
+
+    fn attr_cgsize(element: &AxElement, attr: &str) -> Option<CGSize> {
+        let value = attr_value(element, attr)?;
+        cgsize_from_value(value.as_CFTypeRef())
+    }
+
+    fn cgrect_from_value(value: CFTypeRef) -> Option<Bbox> {
+        cgrect_from_ax_value(ax_value_ref(value)?)
+    }
+
+    fn cgpoint_from_value(value: CFTypeRef) -> Option<CGPoint> {
+        cgpoint_from_ax_value(ax_value_ref(value)?)
+    }
+
+    fn cgsize_from_value(value: CFTypeRef) -> Option<CGSize> {
+        cgsize_from_ax_value(ax_value_ref(value)?)
+    }
+
+    fn cgrect_from_ax_value(value: AXValueRef) -> Option<Bbox> {
         let mut rect = CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(0.0, 0.0));
         let ok = unsafe {
             AXValueGetValue(
-                value.as_ptr(),
+                value,
                 kAXValueTypeCGRect,
                 &mut rect as *mut CGRect as *mut c_void,
             )
@@ -518,12 +672,11 @@ mod macos {
         })
     }
 
-    fn attr_cgpoint(element: &AxElement, attr: &str) -> Option<CGPoint> {
-        let value = attr_ax_value(element, attr)?;
+    fn cgpoint_from_ax_value(value: AXValueRef) -> Option<CGPoint> {
         let mut point = CGPoint::new(0.0, 0.0);
         let ok = unsafe {
             AXValueGetValue(
-                value.as_ptr(),
+                value,
                 kAXValueTypeCGPoint,
                 &mut point as *mut CGPoint as *mut c_void,
             )
@@ -531,12 +684,11 @@ mod macos {
         ok.then_some(point)
     }
 
-    fn attr_cgsize(element: &AxElement, attr: &str) -> Option<CGSize> {
-        let value = attr_ax_value(element, attr)?;
+    fn cgsize_from_ax_value(value: AXValueRef) -> Option<CGSize> {
         let mut size = CGSize::new(0.0, 0.0);
         let ok = unsafe {
             AXValueGetValue(
-                value.as_ptr(),
+                value,
                 kAXValueTypeCGSize,
                 &mut size as *mut CGSize as *mut c_void,
             )
@@ -544,21 +696,79 @@ mod macos {
         ok.then_some(size)
     }
 
-    fn attr_ax_value(element: &AxElement, attr: &str) -> Option<AxValue> {
-        let value = attr_value(element, attr)?;
-        if unsafe { CFGetTypeID(value.as_CFTypeRef()) } == unsafe { accessibility_sys::AXValueGetTypeID() } {
-            let raw = value.as_CFTypeRef() as AXValueRef;
-            mem::forget(value);
-            Some(AxValue(raw))
-        } else {
-            None
+    fn cf_string(value: CFTypeRef) -> Option<String> {
+        let value = unsafe { CFType::wrap_under_get_rule(value) };
+        value.downcast::<CFString>().map(|s| s.to_string())
+    }
+
+    fn cf_label_string(value: CFTypeRef) -> Option<String> {
+        cf_string(value).filter(|s| !s.is_empty())
+    }
+
+    fn cf_bool(value: CFTypeRef) -> Option<bool> {
+        let value = unsafe { CFType::wrap_under_get_rule(value) };
+        value.downcast::<CFBoolean>().map(bool::from)
+    }
+
+    fn cf_array(value: CFTypeRef) -> Option<CFArray> {
+        let value = unsafe { CFType::wrap_under_get_rule(value) };
+        value.downcast_into::<CFArray>()
+    }
+
+    fn ax_value_ref(value: CFTypeRef) -> Option<AXValueRef> {
+        if unsafe { CFGetTypeID(value) } != unsafe { accessibility_sys::AXValueGetTypeID() } {
+            return None;
         }
+        let value = value as AXValueRef;
+        if unsafe { AXValueGetType(value) } == kAXValueTypeAXError {
+            let mut err = kAXErrorSuccess;
+            let ok = unsafe {
+                AXValueGetValue(
+                    value,
+                    kAXValueTypeAXError,
+                    &mut err as *mut AXError as *mut c_void,
+                )
+            };
+            if ok && err == kAXErrorNoValue {
+                return None;
+            }
+        }
+        Some(value)
+    }
+
+    fn normalize_batch_value(value: CFTypeRef) -> Option<CFTypeRef> {
+        if value.is_null() {
+            return None;
+        }
+        let type_id = unsafe { CFGetTypeID(value) };
+        if type_id == unsafe { CFNullGetTypeID() } {
+            return None;
+        }
+        if type_id == unsafe { accessibility_sys::AXValueGetTypeID() } {
+            let ax_value = value as AXValueRef;
+            if unsafe { AXValueGetType(ax_value) } == kAXValueTypeAXError {
+                let mut err = kAXErrorSuccess;
+                let ok = unsafe {
+                    AXValueGetValue(
+                        ax_value,
+                        kAXValueTypeAXError,
+                        &mut err as *mut AXError as *mut c_void,
+                    )
+                };
+                if ok && err == kAXErrorNoValue {
+                    return None;
+                }
+            }
+        }
+        Some(value)
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod macos {
-    use visualops_core::{RawAxNode, Result, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef};
+    use visualops_core::{
+        RawAxNode, Result, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
+    };
 
     pub fn capture(_target: &Target) -> Result<Vec<RawAxNode>> {
         Err(VisualOpsError::Perception(
