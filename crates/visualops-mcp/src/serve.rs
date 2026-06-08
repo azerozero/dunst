@@ -19,7 +19,7 @@ pub fn serve(mut engine: Engine) -> i32 {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    eprintln!("visualops-mcp: stdio MCP server ready ({} tools)", TOOL_COUNT);
+    eprintln!("visualops-mcp: stdio MCP server ready ({} tools)", tools_list().len());
 
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -63,8 +63,6 @@ fn initialize_result() -> Value {
     })
 }
 
-const TOOL_COUNT: usize = 11;
-
 fn tools_list() -> Vec<Value> {
     let str_arg = |name: &str, desc: &str| json!({ name: { "type": "string", "description": desc } });
     vec![
@@ -95,6 +93,14 @@ fn tools_list() -> Vec<Value> {
             "hover_probe",
             "Hover an element by id (reveals tooltips on a live target).",
             schema(json!({ "id": {"type":"string"} }), &["id"]),
+        ),
+        tool(
+            "drag_element",
+            "Drag a source element onto a target element by id (subject to risk gating). The drop point is the target's bbox centre.",
+            schema(
+                json!({ "source_id": {"type":"string"}, "target_id": {"type":"string"}, "reasoning": {"type":"string"} }),
+                &["source_id", "target_id"],
+            ),
         ),
         tool(
             "approve",
@@ -158,6 +164,13 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map(|e| serde_json::to_value(e).unwrap())
                 .map_err(|e| e.to_string()),
             None => Err("missing 'id'".into()),
+        },
+        "drag_element" => match (arg("source_id"), arg("target_id")) {
+            (Some(source_id), Some(target_id)) => engine
+                .drag_element(&source_id, &target_id, arg("reasoning").as_deref())
+                .map(|e| serde_json::to_value(e).unwrap())
+                .map_err(|e| e.to_string()),
+            _ => Err("missing 'source_id' or 'target_id'".into()),
         },
         "approve" => match arg("id") {
             Some(eid) => {

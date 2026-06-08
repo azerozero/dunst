@@ -145,6 +145,31 @@ impl Engine {
         self.act(id, SemanticAction::Hover, None, Some("hover probe"))
     }
 
+    /// Drag `source_id` onto `target_id`. The drop point handed to the executor
+    /// is the **target** node's bbox centre in screen coordinates, formatted as
+    /// `"x,y"` (the frozen WP-F drag mini-contract). This is a thin wrapper over
+    /// the gated [`act`] path — `act` checks the *source* exposes `Drag`, gates
+    /// on risk, runs the executor, re-perceives, diffs and audits.
+    pub fn drag_element(
+        &mut self,
+        source_id: &str,
+        target_id: &str,
+        reasoning: Option<&str>,
+    ) -> visualops_core::Result<AuditEntry> {
+        let target = self
+            .scene_graph()
+            .get(target_id)
+            .ok_or_else(|| VisualOpsError::ElementNotFound(target_id.into()))?;
+        let bbox = target.bbox.ok_or_else(|| {
+            VisualOpsError::Execution(format!(
+                "target {target_id} has no bbox; a drop needs a concrete point"
+            ))
+        })?;
+        let x = bbox.x + bbox.w / 2.0;
+        let y = bbox.y + bbox.h / 2.0;
+        self.act(source_id, SemanticAction::Drag, Some(&format!("{x},{y}")), reasoning)
+    }
+
     /// The gated action path. Always returns an [`AuditEntry`] describing the
     /// outcome (also appended to the trace); only structural problems
     /// (unknown id / unavailable action) are `Err`.
@@ -231,7 +256,7 @@ pub fn has_high_risk(g: &AffordanceGraph) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use visualops_core::mock::MockPerceptor;
 
     /// Executor that counts invocations, so we can assert a gated action never
@@ -256,6 +281,41 @@ mod tests {
         let exec = Box::new(CountingExecutor(calls.clone()));
         let eng = Engine::new(perceptor, exec, Target { pid: 1363, window_id: 105 }).unwrap();
         (eng, calls)
+    }
+
+    type RecordedCall = (String, SemanticAction, Option<String>);
+
+    /// Executor that records every `(id, action, argument)` it receives, so we
+    /// can assert exactly what the engine resolved an action to.
+    struct RecordingExecutor(Arc<Mutex<Vec<RecordedCall>>>);
+    impl ActionExecutor for RecordingExecutor {
+        fn perform(
+            &self,
+            _t: &Target,
+            n: &SceneNode,
+            a: SemanticAction,
+            arg: Option<&str>,
+        ) -> visualops_core::Result<()> {
+            self.0.lock().unwrap().push((n.id.clone(), a, arg.map(str::to_owned)));
+            Ok(())
+        }
+    }
+
+    fn engine_with_recorder() -> (Engine, Arc<Mutex<Vec<RecordedCall>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let perceptor = Box::new(MockPerceptor::notes_fixture().unwrap());
+        let exec = Box::new(RecordingExecutor(calls.clone()));
+        let eng = Engine::new(perceptor, exec, Target { pid: 1363, window_id: 105 }).unwrap();
+        (eng, calls)
+    }
+
+    /// An id from the affordance graph that exposes `Drag` and is *not* risk
+    /// gated, so the executor actually runs (rows/cells in the notes fixture).
+    fn non_gated_drag_source(eng: &Engine) -> String {
+        eng.query_affordances(SemanticAction::Drag)
+            .into_iter()
+            .find(|id| !eng.affordance_graph().affordances[id].risk.requires_approval)
+            .expect("a non-gated draggable source in the notes fixture")
     }
 
     fn id_for(eng: &Engine, query: &str) -> String {
@@ -313,5 +373,60 @@ mod tests {
         let _ = eng.click_element(&id_for(&eng, "Supprimer"), None); // gated
         let _ = eng.click_element(&id_for(&eng, "Nouvelle note"), None); // ok
         assert_eq!(eng.trace().len(), 2);
+    }
+
+    #[test]
+    fn drag_records_target_bbox_centre() {
+        let (mut eng, calls) = engine_with_recorder();
+        let source = non_gated_drag_source(&eng);
+        let target = id_for(&eng, "Nouvelle note");
+
+        // Expected drop point = centre of the *target* node's bbox, formatted
+        // exactly as the engine formats it.
+        let bbox = eng.scene_graph().get(&target).unwrap().bbox.unwrap();
+        let expected = format!("{},{}", bbox.x + bbox.w / 2.0, bbox.y + bbox.h / 2.0);
+
+        let entry = eng.drag_element(&source, &target, Some("reorder")).unwrap();
+
+        // The executor saw exactly (source, Drag, Some("x,y")).
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0],
+            (source.clone(), SemanticAction::Drag, Some(expected))
+        );
+
+        // The audit entry describes the drag on the source and is in the trace.
+        assert_eq!(entry.action, SemanticAction::Drag);
+        assert_eq!(entry.target_id, source);
+        assert_eq!(entry.result, ActionResult::Success);
+        assert_eq!(eng.trace().len(), 1);
+        assert_eq!(eng.trace()[0].action, SemanticAction::Drag);
+    }
+
+    #[test]
+    fn drag_unknown_target_is_an_error() {
+        let (mut eng, calls) = engine_with_recorder();
+        let source = non_gated_drag_source(&eng);
+
+        let err = eng.drag_element(&source, "no_such_target", None).unwrap_err();
+        assert!(matches!(err, VisualOpsError::ElementNotFound(_)));
+
+        // No executor call, no audit entry: the failure is structural, pre-act.
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(eng.trace().len(), 0);
+    }
+
+    #[test]
+    fn drag_source_without_affordance_is_unavailable() {
+        let (mut eng, calls) = engine_with_recorder();
+        // A toolbar button exposes Click, never Drag; the target has a bbox.
+        let source = id_for(&eng, "Nouvelle note");
+        let target = id_for(&eng, "Nouvelle note");
+
+        let err = eng.drag_element(&source, &target, None).unwrap_err();
+        assert!(matches!(err, VisualOpsError::ActionUnavailable { .. }));
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(eng.trace().len(), 0);
     }
 }
