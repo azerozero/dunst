@@ -22,19 +22,27 @@ impl MacosBackend {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::{ffi::c_void, mem, ptr};
+    use std::{
+        cell::RefCell,
+        collections::HashMap,
+        env,
+        ffi::{c_uchar, c_void},
+        mem, ptr, thread,
+        time::{Duration, Instant},
+    };
 
     use accessibility_sys::{
         error_string, kAXChildrenAttribute, kAXDescriptionAttribute, kAXEnabledAttribute,
-        kAXErrorNoValue, kAXErrorSuccess, kAXFocusedAttribute, kAXHelpAttribute,
-        kAXIdentifierAttribute, kAXMainWindowAttribute, kAXMenuBarAttribute, kAXPositionAttribute,
-        kAXPressAction, kAXRaiseAction, kAXRoleAttribute, kAXShowMenuAction, kAXSizeAttribute,
-        kAXTitleAttribute, kAXValueAttribute, kAXValueTypeAXError, kAXValueTypeCGPoint,
-        kAXValueTypeCGRect, kAXValueTypeCGSize, kAXWindowsAttribute, AXError, AXIsProcessTrusted,
+        kAXErrorCannotComplete, kAXErrorInvalidUIElement, kAXErrorNoValue, kAXErrorSuccess,
+        kAXFocusedAttribute, kAXHelpAttribute, kAXIdentifierAttribute, kAXMainWindowAttribute,
+        kAXMenuBarAttribute, kAXPositionAttribute, kAXPressAction, kAXRaiseAction,
+        kAXRoleAttribute, kAXShowMenuAction, kAXSizeAttribute, kAXTitleAttribute,
+        kAXValueAttribute, kAXValueTypeAXError, kAXValueTypeCGPoint, kAXValueTypeCGRect,
+        kAXValueTypeCGSize, kAXWindowsAttribute, AXError, AXIsProcessTrusted,
         AXUIElementCopyActionNames, AXUIElementCopyAttributeValue,
         AXUIElementCopyMultipleAttributeValues, AXUIElementCreateApplication,
-        AXUIElementPerformAction, AXUIElementRef, AXUIElementSetAttributeValue, AXValueGetType,
-        AXValueGetValue, AXValueRef,
+        AXUIElementIsAttributeSettable, AXUIElementPerformAction, AXUIElementRef,
+        AXUIElementSetAttributeValue, AXValueGetType, AXValueGetValue, AXValueRef,
     };
     use core_foundation::{
         array::CFArray,
@@ -57,12 +65,53 @@ mod macos {
     const MAX_DEPTH: usize = 40;
     const AX_FRAME_ATTRIBUTE: &str = "AXFrame";
     const BATCH_ATTR_COUNT: usize = 12;
+    const DRAG_STEPS: usize = 8;
+    const DRAG_STEP_DELAY: Duration = Duration::from_millis(8);
+
+    thread_local! {
+        static AX_CACHE: RefCell<HashMap<ElementKey, AxElement>> = RefCell::new(HashMap::new());
+    }
+
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    struct ElementKey {
+        ax_identifier: Option<String>,
+        ax_role: String,
+        label: Option<String>,
+        bbox: Option<(i64, i64, i64, i64)>,
+    }
+
+    impl ElementKey {
+        fn from_raw(node: &RawAxNode) -> Self {
+            Self {
+                ax_identifier: node.ax_identifier.clone(),
+                ax_role: node.ax_role.clone(),
+                label: node.label.clone(),
+                bbox: node.frame.and_then(round_bbox),
+            }
+        }
+
+        fn from_scene(node: &SceneNode) -> Self {
+            Self {
+                ax_identifier: node.ax_identifier.clone(),
+                ax_role: node.ax_role.clone(),
+                label: node.label.clone(),
+                bbox: node.bbox.and_then(round_bbox),
+            }
+        }
+    }
 
     struct AxElement(AXUIElementRef);
 
     impl AxElement {
         fn as_ptr(&self) -> AXUIElementRef {
             self.0
+        }
+
+        fn retain_clone(&self) -> Self {
+            unsafe {
+                core_foundation_sys::base::CFRetain(self.0 as CFTypeRef);
+            }
+            Self(self.0)
         }
     }
 
@@ -81,6 +130,7 @@ mod macos {
 
     pub fn capture(target: &Target) -> Result<Vec<RawAxNode>> {
         ensure_trusted()?;
+        clear_cache();
         let app = app_element(target.pid)?;
         let window = resolve_window(&app, target.window_id)?;
         let walk_attrs = WalkAttributes::new();
@@ -116,6 +166,45 @@ mod macos {
         argument: Option<&str>,
     ) -> Result<()> {
         ensure_trusted()?;
+        let started = Instant::now();
+        let key = ElementKey::from_scene(node);
+        let mut path = "direct";
+        let result = perform_with_cache(target, node, action, argument, &key, &mut path);
+        if env::var_os("VO_ACTION_TIMING").is_some() {
+            eprintln!(
+                "performed {action:?} via {path} in {:.3} ms",
+                started.elapsed().as_secs_f64() * 1_000.0
+            );
+        }
+        result
+    }
+
+    fn perform_with_cache(
+        target: &Target,
+        node: &SceneNode,
+        action: SemanticAction,
+        argument: Option<&str>,
+        key: &ElementKey,
+        path: &mut &'static str,
+    ) -> Result<()> {
+        if matches!(action, SemanticAction::Hover | SemanticAction::Drag) {
+            return perform_on_element(None, node, action, argument).map_err(ActionFailure::into);
+        }
+
+        if env::var_os("VO_ACTION_DISABLE_CACHE").is_none() {
+            if let Some(element) = cached_element(key) {
+                *path = "cached";
+                match perform_on_element(Some(&element), node, action, argument) {
+                    Ok(()) => return Ok(()),
+                    Err(err) if err.is_stale() => {
+                        remove_cached_element(key);
+                    }
+                    Err(err) => return Err(err.into()),
+                }
+            }
+        }
+
+        *path = "fallback";
         let app = app_element(target.pid)?;
         let window = resolve_window(&app, target.window_id)?;
         let element = find_element(window, node)?.ok_or_else(|| {
@@ -124,23 +213,39 @@ mod macos {
                 node.ax_role, node.label, node.ax_identifier
             ))
         })?;
+        perform_on_element(Some(&element), node, action, argument).map_err(ActionFailure::into)
+    }
 
+    fn perform_on_element(
+        element: Option<&AxElement>,
+        node: &SceneNode,
+        action: SemanticAction,
+        argument: Option<&str>,
+    ) -> std::result::Result<(), ActionFailure> {
         match action {
             SemanticAction::Click | SemanticAction::Pick => {
-                perform_ax_action(&element, kAXPressAction)
+                perform_ax_action(element.expect("AX element required"), kAXPressAction)
             }
-            SemanticAction::OpenMenu => perform_ax_action(&element, kAXShowMenuAction),
-            SemanticAction::Raise => perform_ax_action(&element, kAXRaiseAction),
-            SemanticAction::Focus => set_bool_attr(&element, kAXFocusedAttribute, true),
+            SemanticAction::OpenMenu => {
+                perform_ax_action(element.expect("AX element required"), kAXShowMenuAction)
+            }
+            SemanticAction::Raise => {
+                perform_ax_action(element.expect("AX element required"), kAXRaiseAction)
+            }
+            SemanticAction::Focus => set_bool_attr(
+                element.expect("AX element required"),
+                kAXFocusedAttribute,
+                true,
+            ),
             SemanticAction::Type => {
                 let text = argument.ok_or_else(|| {
-                    VisualOpsError::Execution("type action requires an argument".into())
+                    ActionFailure::Execution("type action requires an argument".into())
                 })?;
-                // PERF/post-POC: add CGEvent text fallback after the AX set-value baseline.
-                set_string_attr(&element, kAXValueAttribute, text)
+                type_text(element.expect("AX element required"), text)
             }
             SemanticAction::Hover => hover(node),
-            other => Err(VisualOpsError::Execution(format!(
+            SemanticAction::Drag => drag(node, argument),
+            other => Err(ActionFailure::Execution(format!(
                 "semantic action {other:?} is not supported by macOS AX backend"
             ))),
         }
@@ -208,6 +313,19 @@ mod macos {
         let mut window_id = 0;
         let err = unsafe { _AXUIElementGetWindow(element.as_ptr(), &mut window_id) };
         (err == kAXErrorSuccess).then_some(window_id)
+    }
+
+    fn round_bbox(bbox: Bbox) -> Option<(i64, i64, i64, i64)> {
+        if bbox.x.is_finite() && bbox.y.is_finite() && bbox.w.is_finite() && bbox.h.is_finite() {
+            Some((
+                bbox.x.round() as i64,
+                bbox.y.round() as i64,
+                bbox.w.round() as i64,
+                bbox.h.round() as i64,
+            ))
+        } else {
+            None
+        }
     }
 
     #[derive(Default)]
@@ -317,6 +435,7 @@ mod macos {
             focused: batch.get(10).and_then(cf_bool).unwrap_or(false),
             children: Vec::new(),
         };
+        cache_element(&node, element);
 
         if depth >= MAX_DEPTH || state.count >= MAX_NODES {
             state.capped = true;
@@ -367,6 +486,7 @@ mod macos {
             focused: attr_bool(element, kAXFocusedAttribute).unwrap_or(false),
             children: Vec::new(),
         };
+        cache_element(&node, element);
 
         if depth >= MAX_DEPTH || state.count >= MAX_NODES {
             state.capped = true;
@@ -415,91 +535,266 @@ mod macos {
     }
 
     fn element_matches(element: &AxElement, wanted: &SceneNode) -> bool {
-        let role_matches = attr_string(element, kAXRoleAttribute)
-            .map(|role| role == wanted.ax_role)
-            .unwrap_or(false);
-        if !role_matches {
-            return false;
-        }
+        element_key(element)
+            .map(|key| key == ElementKey::from_scene(wanted))
+            .unwrap_or(false)
+    }
 
-        let identifier = attr_string(element, kAXIdentifierAttribute);
-        if wanted.ax_identifier.is_some() && identifier != wanted.ax_identifier {
-            return false;
-        }
+    fn clear_cache() {
+        AX_CACHE.with(|cache| cache.borrow_mut().clear());
+    }
 
+    fn cache_element(node: &RawAxNode, element: &AxElement) {
+        AX_CACHE.with(|cache| {
+            cache
+                .borrow_mut()
+                .insert(ElementKey::from_raw(node), element.retain_clone());
+        });
+    }
+
+    fn cached_element(key: &ElementKey) -> Option<AxElement> {
+        AX_CACHE.with(|cache| cache.borrow().get(key).map(AxElement::retain_clone))
+    }
+
+    fn remove_cached_element(key: &ElementKey) {
+        AX_CACHE.with(|cache| {
+            cache.borrow_mut().remove(key);
+        });
+    }
+
+    fn element_key(element: &AxElement) -> Option<ElementKey> {
+        let ax_role = attr_string(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
+        let value = attr_string(element, kAXValueAttribute);
         let label = attr_label_string(element, kAXTitleAttribute)
             .or_else(|| attr_label_string(element, kAXDescriptionAttribute))
             .or_else(|| {
-                if wanted.ax_role == "AXStaticText" {
-                    attr_string(element, kAXValueAttribute).filter(|s| !s.is_empty())
+                if ax_role == "AXStaticText" {
+                    value.filter(|s| !s.is_empty())
                 } else {
                     None
                 }
             });
-
-        wanted.label.is_none() || label == wanted.label
+        Some(ElementKey {
+            ax_identifier: attr_string(element, kAXIdentifierAttribute),
+            ax_role,
+            label,
+            bbox: frame(element).and_then(round_bbox),
+        })
     }
 
-    fn perform_ax_action(element: &AxElement, action: &str) -> Result<()> {
+    enum ActionFailure {
+        Ax {
+            operation: &'static str,
+            err: AXError,
+        },
+        Execution(String),
+    }
+
+    impl ActionFailure {
+        fn is_stale(&self) -> bool {
+            matches!(
+                self,
+                Self::Ax { err, .. }
+                    if *err == kAXErrorInvalidUIElement || *err == kAXErrorCannotComplete
+            )
+        }
+    }
+
+    impl From<ActionFailure> for VisualOpsError {
+        fn from(value: ActionFailure) -> Self {
+            match value {
+                ActionFailure::Ax { operation, err } => VisualOpsError::Execution(format!(
+                    "{operation} failed: {} ({err})",
+                    error_string(err)
+                )),
+                ActionFailure::Execution(message) => VisualOpsError::Execution(message),
+            }
+        }
+    }
+
+    fn perform_ax_action(
+        element: &AxElement,
+        action: &str,
+    ) -> std::result::Result<(), ActionFailure> {
         let action = CFString::new(action);
         let err =
             unsafe { AXUIElementPerformAction(element.as_ptr(), action.as_concrete_TypeRef()) };
-        ax_result(err, "perform AX action")
+        ax_action_result(err, "perform AX action")
     }
 
-    fn set_bool_attr(element: &AxElement, attr: &str, value: bool) -> Result<()> {
+    fn set_bool_attr(
+        element: &AxElement,
+        attr: &str,
+        value: bool,
+    ) -> std::result::Result<(), ActionFailure> {
+        ax_action_result(
+            set_bool_attr_raw(element, attr, value),
+            "set AX bool attribute",
+        )
+    }
+
+    fn set_bool_attr_raw(element: &AxElement, attr: &str, value: bool) -> AXError {
         let attr = CFString::new(attr);
         let value = CFBoolean::from(value);
-        let err = unsafe {
+        unsafe {
             AXUIElementSetAttributeValue(
                 element.as_ptr(),
                 attr.as_concrete_TypeRef(),
                 value.as_CFTypeRef(),
             )
-        };
-        ax_result(err, "set AX bool attribute")
+        }
     }
 
-    fn set_string_attr(element: &AxElement, attr: &str, value: &str) -> Result<()> {
+    fn set_string_attr_raw(element: &AxElement, attr: &str, value: &str) -> AXError {
         let attr = CFString::new(attr);
         let value = CFString::new(value);
-        let err = unsafe {
+        unsafe {
             AXUIElementSetAttributeValue(
                 element.as_ptr(),
                 attr.as_concrete_TypeRef(),
                 value.as_CFTypeRef(),
             )
-        };
-        ax_result(err, "set AX string attribute")
+        }
     }
 
-    fn hover(node: &SceneNode) -> Result<()> {
+    fn ax_action_result(
+        err: AXError,
+        operation: &'static str,
+    ) -> std::result::Result<(), ActionFailure> {
+        if err == kAXErrorSuccess {
+            Ok(())
+        } else {
+            Err(ActionFailure::Ax { operation, err })
+        }
+    }
+
+    fn type_text(element: &AxElement, text: &str) -> std::result::Result<(), ActionFailure> {
+        if attr_settable(element, kAXValueAttribute) {
+            let err = set_string_attr_raw(element, kAXValueAttribute, text);
+            if err == kAXErrorSuccess {
+                match attr_string(element, kAXValueAttribute) {
+                    Some(value) if value != text => {}
+                    _ => return Ok(()),
+                }
+            } else if is_stale_ax_error(err) {
+                return Err(ActionFailure::Ax {
+                    operation: "set AX string attribute",
+                    err,
+                });
+            }
+        }
+
+        // AX set-value replaces text; synthetic Unicode keystrokes append to the focused editor.
+        set_bool_attr(element, kAXFocusedAttribute, true)?;
+        post_unicode_text(text)
+    }
+
+    fn attr_settable(element: &AxElement, attr: &str) -> bool {
+        let attr = CFString::new(attr);
+        let mut settable: c_uchar = 0;
+        let err = unsafe {
+            AXUIElementIsAttributeSettable(
+                element.as_ptr(),
+                attr.as_concrete_TypeRef(),
+                &mut settable,
+            )
+        };
+        err == kAXErrorSuccess && settable != 0
+    }
+
+    fn post_unicode_text(text: &str) -> std::result::Result<(), ActionFailure> {
+        let source = event_source("create keyboard CGEventSource")?;
+        for ch in text.chars() {
+            let s = ch.to_string();
+            let down = CGEvent::new_keyboard_event(source.clone(), 0, true).map_err(|err| {
+                ActionFailure::Execution(format!("create key down CGEvent: {err:?}"))
+            })?;
+            down.set_string(&s);
+            down.post(CGEventTapLocation::HID);
+
+            let up = CGEvent::new_keyboard_event(source.clone(), 0, false).map_err(|err| {
+                ActionFailure::Execution(format!("create key up CGEvent: {err:?}"))
+            })?;
+            up.set_string(&s);
+            up.post(CGEventTapLocation::HID);
+        }
+        Ok(())
+    }
+
+    fn hover(node: &SceneNode) -> std::result::Result<(), ActionFailure> {
         let Some(bbox) = node.bbox else {
             return Ok(());
         };
-        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
-            .map_err(|err| VisualOpsError::Execution(format!("create CGEventSource: {err:?}")))?;
+        let source = event_source("create hover CGEventSource")?;
         let point = CGPoint::new(bbox.x + bbox.w / 2.0, bbox.y + bbox.h / 2.0);
-        let event = CGEvent::new_mouse_event(
-            source,
-            CGEventType::MouseMoved,
-            point,
-            CGMouseButton::Left,
-        )
-        .map_err(|err| VisualOpsError::Execution(format!("create hover CGEvent: {err:?}")))?;
+        let event =
+            CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
+                .map_err(|err| ActionFailure::Execution(format!("create hover CGEvent: {err:?}")))?;
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
 
-    fn ax_result(err: AXError, operation: &str) -> Result<()> {
-        if err == kAXErrorSuccess {
-            Ok(())
-        } else {
-            Err(VisualOpsError::Execution(format!(
-                "{operation} failed: {} ({err})",
-                error_string(err)
-            )))
+    fn drag(node: &SceneNode, argument: Option<&str>) -> std::result::Result<(), ActionFailure> {
+        let start_bbox = node
+            .bbox
+            .ok_or_else(|| ActionFailure::Execution("Drag requires a source bbox".into()))?;
+        let end = parse_drop_point(argument)?;
+        let start = CGPoint::new(
+            start_bbox.x + start_bbox.w / 2.0,
+            start_bbox.y + start_bbox.h / 2.0,
+        );
+        let source = event_source("create drag CGEventSource")?;
+
+        // Synthetic drag moves the real cursor; this is inherent to CGEvent mouse input.
+        post_mouse(source.clone(), CGEventType::LeftMouseDown, start)?;
+        thread::sleep(DRAG_STEP_DELAY);
+        for step in 1..=DRAG_STEPS {
+            let t = step as f64 / DRAG_STEPS as f64;
+            let point = CGPoint::new(
+                start.x + (end.x - start.x) * t,
+                start.y + (end.y - start.y) * t,
+            );
+            post_mouse(source.clone(), CGEventType::LeftMouseDragged, point)?;
+            thread::sleep(DRAG_STEP_DELAY);
         }
+        post_mouse(source, CGEventType::LeftMouseUp, end)
+    }
+
+    fn parse_drop_point(argument: Option<&str>) -> std::result::Result<CGPoint, ActionFailure> {
+        let argument = argument
+            .ok_or_else(|| ActionFailure::Execution("Drag requires an \"x,y\" argument".into()))?;
+        let (x, y) = argument
+            .split_once(',')
+            .ok_or_else(|| ActionFailure::Execution("Drag requires an \"x,y\" argument".into()))?;
+        let x = x
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| ActionFailure::Execution("Drag requires an \"x,y\" argument".into()))?;
+        let y = y
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| ActionFailure::Execution("Drag requires an \"x,y\" argument".into()))?;
+        Ok(CGPoint::new(x, y))
+    }
+
+    fn post_mouse(
+        source: CGEventSource,
+        event_type: CGEventType,
+        point: CGPoint,
+    ) -> std::result::Result<(), ActionFailure> {
+        let event = CGEvent::new_mouse_event(source, event_type, point, CGMouseButton::Left)
+            .map_err(|err| ActionFailure::Execution(format!("create mouse CGEvent: {err:?}")))?;
+        event.post(CGEventTapLocation::HID);
+        Ok(())
+    }
+
+    fn event_source(operation: &'static str) -> std::result::Result<CGEventSource, ActionFailure> {
+        CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .map_err(|err| ActionFailure::Execution(format!("{operation}: {err:?}")))
+    }
+
+    fn is_stale_ax_error(err: AXError) -> bool {
+        err == kAXErrorInvalidUIElement || err == kAXErrorCannotComplete
     }
 
     fn attr_value(element: &AxElement, attr: &str) -> Option<CFType> {
