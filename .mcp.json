@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "visualops": {
+      "command": "/Users/ludwig/workspace/viewcontrolermcp/scripts/mcp-notes.sh",
+      "args": []
+    }
+  }
+}
