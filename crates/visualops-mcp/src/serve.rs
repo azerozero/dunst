@@ -117,7 +117,14 @@ fn tools_list() -> Vec<Value> {
     ]
 }
 
-fn tool(name: &str, description: &str, input_schema: Value) -> Value {
+fn tool(name: &str, description: &str, mut input_schema: Value) -> Value {
+    // MCP clients validate each `inputSchema` as a JSON Schema object (Claude Code
+    // rejects the whole `tools/list` otherwise: "expected object"). A no-arg tool
+    // passing `{}` must still declare `"type": "object"`; normalise it here so the
+    // call sites stay terse and future no-arg tools can't reintroduce the bug.
+    if input_schema.get("type").is_none() {
+        input_schema = json!({ "type": "object", "properties": {} });
+    }
     json!({ "name": name, "description": description, "inputSchema": input_schema })
 }
 
