@@ -7,13 +7,40 @@
 //! This struct is transport-independent: the MCP server (`serve`) and the CLI
 //! `demo` both drive the same methods.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+use serde_json::{json, Value};
 use visualops_core::{
-    ActionExecutor, ActionResult, AffordanceGraph, AuditEntry, GraphDiff, Perceptor, RiskLevel,
-    SceneGraph, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
+    ActionExecutor, ActionResult, AffordanceGraph, AuditEntry, Bbox, GraphDiff, Perceptor,
+    RiskLevel, Role, SceneGraph, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
 };
 use visualops_graph::{audit, derive_affordances, scene, RiskEngine};
+
+/// Projection requested for [`Engine::scene_graph_view`] (WP-J / J1). The MCP
+/// server defaults to [`Compact`](SceneView::Compact) so a real client can take
+/// the graph inline; [`Full`](SceneView::Full) is the unchanged escape hatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SceneView {
+    /// Per-node `{id, role, label, value?, bbox, enabled, focused, parent,
+    /// n_children}` — the heavy/derivable AX fields are dropped (~5–10× lighter).
+    Compact,
+    /// Today's behaviour: the full [`SceneGraph`], every field.
+    Full,
+    /// No per-node list — `{n_nodes, roots, counts_by_role, n_actionable, window}`.
+    Summary,
+}
+
+impl SceneView {
+    /// Parse the MCP `view` argument; `None` for an unrecognised value.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "compact" => Some(Self::Compact),
+            "full" => Some(Self::Full),
+            "summary" => Some(Self::Summary),
+            _ => None,
+        }
+    }
+}
 
 pub struct Engine {
     perceptor: Box<dyn Perceptor>,
@@ -88,14 +115,126 @@ impl Engine {
             .collect()
     }
 
-    /// IDs whose affordance offers `action`.
+    /// IDs whose affordance offers `action`. WP-J/J2: latent (off-screen /
+    /// zero-bbox) nodes — e.g. collapsed-menu items — are omitted by default so
+    /// the agent isn't handed phantom targets. The gated action path is
+    /// unaffected: it resolves ids against the graph, not this listing.
+    ///
+    /// Ergonomic default over [`query_affordances_filtered`](Self::query_affordances_filtered);
+    /// the MCP server calls the latter directly, so in the binary this wrapper is
+    /// exercised only by callers/tests that want the filtered listing.
+    #[allow(dead_code)]
     pub fn query_affordances(&self, action: SemanticAction) -> Vec<String> {
+        self.query_affordances_filtered(action, false)
+    }
+
+    /// As [`query_affordances`](Self::query_affordances), but `include_latent`
+    /// returns every id exposing `action`, latent ones included.
+    pub fn query_affordances_filtered(
+        &self,
+        action: SemanticAction,
+        include_latent: bool,
+    ) -> Vec<String> {
+        let window_rect = self.window_rect();
+        let g = self.scene_graph();
         self.affordance_graph()
             .affordances
             .values()
             .filter(|a| a.actions.contains(&action))
+            .filter(|a| {
+                include_latent
+                    || g.get(&a.id).map(|n| node_on_screen(n, window_rect)).unwrap_or(false)
+            })
             .map(|a| a.id.clone())
             .collect()
+    }
+
+    /// WP-J/J2: the affordance graph as JSON, latent nodes omitted unless
+    /// `include_latent`. Shape matches [`AffordanceGraph`] (`{ "affordances": … }`).
+    pub fn affordances_view(&self, include_latent: bool) -> Value {
+        let ag = self.affordance_graph();
+        if include_latent {
+            return serde_json::to_value(ag).unwrap_or(Value::Null);
+        }
+        let window_rect = self.window_rect();
+        let g = self.scene_graph();
+        let mut map = serde_json::Map::new();
+        for (id, aff) in &ag.affordances {
+            if g.get(id).map(|n| node_on_screen(n, window_rect)).unwrap_or(false) {
+                map.insert(id.clone(), serde_json::to_value(aff).unwrap_or(Value::Null));
+            }
+        }
+        json!({ "affordances": Value::Object(map) })
+    }
+
+    /// The window's on-screen rect, read from the `Window` node's bbox (the
+    /// scene graph's [`WindowRef`] carries no geometry). `None` when no window
+    /// node has a bbox — then [`node_on_screen`]'s off-window test is skipped.
+    fn window_rect(&self) -> Option<Bbox> {
+        self.scene_graph()
+            .nodes
+            .values()
+            .find(|n| n.role == Role::Window)
+            .and_then(|n| n.bbox)
+    }
+
+    /// WP-J/J1: the scene graph under a projection `view`, optionally limited to
+    /// actionable nodes. `Full` without `actionable_only` is byte-for-byte the
+    /// old `get_scene_graph` payload (the escape hatch).
+    pub fn scene_graph_view(&self, view: SceneView, actionable_only: bool) -> Value {
+        let g = self.scene_graph();
+        let window_rect = self.window_rect();
+        match view {
+            SceneView::Full if !actionable_only => serde_json::to_value(g).unwrap_or(Value::Null),
+            SceneView::Full => {
+                let mut map = serde_json::Map::new();
+                for (id, n) in &g.nodes {
+                    if node_actionable(n, window_rect) {
+                        map.insert(id.clone(), serde_json::to_value(n).unwrap_or(Value::Null));
+                    }
+                }
+                json!({
+                    "captured_at_ms": g.captured_at_ms,
+                    "window": g.window,
+                    "roots": g.roots,
+                    "nodes": Value::Object(map),
+                })
+            }
+            SceneView::Compact => {
+                let mut map = serde_json::Map::new();
+                for (id, n) in &g.nodes {
+                    if actionable_only && !node_actionable(n, window_rect) {
+                        continue;
+                    }
+                    map.insert(id.clone(), compact_node(n));
+                }
+                json!({
+                    "view": "compact",
+                    "captured_at_ms": g.captured_at_ms,
+                    "window": g.window,
+                    "roots": g.roots,
+                    "nodes": Value::Object(map),
+                })
+            }
+            SceneView::Summary => {
+                let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+                let mut n_actionable = 0usize;
+                for n in g.nodes.values() {
+                    *counts.entry(role_key(n.role)).or_insert(0) += 1;
+                    if node_actionable(n, window_rect) {
+                        n_actionable += 1;
+                    }
+                }
+                json!({
+                    "view": "summary",
+                    "n_nodes": g.nodes.len(),
+                    "roots": g.roots,
+                    "counts_by_role": counts,
+                    "n_actionable": n_actionable,
+                    "window": g.window,
+                })
+            }
+        }
     }
 
     // --- verification -------------------------------------------------------
@@ -244,6 +383,69 @@ impl Engine {
     pub fn export_trace(&self) -> visualops_core::Result<String> {
         Ok(serde_json::to_string_pretty(&self.trace)?)
     }
+}
+
+// --- WP-J / J2: latent (non-actionable) node geometry -----------------------
+
+/// Two axis-aligned boxes overlap (shared positive area).
+fn bbox_intersects(a: Bbox, b: Bbox) -> bool {
+    a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+}
+
+/// WP-J/J2 — whether a node has a real on-screen footprint. A node is **latent**
+/// (the negation) when it has no bbox, a zero/negative-area bbox, or a bbox that
+/// lies entirely outside the window rect — exactly the shape of collapsed-menu
+/// `AXMenuItem`s, which sit at `(0,0)`/off-window until their parent opens. This
+/// is read-only geometry over `bbox` + the window rect: the scene/affordance
+/// graphs are never mutated, so `find_element` and click-by-id still reach these
+/// nodes; only the *listings* filter them.
+fn node_on_screen(node: &SceneNode, window_rect: Option<Bbox>) -> bool {
+    let Some(b) = node.bbox else { return false };
+    if b.w <= 0.0 || b.h <= 0.0 {
+        return false;
+    }
+    match window_rect {
+        Some(w) => bbox_intersects(b, w),
+        None => true,
+    }
+}
+
+/// J1 actionability: on-screen **and** enabled (what `actionable_only` keeps and
+/// what `summary.n_actionable` counts).
+fn node_actionable(node: &SceneNode, window_rect: Option<Bbox>) -> bool {
+    node.enabled && node_on_screen(node, window_rect)
+}
+
+/// JSON string for a node's normalised [`Role`] (e.g. `"menu_item"`), reusing the
+/// serde rename so histogram keys match the scene-graph encoding.
+fn role_key(role: Role) -> String {
+    match serde_json::to_value(role) {
+        Ok(Value::String(s)) => s,
+        _ => "unknown".to_string(),
+    }
+}
+
+/// WP-J/J1 compact projection of one node: keep only the agent-facing fields and
+/// drop the heavy/derivable AX detail (`ax_role`, `help`, `ax_actions`,
+/// `ax_identifier`, `last_seen_ms`), collapsing `children` to a count.
+fn compact_node(n: &SceneNode) -> Value {
+    let mut o = serde_json::Map::new();
+    o.insert("id".into(), json!(n.id));
+    o.insert("role".into(), json!(role_key(n.role)));
+    if let Some(l) = &n.label {
+        o.insert("label".into(), json!(l));
+    }
+    if let Some(v) = &n.value {
+        o.insert("value".into(), json!(v));
+    }
+    o.insert("bbox".into(), serde_json::to_value(n.bbox).unwrap_or(Value::Null));
+    o.insert("enabled".into(), json!(n.enabled));
+    o.insert("focused".into(), json!(n.focused));
+    if let Some(p) = &n.parent {
+        o.insert("parent".into(), json!(p));
+    }
+    o.insert("n_children".into(), json!(n.children.len()));
+    Value::Object(o)
 }
 
 /// True if any element in the graph is high-risk (utility for demos/reports).
@@ -428,5 +630,115 @@ mod tests {
         assert!(matches!(err, VisualOpsError::ActionUnavailable { .. }));
         assert!(calls.lock().unwrap().is_empty());
         assert_eq!(eng.trace().len(), 0);
+    }
+
+    // --- WP-J / J1: get_scene_graph projection ------------------------------
+
+    #[test]
+    fn compact_view_omits_heavy_fields_and_keeps_n_children() {
+        let (eng, _) = engine_with_counter();
+        let v = eng.scene_graph_view(SceneView::Compact, false);
+        let id = id_for(&eng, "Nouvelle note");
+        let node = v["nodes"].get(id.as_str()).expect("compact node present");
+
+        // Heavy/derivable AX fields are dropped.
+        for dropped in ["ax_role", "help", "ax_actions", "ax_identifier", "last_seen_ms", "children", "confidence", "source"] {
+            assert!(node.get(dropped).is_none(), "compact node must drop {dropped}");
+        }
+        // Kept fields, with children collapsed to a count.
+        assert!(node.get("n_children").is_some(), "n_children kept");
+        assert!(node.get("bbox").is_some(), "bbox kept");
+        assert_eq!(node["role"], json!("button"));
+    }
+
+    #[test]
+    fn compact_view_is_materially_smaller_than_full() {
+        let (eng, _) = engine_with_counter();
+        let full = eng.scene_graph_view(SceneView::Full, false);
+        let compact = eng.scene_graph_view(SceneView::Compact, false);
+        let full_len = serde_json::to_string(&full).unwrap().len();
+        let compact_len = serde_json::to_string(&compact).unwrap().len();
+        // Visible with `cargo test -- --nocapture`; the real before/after note.
+        eprintln!(
+            "get_scene_graph fixture size — full: {full_len} B, compact: {compact_len} B (×{:.1} lighter)",
+            full_len as f64 / compact_len.max(1) as f64
+        );
+        assert!(compact_len < full_len, "compact ({compact_len}) must be smaller than full ({full_len})");
+    }
+
+    #[test]
+    fn full_view_is_byte_identical_to_raw_scene_graph() {
+        let (eng, _) = engine_with_counter();
+        let v = eng.scene_graph_view(SceneView::Full, false);
+        let raw = serde_json::to_value(eng.scene_graph()).unwrap();
+        assert_eq!(v, raw, "full view is the unchanged escape hatch");
+    }
+
+    #[test]
+    fn summary_view_has_counts_and_roots_but_no_nodes() {
+        let (eng, _) = engine_with_counter();
+        let v = eng.scene_graph_view(SceneView::Summary, false);
+        assert!(v.get("nodes").is_none(), "summary carries no per-node list");
+        let n_nodes = v["n_nodes"].as_u64().expect("n_nodes");
+        let n_actionable = v["n_actionable"].as_u64().expect("n_actionable");
+        assert!(n_nodes >= 1);
+        assert!(v["roots"].is_array());
+        assert!(v["counts_by_role"].is_object());
+        assert!(v["window"].is_object());
+        assert!(n_actionable <= n_nodes, "actionable is a subset");
+        assert!(n_actionable >= 1, "at least the toolbar button is actionable");
+    }
+
+    #[test]
+    fn actionable_only_drops_latent_menu_items() {
+        let (eng, _) = engine_with_counter();
+        let supprimer = id_for(&eng, "Supprimer"); // latent AXMenuItem (no bbox)
+        let nouvelle = id_for(&eng, "Nouvelle note"); // on-screen toolbar button
+        let v = eng.scene_graph_view(SceneView::Compact, true);
+        assert!(v["nodes"].get(supprimer.as_str()).is_none(), "latent node dropped by actionable_only");
+        assert!(v["nodes"].get(nouvelle.as_str()).is_some(), "on-screen node kept");
+    }
+
+    // --- WP-J / J2: latent affordance filtering -----------------------------
+
+    #[test]
+    fn query_affordances_excludes_latent_by_default_but_include_latent_keeps_them() {
+        let (eng, _) = engine_with_counter();
+        let supprimer = id_for(&eng, "Supprimer"); // latent menu item exposing Click
+        let nouvelle = id_for(&eng, "Nouvelle note"); // on-screen button
+
+        let default = eng.query_affordances(SemanticAction::Click);
+        assert!(!default.contains(&supprimer), "latent menu item filtered from default listing");
+        assert!(default.contains(&nouvelle), "on-screen button still listed");
+
+        let all = eng.query_affordances_filtered(SemanticAction::Click, true);
+        assert!(all.contains(&supprimer), "include_latent surfaces the latent item");
+        assert!(all.len() > default.len(), "include_latent is a strict superset here");
+    }
+
+    #[test]
+    fn get_affordances_view_filters_latent_but_keeps_it_under_include_latent() {
+        let (eng, _) = engine_with_counter();
+        let supprimer = id_for(&eng, "Supprimer");
+        let filtered = eng.affordances_view(false);
+        assert!(filtered["affordances"].get(supprimer.as_str()).is_none(), "latent omitted by default");
+        let all = eng.affordances_view(true);
+        assert!(all["affordances"].get(supprimer.as_str()).is_some(), "include_latent keeps it");
+    }
+
+    #[test]
+    fn find_element_and_gating_still_reach_latent_nodes() {
+        // CRITICAL (WP-J): filtering the *listing* must NOT hide latent nodes from
+        // find_element, nor stop the risk gate from acting on them by id.
+        let (mut eng, calls) = engine_with_counter();
+        assert!(!eng.find_element("Supprimer").is_empty(), "find_element still locates the latent item");
+
+        let supprimer = id_for(&eng, "Supprimer");
+        // click_element by id reaches the gate (PendingApproval), not ActionUnavailable,
+        // and the executor never runs.
+        let e = eng.click_element(&supprimer, Some("delete")).unwrap();
+        assert_eq!(e.result, ActionResult::PendingApproval);
+        assert!(e.risk.requires_approval);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "gated action never reaches the executor");
     }
 }

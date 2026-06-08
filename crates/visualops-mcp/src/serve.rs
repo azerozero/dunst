@@ -9,7 +9,7 @@ use std::io::{self, BufRead, Write};
 
 use serde_json::{json, Value};
 
-use crate::engine::Engine;
+use crate::engine::{Engine, SceneView};
 use visualops_core::SemanticAction;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -46,7 +46,7 @@ pub fn serve(mut engine: Engine) -> i32 {
                 send(&mut out, resp);
             }
             other => {
-                if !req.get("id").is_none() {
+                if req.get("id").is_some() {
                     send(&mut out, error_obj(id, -32601, &format!("method not found: {other}")));
                 }
             }
@@ -64,11 +64,24 @@ fn initialize_result() -> Value {
 }
 
 fn tools_list() -> Vec<Value> {
-    let str_arg = |name: &str, desc: &str| json!({ name: { "type": "string", "description": desc } });
     vec![
         tool("refresh", "Re-perceive the target window and rebuild the scene + affordance graphs.", json!({})),
-        tool("get_scene_graph", "Return the current scene graph (nodes, roots, window).", json!({})),
-        tool("get_affordances", "Return the affordance graph (actions + risk per element).", json!({})),
+        tool(
+            "get_scene_graph",
+            "Return the current scene graph. view: \"compact\" (default, light per-node projection) | \"full\" (every field) | \"summary\" (counts only, no node list). actionable_only drops off-screen/disabled nodes (compact/full).",
+            schema(
+                json!({
+                    "view": { "type": "string", "enum": ["compact", "full", "summary"], "description": "projection, default compact" },
+                    "actionable_only": { "type": "boolean", "description": "only on-screen, enabled, real-bbox nodes (compact/full)" }
+                }),
+                &[],
+            ),
+        ),
+        tool(
+            "get_affordances",
+            "Return the affordance graph (actions + risk per element). Latent (off-screen / zero-bbox) nodes are omitted unless include_latent is true.",
+            schema(json!({ "include_latent": { "type": "boolean", "description": "include latent/off-screen nodes (default false)" } }), &[]),
+        ),
         tool(
             "find_element",
             "Find elements whose id/label/role contains the query (case-insensitive).",
@@ -76,8 +89,14 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "query_affordances",
-            "List element ids that expose a given semantic action (click|type|hover|open_menu|pick|drag|...).",
-            schema(str_arg("action", "semantic action"), &["action"]),
+            "List element ids that expose a given semantic action (click|type|hover|open_menu|pick|drag|...). Latent (off-screen / zero-bbox) nodes are omitted unless include_latent is true.",
+            schema(
+                json!({
+                    "action": { "type": "string", "description": "semantic action" },
+                    "include_latent": { "type": "boolean", "description": "include latent nodes (default false)" }
+                }),
+                &["action"],
+            ),
         ),
         tool(
             "click_element",
@@ -138,17 +157,22 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     let arg = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_owned);
+    let arg_bool = |k: &str| args.get(k).and_then(Value::as_bool);
 
     let outcome: Result<Value, String> = match name {
         "refresh" => engine.refresh().map(|_| json!("ok")).map_err(|e| e.to_string()),
-        "get_scene_graph" => Ok(serde_json::to_value(engine.scene_graph()).unwrap()),
-        "get_affordances" => Ok(serde_json::to_value(engine.affordance_graph()).unwrap()),
+        "get_scene_graph" => match arg("view").as_deref().map(SceneView::parse) {
+            None => Ok(engine.scene_graph_view(SceneView::Compact, arg_bool("actionable_only").unwrap_or(false))),
+            Some(Some(v)) => Ok(engine.scene_graph_view(v, arg_bool("actionable_only").unwrap_or(false))),
+            Some(None) => Err("invalid 'view' (expected compact|full|summary)".into()),
+        },
+        "get_affordances" => Ok(engine.affordances_view(arg_bool("include_latent").unwrap_or(false))),
         "find_element" => match arg("query") {
             Some(q) => Ok(serde_json::to_value(engine.find_element(&q)).unwrap()),
             None => Err("missing 'query'".into()),
         },
         "query_affordances" => match arg("action").as_deref().and_then(parse_action) {
-            Some(a) => Ok(json!(engine.query_affordances(a))),
+            Some(a) => Ok(json!(engine.query_affordances_filtered(a, arg_bool("include_latent").unwrap_or(false)))),
             None => Err("missing/invalid 'action'".into()),
         },
         "click_element" => match arg("id") {
