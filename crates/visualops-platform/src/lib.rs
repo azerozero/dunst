@@ -469,6 +469,47 @@ mod macos {
         }
     }
 
+    struct NodeFields {
+        ax_role: String,
+        value: Option<String>,
+        title: Option<String>,
+        description: Option<String>,
+        help: Option<String>,
+        ax_identifier: Option<String>,
+        ax_actions: Vec<String>,
+        frame: Option<Bbox>,
+        enabled: bool,
+        focused: bool,
+    }
+
+    fn assemble_node(fields: NodeFields) -> RawAxNode {
+        let label = fields
+            .title
+            .or(fields.description)
+            .or_else(|| static_text_value_label(&fields.ax_role, &fields.value));
+
+        RawAxNode {
+            ax_role: fields.ax_role,
+            label,
+            help: fields.help,
+            value: fields.value,
+            ax_identifier: fields.ax_identifier,
+            ax_actions: fields.ax_actions,
+            frame: fields.frame,
+            enabled: fields.enabled,
+            focused: fields.focused,
+            children: Vec::new(),
+        }
+    }
+
+    fn static_text_value_label(ax_role: &str, value: &Option<String>) -> Option<String> {
+        if ax_role == "AXStaticText" {
+            value.clone().filter(|s| !s.is_empty())
+        } else {
+            None
+        }
+    }
+
     fn walk_element(
         element: &AxElement,
         target_key: &TargetKey,
@@ -484,31 +525,19 @@ mod macos {
             .get(0)
             .and_then(cf_string)
             .unwrap_or_else(|| "AXUnknown".into());
-        let value = batch.get(1).and_then(cf_string);
-        let label = batch
-            .get(2)
-            .and_then(cf_label_string)
-            .or_else(|| batch.get(3).and_then(cf_label_string))
-            .or_else(|| {
-                if ax_role == "AXStaticText" {
-                    value.clone().filter(|s| !s.is_empty())
-                } else {
-                    None
-                }
-            });
 
-        let mut node = RawAxNode {
+        let mut node = assemble_node(NodeFields {
             ax_role,
-            label,
+            value: batch.get(1).and_then(cf_string),
+            title: batch.get(2).and_then(cf_label_string),
+            description: batch.get(3).and_then(cf_label_string),
             help: batch.get(4).and_then(cf_string),
-            value,
             ax_identifier: batch.get(5).and_then(cf_string),
-            ax_actions: action_names(element),
+            ax_actions: read_node_actions(element),
             frame: frame_from_batch(&batch),
             enabled: batch.get(9).and_then(cf_bool).unwrap_or(true),
             focused: batch.get(10).and_then(cf_bool).unwrap_or(false),
-            children: Vec::new(),
-        };
+        });
         cache_element(target_key, &node, element);
 
         if depth >= MAX_DEPTH || state.count >= MAX_NODES {
@@ -538,29 +567,19 @@ mod macos {
         attrs: &WalkAttributes,
     ) -> Result<RawAxNode> {
         let ax_role = attr_string(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
-        let value = attr_string(element, kAXValueAttribute);
-        let label = attr_label_string(element, kAXTitleAttribute)
-            .or_else(|| attr_label_string(element, kAXDescriptionAttribute))
-            .or_else(|| {
-                if ax_role == "AXStaticText" {
-                    value.clone().filter(|s| !s.is_empty())
-                } else {
-                    None
-                }
-            });
 
-        let mut node = RawAxNode {
+        let mut node = assemble_node(NodeFields {
             ax_role,
-            label,
+            value: attr_string(element, kAXValueAttribute),
+            title: attr_label_string(element, kAXTitleAttribute),
+            description: attr_label_string(element, kAXDescriptionAttribute),
             help: attr_string(element, kAXHelpAttribute),
-            value,
             ax_identifier: attr_string(element, kAXIdentifierAttribute),
-            ax_actions: action_names(element),
+            ax_actions: read_node_actions(element),
             frame: frame(element),
             enabled: attr_bool(element, kAXEnabledAttribute).unwrap_or(true),
             focused: attr_bool(element, kAXFocusedAttribute).unwrap_or(false),
-            children: Vec::new(),
-        };
+        });
         cache_element(target_key, &node, element);
 
         if depth >= MAX_DEPTH || state.count >= MAX_NODES {
@@ -838,10 +857,14 @@ mod macos {
         let start_bbox = node
             .bbox
             .ok_or_else(|| ActionFailure::Execution("Drag requires a source bbox".into()))?;
-        let end = parse_drop_point(argument)?;
-        let start = CGPoint::new(
-            start_bbox.x + start_bbox.w / 2.0,
-            start_bbox.y + start_bbox.h / 2.0,
+        let display_bounds = CGDisplay::main().bounds();
+        let end = clamp_point_to_bounds(parse_drop_point(argument)?, display_bounds);
+        let start = clamp_point_to_bounds(
+            CGPoint::new(
+                start_bbox.x + start_bbox.w / 2.0,
+                start_bbox.y + start_bbox.h / 2.0,
+            ),
+            display_bounds,
         );
         let source = event_source("create drag CGEventSource")?;
         let saved_cursor = current_cursor_position(&source)?;
@@ -886,6 +909,23 @@ mod macos {
             .parse::<f64>()
             .map_err(|_| ActionFailure::Execution("Drag requires an \"x,y\" argument".into()))?;
         Ok(CGPoint::new(x, y))
+    }
+
+    fn clamp_point_to_bounds(point: CGPoint, bounds: CGRect) -> CGPoint {
+        let min_x = bounds.origin.x;
+        let min_y = bounds.origin.y;
+        let max_x = if bounds.size.width > 1.0 {
+            bounds.origin.x + bounds.size.width - 1.0
+        } else {
+            bounds.origin.x
+        };
+        let max_y = if bounds.size.height > 1.0 {
+            bounds.origin.y + bounds.size.height - 1.0
+        } else {
+            bounds.origin.y
+        };
+
+        CGPoint::new(point.x.clamp(min_x, max_x), point.y.clamp(min_y, max_y))
     }
 
     fn post_mouse(
@@ -965,6 +1005,12 @@ mod macos {
         } else {
             None
         }
+    }
+
+    fn read_node_actions(element: &AxElement) -> Vec<String> {
+        // PERF: this remains one AX round-trip per node; kAXActions can be folded
+        // into the batch request if the FFI constant is introduced locally.
+        action_names(element)
     }
 
     fn action_names(element: &AxElement) -> Vec<String> {
