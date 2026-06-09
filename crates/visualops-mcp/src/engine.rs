@@ -12,7 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{json, Value};
 use visualops_core::{
     ActionExecutor, ActionResult, AffordanceGraph, AuditEntry, Bbox, GraphDiff, Perceptor,
-    RiskLevel, Role, SceneGraph, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
+    RiskAssessment, RiskLevel, Role, SceneGraph, SceneNode, SemanticAction, Target, VisualOpsError,
+    WindowRef,
 };
 use visualops_graph::{audit, derive_affordances, scene, RiskEngine};
 
@@ -90,6 +91,11 @@ impl Engine {
         self.previous = self.current.take();
         self.current = Some(graph);
         self.affordances = Some(aff);
+        // Audit #2: a re-perception means the scene state the operator approved
+        // may no longer hold (the dangerous element could have moved, changed
+        // risk, or vanished). Drop every outstanding grant so an approval can
+        // never silently survive a state change.
+        self.approvals.clear();
         Ok(())
     }
 
@@ -286,23 +292,49 @@ impl Engine {
 
     // --- approval -----------------------------------------------------------
 
-    /// Whitelist a high-risk element so the next action on it proceeds.
-    pub fn approve(&mut self, id: &str) {
+    /// Whitelist a high-risk element so the **next** gated action on it proceeds.
+    ///
+    /// Audit #2 — validated at call time, not blindly stored:
+    /// * the id must exist in the current scene (`ElementNotFound` otherwise), and
+    /// * its current risk must actually require approval — approving a phantom or a
+    ///   low-risk element is an error, so a grant can never be parked on something
+    ///   that isn't gated.
+    ///
+    /// The grant is **one-shot**: [`act`](Self::act) consumes it on the next
+    /// successful action, and every [`refresh`](Self::refresh) clears all grants.
+    /// For a composite drag, approve the high-risk participant (the dangerous drop
+    /// target carries its own high risk, so it is the id passed here).
+    pub fn approve(&mut self, id: &str) -> visualops_core::Result<()> {
+        if self.scene_graph().get(id).is_none() {
+            return Err(VisualOpsError::ElementNotFound(id.into()));
+        }
+        let gated = self
+            .affordance_graph()
+            .affordances
+            .get(id)
+            .map(|a| a.risk.requires_approval)
+            .unwrap_or(false);
+        if !gated {
+            return Err(VisualOpsError::Execution(format!(
+                "{id} is not a high-risk element; no approval required"
+            )));
+        }
         self.approvals.insert(id.to_string());
+        Ok(())
     }
 
     // --- action tools -------------------------------------------------------
 
     pub fn click_element(&mut self, id: &str, reasoning: Option<&str>) -> visualops_core::Result<AuditEntry> {
-        self.act(id, SemanticAction::Click, None, reasoning)
+        self.act(id, SemanticAction::Click, None, reasoning, None)
     }
 
     pub fn type_into(&mut self, id: &str, text: &str, reasoning: Option<&str>) -> visualops_core::Result<AuditEntry> {
-        self.act(id, SemanticAction::Type, Some(text), reasoning)
+        self.act(id, SemanticAction::Type, Some(text), reasoning, None)
     }
 
     pub fn hover_probe(&mut self, id: &str) -> visualops_core::Result<AuditEntry> {
-        self.act(id, SemanticAction::Hover, None, Some("hover probe"))
+        self.act(id, SemanticAction::Hover, None, Some("hover probe"), None)
     }
 
     /// Drag `source_id` onto `target_id`. The drop point handed to the executor
@@ -310,6 +342,12 @@ impl Engine {
     /// `"x,y"` (the frozen WP-F drag mini-contract). This is a thin wrapper over
     /// the gated [`act`] path — `act` checks the *source* exposes `Drag`, gates
     /// on risk, runs the executor, re-perceives, diffs and audits.
+    ///
+    /// Audit #3 — **composite risk**: a drop is as dangerous as the riskier of its
+    /// source and its target (dropping a file onto "Supprimer" is a delete, even
+    /// though the file row is harmless). The drop target's risk is folded in here
+    /// and `act` gates on the max, so a high-risk target forces approval even when
+    /// the source is low-risk.
     pub fn drag_element(
         &mut self,
         source_id: &str,
@@ -327,36 +365,81 @@ impl Engine {
         })?;
         let x = bbox.x + bbox.w / 2.0;
         let y = bbox.y + bbox.h / 2.0;
-        self.act(source_id, SemanticAction::Drag, Some(&format!("{x},{y}")), reasoning)
+        // Fold the drop target's risk into the gate (audit #3). Every node has an
+        // affordance entry; default to low if one is somehow missing.
+        let target_risk = self
+            .affordance_graph()
+            .affordances
+            .get(target_id)
+            .map(|a| a.risk.clone())
+            .unwrap_or_else(RiskAssessment::low);
+        let co_target = CoTarget { id: target_id.to_string(), risk: target_risk };
+        self.act(
+            source_id,
+            SemanticAction::Drag,
+            Some(&format!("{x},{y}")),
+            reasoning,
+            Some(co_target),
+        )
     }
 
     /// The gated action path. Always returns an [`AuditEntry`] describing the
     /// outcome (also appended to the trace); only structural problems
     /// (unknown id / unavailable action) are `Err`.
+    ///
+    /// `co_target` carries a second risk-bearing participant (audit #3 — a drag's
+    /// drop target). The gate fires on the **max** of the acted-on element and the
+    /// co-target, and the grant must cover *every* high-risk participant.
     fn act(
         &mut self,
         id: &str,
         action: SemanticAction,
         argument: Option<&str>,
         reasoning: Option<&str>,
+        co_target: Option<CoTarget>,
     ) -> visualops_core::Result<AuditEntry> {
         let node = self
             .scene_graph()
             .get(id)
             .cloned()
             .ok_or_else(|| VisualOpsError::ElementNotFound(id.into()))?;
-        let aff = self
-            .affordance_graph()
-            .affordances
-            .get(id)
-            .ok_or_else(|| VisualOpsError::ElementNotFound(id.into()))?;
-        if !aff.actions.contains(&action) {
-            return Err(VisualOpsError::ActionUnavailable {
-                id: id.into(),
-                action: format!("{action:?}"),
-            });
+        // Read the source affordance once and drop the borrow before we mutate.
+        let source_risk = {
+            let aff = self
+                .affordance_graph()
+                .affordances
+                .get(id)
+                .ok_or_else(|| VisualOpsError::ElementNotFound(id.into()))?;
+            if !aff.actions.contains(&action) {
+                return Err(VisualOpsError::ActionUnavailable {
+                    id: id.into(),
+                    action: format!("{action:?}"),
+                });
+            }
+            aff.risk.clone()
+        };
+
+        // Effective risk = source, or max(source, drop target) for a composite
+        // drag (audit #3). The audit entry reports this combined risk so the
+        // operator sees *why* it is gated (e.g. "drop target: matched keyword …").
+        let effective = match &co_target {
+            Some(co) => combined_drag_risk(&source_risk, &co.risk),
+            None => source_risk.clone(),
+        };
+
+        // Every high-risk participant must be approved to clear the gate. For a
+        // plain action that's just the element; for a composite drag it can be the
+        // source, the target, or both.
+        let mut gated_ids: Vec<String> = Vec::new();
+        if source_risk.requires_approval {
+            gated_ids.push(id.to_string());
         }
-        let approved = self.approvals.contains(id);
+        if let Some(co) = &co_target {
+            if co.risk.requires_approval {
+                gated_ids.push(co.id.clone());
+            }
+        }
+        let approved = gated_ids.iter().all(|g| self.approvals.contains(g));
 
         // Build the audit record once; the two outcome paths only differ in
         // `result` and `graph_diff` (applied via struct update below).
@@ -365,7 +448,7 @@ impl Engine {
             target_id: id.to_string(),
             action,
             argument: argument.map(str::to_owned),
-            risk: aff.risk.clone(),
+            risk: effective.clone(),
             reasoning: reasoning.map(str::to_owned),
             result: ActionResult::PendingApproval,
             graph_diff: GraphDiff::default(),
@@ -373,7 +456,7 @@ impl Engine {
 
         // Gate: high-risk actions need prior approval. Note the executor is
         // never invoked on this path.
-        if base.risk.requires_approval && !approved {
+        if effective.requires_approval && !approved {
             return Ok(self.push_entry(base));
         }
 
@@ -382,6 +465,15 @@ impl Engine {
             Ok(()) => ActionResult::Success,
             Err(_) => ActionResult::Failed,
         };
+        // One-shot consumption (audit #2): a grant authorises exactly one
+        // successful action; drop it so a repeat re-gates. (`refresh` below also
+        // clears all grants — this keeps the semantics explicit and independent
+        // of refresh ordering.)
+        if result == ActionResult::Success {
+            for g in &gated_ids {
+                self.approvals.remove(g);
+            }
+        }
         let _ = self.refresh();
         let graph_diff = self.diff_since();
         Ok(self.push_entry(AuditEntry { result, graph_diff, ..base }))
@@ -499,6 +591,31 @@ pub fn has_high_risk(g: &AffordanceGraph) -> bool {
     g.affordances.values().any(|a| a.risk.level == RiskLevel::High)
 }
 
+/// A second risk-bearing participant in an action — the **drop target** of a drag
+/// (audit #3). Carried into [`Engine::act`] so the gate can combine its risk with
+/// the dragged element's.
+struct CoTarget {
+    id: String,
+    risk: RiskAssessment,
+}
+
+/// Combine the source's and drop target's risk for a composite drag (audit #3):
+/// the higher tier, approval required if *either* side requires it, and reasons
+/// merged with the target's prefixed `drop target: …` so the audit shows which
+/// side raised the gate. `RiskLevel` is `Ord`, so `max` is the stricter tier.
+fn combined_drag_risk(source: &RiskAssessment, target: &RiskAssessment) -> RiskAssessment {
+    RiskAssessment {
+        level: source.level.max(target.level),
+        requires_approval: source.requires_approval || target.requires_approval,
+        reasons: source
+            .reasons
+            .iter()
+            .cloned()
+            .chain(target.reasons.iter().map(|r| format!("drop target: {r}")))
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,10 +715,147 @@ mod tests {
         );
 
         // 2. Approve, retry — proceeds, executor called exactly once.
-        eng.approve(&id);
+        eng.approve(&id).unwrap();
         let e2 = eng.click_element(&id, Some("approved")).unwrap();
         assert_eq!(e2.result, ActionResult::Success);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    // --- Audit #2: validated, one-shot, refresh-invalidated approvals --------
+
+    #[test]
+    fn approval_is_one_shot_consumed_by_act() {
+        let (mut eng, calls) = engine_with_counter();
+        let id = id_for(&eng, "Supprimer");
+
+        eng.approve(&id).unwrap();
+        assert_eq!(eng.click_element(&id, Some("1st")).unwrap().result, ActionResult::Success);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // The grant authorised exactly one action: a second high-risk click on the
+        // same element (re-resolved after the post-action refresh) gates again.
+        let id2 = id_for(&eng, "Supprimer");
+        let e2 = eng.click_element(&id2, Some("2nd")).unwrap();
+        assert_eq!(e2.result, ActionResult::PendingApproval, "grant must not survive one use");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "no second execution without re-approval");
+    }
+
+    #[test]
+    fn approval_is_invalidated_by_refresh() {
+        let (mut eng, calls) = engine_with_counter();
+        let id = id_for(&eng, "Supprimer");
+
+        eng.approve(&id).unwrap();
+        eng.refresh().unwrap(); // scene re-perceived → the grant must be dropped
+
+        let id2 = id_for(&eng, "Supprimer");
+        let e = eng.click_element(&id2, Some("after refresh")).unwrap();
+        assert_eq!(e.result, ActionResult::PendingApproval, "refresh invalidates approvals");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "executor never ran");
+    }
+
+    #[test]
+    fn approve_rejects_unknown_and_non_gated_ids() {
+        let (mut eng, calls) = engine_with_counter();
+
+        // Unknown id → ElementNotFound; nothing is stored.
+        let err = eng.approve("no_such_id").unwrap_err();
+        assert!(matches!(err, VisualOpsError::ElementNotFound(_)));
+
+        // A low-risk element (toolbar button) is not gated → error, nothing stored.
+        let low = id_for(&eng, "Nouvelle note");
+        assert!(eng.approve(&low).is_err(), "approving a non-gated id is rejected");
+
+        // And because the bogus grants were rejected, the high-risk gate is intact:
+        // "Supprimer" is still PendingApproval (no spurious approval leaked).
+        let supprimer = id_for(&eng, "Supprimer");
+        let e = eng.click_element(&supprimer, None).unwrap();
+        assert_eq!(e.result, ActionResult::PendingApproval);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    // --- Audit #3: composite drag risk (max of source / drop target) ---------
+
+    /// A purpose-built fixture for the composite-drag gate: the bundled Notes
+    /// fixture has no node that is *both* draggable (Row/Cell) and high-risk with a
+    /// bbox (its high-risk items are bbox-less menu items), so we mint a tiny tree
+    /// with a harmless draggable row and a high-risk drop target that has a bbox.
+    fn composite_drag_engine() -> (Engine, Arc<Mutex<Vec<RecordedCall>>>) {
+        fn raw(
+            ax_role: &str,
+            label: Option<&str>,
+            frame: Option<Bbox>,
+            ax_actions: &[&str],
+            children: Vec<visualops_core::RawAxNode>,
+        ) -> visualops_core::RawAxNode {
+            visualops_core::RawAxNode {
+                ax_role: ax_role.into(),
+                label: label.map(str::to_owned),
+                help: None,
+                value: None,
+                ax_identifier: None,
+                ax_actions: ax_actions.iter().map(|s| s.to_string()).collect(),
+                frame,
+                enabled: true,
+                focused: false,
+                children,
+            }
+        }
+        let bb = |x: f64| Some(Bbox { x, y: 100.0, w: 50.0, h: 20.0 });
+        // Row under a Table → draggable (the Table is an ancestor drop container).
+        let row = raw("AXRow", Some("note-a"), bb(10.0), &["press"], vec![]);
+        let table = raw("AXTable", None, bb(10.0), &[], vec![row]);
+        // High-risk drop target WITH a bbox (so drag_element can compute a drop).
+        let danger = raw("AXButton", Some("Supprimer"), bb(200.0), &["press"], vec![]);
+        let window = raw(
+            "AXWindow",
+            Some("W"),
+            Some(Bbox { x: 0.0, y: 0.0, w: 400.0, h: 400.0 }),
+            &[],
+            vec![table, danger],
+        );
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let perceptor = Box::new(MockPerceptor::new(
+            vec![window],
+            WindowRef { pid: 1, window_id: 1, app_name: "T".into(), title: "T".into() },
+        ));
+        let exec = Box::new(RecordingExecutor(calls.clone()));
+        let eng = Engine::new(perceptor, exec, Target { pid: 1, window_id: 1 }).unwrap();
+        (eng, calls)
+    }
+
+    #[test]
+    fn drag_onto_high_risk_target_is_gated_then_approvable() {
+        let (mut eng, calls) = composite_drag_engine();
+        let source = id_for(&eng, "note-a"); // low-risk draggable row
+        let target = id_for(&eng, "Supprimer"); // high-risk drop target, has bbox
+
+        // Precondition: source is harmless, target is the dangerous one.
+        assert!(!eng.affordance_graph().affordances[&source].risk.requires_approval);
+        assert!(eng.affordance_graph().affordances[&target].risk.requires_approval);
+
+        // The gate fires on the TARGET's risk even though the source is low.
+        let gated = eng.drag_element(&source, &target, Some("dangerous drop")).unwrap();
+        assert_eq!(gated.result, ActionResult::PendingApproval, "high-risk drop target must gate");
+        assert_eq!(gated.risk.level, RiskLevel::High, "effective risk is max(source, target)");
+        assert!(gated.risk.requires_approval);
+        assert!(
+            gated.risk.reasons.iter().any(|r| r.contains("drop target") && r.to_lowercase().contains("supprimer")),
+            "audit reason attributes the risk to the drop target: {:?}",
+            gated.risk.reasons
+        );
+        assert!(calls.lock().unwrap().is_empty(), "gated drag never reaches the executor");
+
+        // Approving the dangerous target (its own risk is high → approve accepts it)
+        // clears the composite gate for exactly one drag.
+        eng.approve(&target).unwrap();
+        let ok = eng.drag_element(&source, &target, Some("approved drop")).unwrap();
+        assert_eq!(ok.result, ActionResult::Success);
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "executor ran exactly once, on the source");
+        assert_eq!(recorded[0].0, source);
+        assert_eq!(recorded[0].1, SemanticAction::Drag);
     }
 
     #[test]

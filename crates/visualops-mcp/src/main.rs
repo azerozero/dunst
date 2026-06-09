@@ -82,7 +82,9 @@ fn run_demo() -> i32 {
                 println!("  -> result={:?}", entry.result);
                 if entry.result == ActionResult::PendingApproval {
                     section("4. approve(id) then retry — proceeds");
-                    eng.approve(&id);
+                    if let Err(e) = eng.approve(&id) {
+                        println!("  -> approve rejected: {e}");
+                    }
                     match eng.click_element(&id, Some("approved by operator")) {
                         Ok(e2) => println!("  -> result={:?}", e2.result),
                         Err(e) => println!("  -> error: {e}"),

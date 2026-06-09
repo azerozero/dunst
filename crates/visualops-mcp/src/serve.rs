@@ -168,7 +168,7 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
         },
         "get_affordances" => Ok(engine.affordances_view(arg_bool("include_latent").unwrap_or(false))),
         "find_element" => match arg("query") {
-            Some(q) => Ok(serde_json::to_value(engine.find_element(&q)).unwrap()),
+            Some(q) => Ok(serde_json::to_value(engine.find_element(&q)).unwrap_or(Value::Null)),
             None => Err("missing 'query'".into()),
         },
         "query_affordances" => match arg("action").as_deref().and_then(parse_action) {
@@ -178,36 +178,36 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
         "click_element" => match arg("id") {
             Some(eid) => engine
                 .click_element(&eid, arg("reasoning").as_deref())
-                .map(|e| serde_json::to_value(e).unwrap())
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'id'".into()),
         },
         "type_into" => match (arg("id"), arg("text")) {
             (Some(eid), Some(text)) => engine
                 .type_into(&eid, &text, arg("reasoning").as_deref())
-                .map(|e| serde_json::to_value(e).unwrap())
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string()),
             _ => Err("missing 'id' or 'text'".into()),
         },
         "hover_probe" => match arg("id") {
             Some(eid) => engine
                 .hover_probe(&eid)
-                .map(|e| serde_json::to_value(e).unwrap())
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'id'".into()),
         },
         "drag_element" => match (arg("source_id"), arg("target_id")) {
             (Some(source_id), Some(target_id)) => engine
                 .drag_element(&source_id, &target_id, arg("reasoning").as_deref())
-                .map(|e| serde_json::to_value(e).unwrap())
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string()),
             _ => Err("missing 'source_id' or 'target_id'".into()),
         },
         "approve" => match arg("id") {
-            Some(eid) => {
-                engine.approve(&eid);
-                Ok(json!("approved"))
-            }
+            Some(eid) => engine
+                .approve(&eid)
+                .map(|_| json!("approved"))
+                .map_err(|e| e.to_string()),
             None => Err("missing 'id'".into()),
         },
         "verify_state" => match (arg("id"), arg("field"), arg("expected")) {
@@ -217,7 +217,7 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map_err(|e| e.to_string()),
             _ => Err("missing 'id', 'field' or 'expected'".into()),
         },
-        "diff_since" => Ok(serde_json::to_value(engine.diff_since()).unwrap()),
+        "diff_since" => Ok(serde_json::to_value(engine.diff_since()).unwrap_or(Value::Null)),
         "export_trace" => engine.export_trace().map(Value::String).map_err(|e| e.to_string()),
         other => Err(format!("unknown tool: {other}")),
     };
@@ -265,4 +265,70 @@ fn error_obj(id: Value, code: i64, message: &str) -> Value {
 fn send(out: &mut impl Write, msg: Value) {
     let _ = writeln!(out, "{msg}");
     let _ = out.flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use visualops_core::mock::{MockPerceptor, RecordingExecutor};
+    use visualops_core::Target;
+
+    fn engine() -> Engine {
+        let perceptor = Box::new(MockPerceptor::notes_fixture().unwrap());
+        let exec = Box::<RecordingExecutor>::default();
+        Engine::new(perceptor, exec, Target { pid: 1363, window_id: 105 }).unwrap()
+    }
+
+    /// Drive `handle_tool_call` exactly as the stdio loop does.
+    fn call(engine: &mut Engine, name: &str, arguments: Value) -> Value {
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        });
+        handle_tool_call(engine, json!(1), &req)
+    }
+
+    fn is_error(resp: &Value) -> bool {
+        resp["result"]["isError"].as_bool().unwrap_or(false)
+    }
+
+    fn text(resp: &Value) -> String {
+        resp["result"]["content"][0]["text"].as_str().unwrap_or("").to_string()
+    }
+
+    // Table-driven invariants of the dispatcher (audit #4): a malformed call must
+    // become a clean `isError:true` JSON-RPC result, never a panic or a success.
+    #[test]
+    fn dispatcher_rejects_malformed_calls() {
+        let mut e = engine();
+        // (tool, arguments, substring expected in the error text)
+        let cases: &[(&str, Value, &str)] = &[
+            ("no_such_tool", json!({}), "unknown tool"),
+            ("find_element", json!({}), "query"), // required arg missing
+            ("click_element", json!({}), "id"),   // required arg missing
+            ("type_into", json!({ "id": "x" }), "text"), // partial args
+            ("get_scene_graph", json!({ "view": "banana" }), "view"), // invalid enum
+            ("query_affordances", json!({ "action": "nope" }), "action"), // invalid enum
+        ];
+        for (tool, args, needle) in cases {
+            let resp = call(&mut e, tool, args.clone());
+            assert!(is_error(&resp), "{tool} with {args} must be isError");
+            let t = text(&resp);
+            assert!(t.contains(needle), "{tool}: error {t:?} should mention {needle:?}");
+            // Even on error the envelope stays well-formed JSON-RPC.
+            assert_eq!(resp["jsonrpc"], "2.0");
+            assert_eq!(resp["id"], json!(1));
+        }
+    }
+
+    #[test]
+    fn dispatcher_accepts_a_well_formed_call() {
+        // Anchor: a valid call returns content and is NOT flagged as an error.
+        let mut e = engine();
+        let resp = call(&mut e, "get_scene_graph", json!({ "view": "summary" }));
+        assert!(!is_error(&resp), "valid call must not be isError: {resp}");
+        assert!(resp["result"]["content"][0]["text"].is_string());
+    }
 }
