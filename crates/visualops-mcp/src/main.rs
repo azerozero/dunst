@@ -16,6 +16,10 @@ use engine::Engine;
 use visualops_core::mock::{MockPerceptor, RecordingExecutor};
 use visualops_core::{ActionResult, SemanticAction, Target};
 
+/// Fixture target for the device-free `demo` and the no-`--pid/--window` `serve`
+/// fallback: the bundled Notes capture, not a live process.
+const DEMO_TARGET: Target = Target { pid: 1363, window_id: 105 };
+
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "demo".into());
     let code = match mode.as_str() {
@@ -37,7 +41,7 @@ fn run_demo() -> i32 {
             return 1;
         }
     };
-    let target = Target { pid: 1363, window_id: 105 };
+    let target = DEMO_TARGET;
     let mut eng = match Engine::new(perceptor, Box::new(RecordingExecutor::default()), target) {
         Ok(e) => e,
         Err(e) => {
@@ -149,7 +153,7 @@ fn run_serve() -> i32 {
             match Engine::new(
                 Box::new(p),
                 Box::new(RecordingExecutor::default()),
-                Target { pid: 1363, window_id: 105 },
+                DEMO_TARGET,
             ) {
                 Ok(e) => e,
                 Err(e) => {

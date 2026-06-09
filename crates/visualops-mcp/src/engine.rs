@@ -367,6 +367,14 @@ impl Engine {
     }
 
     pub fn type_into(&mut self, id: &str, text: &str, reasoning: Option<&str>) -> visualops_core::Result<AuditEntry> {
+        // Guard the synchronous keystroke path against a multi-MB payload (audit C9).
+        const MAX_TYPE_LEN: usize = 100_000;
+        if text.len() > MAX_TYPE_LEN {
+            return Err(visualops_core::VisualOpsError::Execution(format!(
+                "type text too long: {} bytes (max {MAX_TYPE_LEN})",
+                text.len()
+            )));
+        }
         self.act(id, SemanticAction::Type, Some(text), reasoning, None)
     }
 
