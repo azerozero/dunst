@@ -47,8 +47,15 @@ pub struct NormRect {
 }
 
 /// One OCR result line: recognised `text`, its Vision-normalised box, and Vision's
-/// confidence in `[0,1]`. (Risk must stay **monotone in uncertainty** downstream —
-/// low confidence raises the gate, never lowers it; §10.7.)
+/// confidence in `[0,1]`.
+///
+/// Design intent (§10.7): risk must stay **monotone in uncertainty** downstream —
+/// low `confidence` should *raise* the gate, never lower it.
+///
+/// TODO P1: not wired yet. The POC is AX-only (`confidence` is effectively `1.0`),
+/// and `RiskEngine` does not read `confidence` — see `visualops-graph::risk`. This
+/// is a documented intent, **not** a current guarantee; do not rely on it until the
+/// vision/OCR source is fed into the risk gate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OcrBox {
     pub text: String,
