@@ -113,7 +113,12 @@ pub fn clamp_unit(r: NormRect) -> NormRect {
     let x1 = r.x.max(r.x + r.w).clamp(0.0, 1.0);
     let y0 = r.y.min(r.y + r.h).clamp(0.0, 1.0);
     let y1 = r.y.max(r.y + r.h).clamp(0.0, 1.0);
-    NormRect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+    NormRect {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    }
 }
 
 /// True if the captured image covers the window with **uniform** scale on both
@@ -160,15 +165,39 @@ mod tests {
 
     #[test]
     fn full_image_maps_to_full_window() {
-        let b = vision_norm_to_screen_pt(NormRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, &geom());
-        assert_eq!(b, Bbox { x: 100.0, y: 50.0, w: 1000.0, h: 600.0 });
+        let b = vision_norm_to_screen_pt(
+            NormRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            &geom(),
+        );
+        assert_eq!(
+            b,
+            Bbox {
+                x: 100.0,
+                y: 50.0,
+                w: 1000.0,
+                h: 600.0
+            }
+        );
     }
 
     #[test]
     fn bottom_left_unit_box_flips_to_top_left_screen() {
         // Vision (0,0) is the image's BOTTOM-left; in top-left screen space that is
         // the window's lower edge.
-        let b = vision_norm_to_screen_pt(NormRect { x: 0.0, y: 0.0, w: 0.1, h: 0.1 }, &geom());
+        let b = vision_norm_to_screen_pt(
+            NormRect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.1,
+                h: 0.1,
+            },
+            &geom(),
+        );
         assert_eq!(b.x, 100.0);
         assert_eq!(b.y, 50.0 + 0.9 * 600.0); // 1 - 0 - 0.1 = 0.9
     }
@@ -177,12 +206,28 @@ mod tests {
     fn y_flip_bottom_vs_top() {
         let g = geom();
         // y=0 (image bottom) → window's LOWER screen edge.
-        let bottom = vision_norm_to_screen_pt(NormRect { x: 0.0, y: 0.0, w: 0.2, h: 0.05 }, &g);
+        let bottom = vision_norm_to_screen_pt(
+            NormRect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.2,
+                h: 0.05,
+            },
+            &g,
+        );
         assert!(approx(bottom.y, 50.0 + (1.0 - 0.05) * 600.0)); // near bottom (large screen-y)
-        // y≈1 (image top, with tiny height) → window's TOP screen edge.
-        let top = vision_norm_to_screen_pt(NormRect { x: 0.0, y: 0.95, w: 0.2, h: 0.05 }, &g);
+                                                                // y≈1 (image top, with tiny height) → window's TOP screen edge.
+        let top = vision_norm_to_screen_pt(
+            NormRect {
+                x: 0.0,
+                y: 0.95,
+                w: 0.2,
+                h: 0.05,
+            },
+            &g,
+        );
         assert!(approx(top.y, 50.0)); // 1 - 0.95 - 0.05 = 0 → origin_y
-        // Top must be visually above bottom (smaller screen-y).
+                                      // Top must be visually above bottom (smaller screen-y).
         assert!(top.y < bottom.y);
     }
 
@@ -191,7 +236,12 @@ mod tests {
     #[test]
     fn screen_to_norm_is_inverse_on_known_value() {
         let g = geom();
-        let n = NormRect { x: 0.3, y: 0.4, w: 0.2, h: 0.1 };
+        let n = NormRect {
+            x: 0.3,
+            y: 0.4,
+            w: 0.2,
+            h: 0.1,
+        };
         let back = screen_pt_to_vision_norm(vision_norm_to_screen_pt(n, &g), &g);
         assert!(norm_approx(n, back));
     }
@@ -199,8 +249,24 @@ mod tests {
     #[test]
     fn roi_full_window_is_unit_square() {
         let g = geom();
-        let roi = window_rect_to_vision_roi(Bbox { x: 0.0, y: 0.0, w: 1000.0, h: 600.0 }, &g);
-        assert!(norm_approx(roi, NormRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }));
+        let roi = window_rect_to_vision_roi(
+            Bbox {
+                x: 0.0,
+                y: 0.0,
+                w: 1000.0,
+                h: 600.0,
+            },
+            &g,
+        );
+        assert!(norm_approx(
+            roi,
+            NormRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0
+            }
+        ));
     }
 
     #[test]
@@ -208,15 +274,39 @@ mod tests {
         let g = geom();
         // Window-local top-left quadrant (top-down points) → Vision bottom-left
         // normalised: it's the UPPER half in normalised-y, so y starts at 0.5.
-        let roi = window_rect_to_vision_roi(Bbox { x: 0.0, y: 0.0, w: 500.0, h: 300.0 }, &g);
-        assert!(norm_approx(roi, NormRect { x: 0.0, y: 0.5, w: 0.5, h: 0.5 }));
+        let roi = window_rect_to_vision_roi(
+            Bbox {
+                x: 0.0,
+                y: 0.0,
+                w: 500.0,
+                h: 300.0,
+            },
+            &g,
+        );
+        assert!(norm_approx(
+            roi,
+            NormRect {
+                x: 0.0,
+                y: 0.5,
+                w: 0.5,
+                h: 0.5
+            }
+        ));
     }
 
     #[test]
     fn roi_clamps_partly_outside() {
         let g = geom();
         // Fovea spilling past the LEFT and TOP edges of the window.
-        let roi = window_rect_to_vision_roi(Bbox { x: -200.0, y: -100.0, w: 400.0, h: 300.0 }, &g);
+        let roi = window_rect_to_vision_roi(
+            Bbox {
+                x: -200.0,
+                y: -100.0,
+                w: 400.0,
+                h: 300.0,
+            },
+            &g,
+        );
         // x: [-200,200]pt → norm [-0.2,0.2] → clamp → [0,0.2].
         assert!(approx(roi.x, 0.0));
         assert!(approx(roi.w, 0.2));
@@ -229,7 +319,15 @@ mod tests {
     fn roi_fully_outside_collapses_to_empty_on_edge() {
         let g = geom();
         // Entirely to the right of the window.
-        let roi = window_rect_to_vision_roi(Bbox { x: 2000.0, y: 0.0, w: 100.0, h: 100.0 }, &g);
+        let roi = window_rect_to_vision_roi(
+            Bbox {
+                x: 2000.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            &g,
+        );
         assert!(approx(roi.w, 0.0));
         assert!(roi.x >= 0.0 && roi.x <= 1.0);
     }
@@ -240,14 +338,37 @@ mod tests {
     fn round_trip_norm_screen_norm() {
         let g = geom();
         let cases = [
-            NormRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 },
-            NormRect { x: 0.25, y: 0.1, w: 0.5, h: 0.3 },
-            NormRect { x: 0.9, y: 0.85, w: 0.05, h: 0.1 },
-            NormRect { x: 0.0, y: 0.5, w: 0.0, h: 0.0 }, // zero-size
+            NormRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            NormRect {
+                x: 0.25,
+                y: 0.1,
+                w: 0.5,
+                h: 0.3,
+            },
+            NormRect {
+                x: 0.9,
+                y: 0.85,
+                w: 0.05,
+                h: 0.1,
+            },
+            NormRect {
+                x: 0.0,
+                y: 0.5,
+                w: 0.0,
+                h: 0.0,
+            }, // zero-size
         ];
         for n in cases {
             let back = screen_pt_to_vision_norm(vision_norm_to_screen_pt(n, &g), &g);
-            assert!(norm_approx(n, back), "norm round-trip failed for {n:?} -> {back:?}");
+            assert!(
+                norm_approx(n, back),
+                "norm round-trip failed for {n:?} -> {back:?}"
+            );
         }
     }
 
@@ -255,14 +376,37 @@ mod tests {
     fn round_trip_screen_norm_screen() {
         let g = geom();
         let cases = [
-            Bbox { x: 100.0, y: 50.0, w: 1000.0, h: 600.0 },
-            Bbox { x: 250.0, y: 200.0, w: 300.0, h: 120.0 },
-            Bbox { x: 1080.0, y: 60.0, w: 20.0, h: 40.0 },
-            Bbox { x: 600.0, y: 350.0, w: 0.0, h: 0.0 }, // zero-size
+            Bbox {
+                x: 100.0,
+                y: 50.0,
+                w: 1000.0,
+                h: 600.0,
+            },
+            Bbox {
+                x: 250.0,
+                y: 200.0,
+                w: 300.0,
+                h: 120.0,
+            },
+            Bbox {
+                x: 1080.0,
+                y: 60.0,
+                w: 20.0,
+                h: 40.0,
+            },
+            Bbox {
+                x: 600.0,
+                y: 350.0,
+                w: 0.0,
+                h: 0.0,
+            }, // zero-size
         ];
         for b in cases {
             let back = vision_norm_to_screen_pt(screen_pt_to_vision_norm(b, &g), &g);
-            assert!(bbox_approx(b, back), "screen round-trip failed for {b:?} -> {back:?}");
+            assert!(
+                bbox_approx(b, back),
+                "screen round-trip failed for {b:?} -> {back:?}"
+            );
         }
     }
 
@@ -270,7 +414,12 @@ mod tests {
 
     #[test]
     fn retina_and_non_retina_agree() {
-        let n = NormRect { x: 0.3, y: 0.2, w: 0.25, h: 0.15 };
+        let n = NormRect {
+            x: 0.3,
+            y: 0.2,
+            w: 0.25,
+            h: 0.15,
+        };
         let non_retina = CaptureGeometry {
             window_origin_pt: (100.0, 50.0),
             window_size_pt: (1000.0, 600.0),
@@ -311,12 +460,28 @@ mod tests {
             image_size_px: (1600.0, 1200.0),
             backing_scale: 2.0,
         };
-        let b = vision_norm_to_screen_pt(NormRect { x: 0.5, y: 0.5, w: 0.1, h: 0.1 }, &g);
+        let b = vision_norm_to_screen_pt(
+            NormRect {
+                x: 0.5,
+                y: 0.5,
+                w: 0.1,
+                h: 0.1,
+            },
+            &g,
+        );
         assert!(approx(b.x, -1280.0 + 0.5 * 800.0)); // -880.0, negative is fine
         assert!(approx(b.y, 50.0 + (1.0 - 0.5 - 0.1) * 600.0));
         // Round-trip survives the negative origin.
         let back = screen_pt_to_vision_norm(b, &g);
-        assert!(norm_approx(back, NormRect { x: 0.5, y: 0.5, w: 0.1, h: 0.1 }));
+        assert!(norm_approx(
+            back,
+            NormRect {
+                x: 0.5,
+                y: 0.5,
+                w: 0.1,
+                h: 0.1
+            }
+        ));
     }
 
     // --- I3: degenerate clamp helper ---------------------------------------
@@ -324,14 +489,53 @@ mod tests {
     #[test]
     fn clamp_unit_keeps_in_bounds_portion() {
         // Negative origin keeps the right portion, not a shifted full-width rect.
-        let c = clamp_unit(NormRect { x: -0.2, y: 0.1, w: 0.5, h: 0.2 });
-        assert!(norm_approx(c, NormRect { x: 0.0, y: 0.1, w: 0.3, h: 0.2 }));
+        let c = clamp_unit(NormRect {
+            x: -0.2,
+            y: 0.1,
+            w: 0.5,
+            h: 0.2,
+        });
+        assert!(norm_approx(
+            c,
+            NormRect {
+                x: 0.0,
+                y: 0.1,
+                w: 0.3,
+                h: 0.2
+            }
+        ));
         // Spilling past the far edge is trimmed.
-        let c2 = clamp_unit(NormRect { x: 0.8, y: 0.8, w: 0.5, h: 0.5 });
-        assert!(norm_approx(c2, NormRect { x: 0.8, y: 0.8, w: 0.2, h: 0.2 }));
+        let c2 = clamp_unit(NormRect {
+            x: 0.8,
+            y: 0.8,
+            w: 0.5,
+            h: 0.5,
+        });
+        assert!(norm_approx(
+            c2,
+            NormRect {
+                x: 0.8,
+                y: 0.8,
+                w: 0.2,
+                h: 0.2
+            }
+        ));
         // Already-unit rect is untouched.
-        let c3 = clamp_unit(NormRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 });
-        assert!(norm_approx(c3, NormRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }));
+        let c3 = clamp_unit(NormRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+        });
+        assert!(norm_approx(
+            c3,
+            NormRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0
+            }
+        ));
     }
 
     #[test]

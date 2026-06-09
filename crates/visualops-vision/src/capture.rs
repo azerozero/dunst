@@ -5,12 +5,12 @@ use std::{ffi::c_void, fmt};
 use core_foundation::{
     base::TCFType,
     dictionary::{CFDictionaryGetValueIfPresent, CFDictionaryRef},
-    number::{CFNumberGetValue, CFNumberRef, kCFNumberFloat64Type, kCFNumberSInt64Type},
+    number::{kCFNumberFloat64Type, kCFNumberSInt64Type, CFNumberGetValue, CFNumberRef},
     string::CFString,
 };
 use core_graphics::{
     display::CGRectNull,
-    geometry::{CGRect, CGPoint, CGSize},
+    geometry::{CGPoint, CGRect, CGSize},
     window::{
         copy_window_info, create_image, kCGWindowBounds, kCGWindowImageBestResolution,
         kCGWindowImageBoundsIgnoreFraming, kCGWindowListExcludeDesktopElements,
@@ -32,7 +32,10 @@ impl fmt::Display for CaptureError {
         match self {
             Self::WindowNotFound(window_id) => write!(f, "window id {window_id} not found"),
             Self::CoreGraphicsBounds(window_id) => {
-                write!(f, "CoreGraphics could not read bounds for window id {window_id}")
+                write!(
+                    f,
+                    "CoreGraphics could not read bounds for window id {window_id}"
+                )
             }
             Self::CoreGraphicsImage(window_id) => {
                 write!(f, "CoreGraphics could not capture window id {window_id}")
@@ -106,11 +109,7 @@ fn cg_window_bounds(window_id: u32) -> Result<CGRect, CaptureError> {
 fn bounds_from_window_info(info: CFDictionaryRef) -> Option<CGRect> {
     let mut bounds_ptr: *const c_void = std::ptr::null();
     let found = unsafe {
-        CFDictionaryGetValueIfPresent(
-            info,
-            kCGWindowBounds.cast::<c_void>(),
-            &mut bounds_ptr,
-        )
+        CFDictionaryGetValueIfPresent(info, kCGWindowBounds.cast::<c_void>(), &mut bounds_ptr)
     };
     if found == 0 || bounds_ptr.is_null() {
         if std::env::var("VISUALOPS_CAPTURE_DEBUG").as_deref() == Ok("1") {
@@ -129,11 +128,7 @@ fn bounds_from_window_info(info: CFDictionaryRef) -> Option<CGRect> {
 fn window_number(info: CFDictionaryRef) -> Option<u32> {
     let mut number_ptr: *const c_void = std::ptr::null();
     let found = unsafe {
-        CFDictionaryGetValueIfPresent(
-            info,
-            kCGWindowNumber.cast::<c_void>(),
-            &mut number_ptr,
-        )
+        CFDictionaryGetValueIfPresent(info, kCGWindowNumber.cast::<c_void>(), &mut number_ptr)
     };
     if found == 0 || number_ptr.is_null() {
         return None;
@@ -157,11 +152,7 @@ fn dict_number(dict: CFDictionaryRef, key: &str) -> Option<f64> {
     let key = CFString::new(key);
     let mut number_ptr: *const c_void = std::ptr::null();
     let found = unsafe {
-        CFDictionaryGetValueIfPresent(
-            dict,
-            key.as_CFTypeRef().cast::<c_void>(),
-            &mut number_ptr,
-        )
+        CFDictionaryGetValueIfPresent(dict, key.as_CFTypeRef().cast::<c_void>(), &mut number_ptr)
     };
     if found == 0 || number_ptr.is_null() {
         return None;

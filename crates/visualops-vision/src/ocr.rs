@@ -2,16 +2,16 @@
 
 use std::{fmt, ptr::NonNull};
 
+use core_graphics::image::CGImage;
 use foreign_types::ForeignType;
 use objc2::{rc::Retained, AnyThread, ClassType};
-use objc2_core_foundation::{CGRect, CGPoint, CGSize};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGImage as ObjcCgImage;
 use objc2_foundation::{NSArray, NSDictionary};
 use objc2_vision::{
-    VNImageOption, VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedText, VNRequest,
-    VNRequestTextRecognitionLevel, VNRecognizedTextObservation,
+    VNImageOption, VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedText,
+    VNRecognizedTextObservation, VNRequest, VNRequestTextRecognitionLevel,
 };
-use core_graphics::image::CGImage;
 
 use crate::{coords::window_rect_to_vision_roi, CaptureGeometry, NormRect, OcrBox};
 
@@ -183,18 +183,38 @@ mod tests {
     fn roi_delegates_to_coords_transform() {
         let g = geom();
         // A concrete in-window region expressed in SCREEN points.
-        let region = Bbox { x: 300.0, y: 200.0, w: 200.0, h: 120.0 };
+        let region = Bbox {
+            x: 300.0,
+            y: 200.0,
+            w: 200.0,
+            h: 120.0,
+        };
         let got = region_to_vision_roi(Some(region), &g);
 
         // Reference: the same screen→window-local conversion through the tested
         // coords transform. Locks the unification (audit #1) against regressions.
         let (ox, oy) = g.window_origin_pt;
         let want = window_rect_to_vision_roi(
-            Bbox { x: region.x - ox, y: region.y - oy, w: region.w, h: region.h },
+            Bbox {
+                x: region.x - ox,
+                y: region.y - oy,
+                w: region.w,
+                h: region.h,
+            },
             &g,
         );
-        assert!(approx(got.origin.x, want.x), "x {} vs {}", got.origin.x, want.x);
-        assert!(approx(got.origin.y, want.y), "y {} vs {}", got.origin.y, want.y);
+        assert!(
+            approx(got.origin.x, want.x),
+            "x {} vs {}",
+            got.origin.x,
+            want.x
+        );
+        assert!(
+            approx(got.origin.y, want.y),
+            "y {} vs {}",
+            got.origin.y,
+            want.y
+        );
         assert!(approx(got.size.width, want.w));
         assert!(approx(got.size.height, want.h));
 

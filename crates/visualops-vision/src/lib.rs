@@ -19,6 +19,8 @@ pub mod coords;
 pub mod capture;
 #[cfg(target_os = "macos")]
 pub mod ocr;
+#[cfg(target_os = "macos")]
+pub mod shapes;
 
 /// Everything needed to map Vision's normalised, **bottom-left** coordinates into
 /// our top-left **screen-point** space. Produced by [`capture`], consumed by
