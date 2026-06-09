@@ -13,7 +13,7 @@ use objc2_vision::{
 };
 use core_graphics::image::CGImage;
 
-use crate::{coords::vision_norm_to_screen_pt, CaptureGeometry, NormRect, OcrBox};
+use crate::{coords::window_rect_to_vision_roi, CaptureGeometry, NormRect, OcrBox};
 
 #[derive(Debug)]
 pub enum OcrError {
@@ -80,7 +80,7 @@ pub fn ocr_region_with_mode(
     let mut out = Vec::new();
     if let Some(results) = request.results() {
         for observation in results.iter() {
-            if let Some(ocr_box) = observation_to_box(&observation, geometry) {
+            if let Some(ocr_box) = observation_to_box(&observation) {
                 out.push(ocr_box);
             }
         }
@@ -88,10 +88,10 @@ pub fn ocr_region_with_mode(
     Ok(out)
 }
 
-fn observation_to_box(
-    observation: &VNRecognizedTextObservation,
-    geometry: &CaptureGeometry,
-) -> Option<OcrBox> {
+/// An [`OcrBox`] carries only the Vision-normalised box; mapping it to screen
+/// points is the consumer's job (via `coords::vision_norm_to_screen_pt`), so we
+/// do not compute a screen box here (audit #2 — that result was being discarded).
+fn observation_to_box(observation: &VNRecognizedTextObservation) -> Option<OcrBox> {
     let candidate: Retained<VNRecognizedText> = observation.topCandidates(1).firstObject()?;
     let text = candidate.string().to_string();
     if text.trim().is_empty() {
@@ -104,7 +104,6 @@ fn observation_to_box(
         w: rect.size.width,
         h: rect.size.height,
     };
-    let _screen_box = vision_norm_to_screen_pt(norm, geometry);
     Some(OcrBox {
         text,
         norm,
@@ -112,8 +111,16 @@ fn observation_to_box(
     })
 }
 
-fn region_to_vision_roi(region: Option<visualops_core::Bbox>, geometry: &CaptureGeometry) -> CGRect {
-    let Some(region) = region else {
+/// Vision `regionOfInterest` for an optional screen-point region (`None` = whole
+/// image). Audit #1: the Y-flip + edge-clamp is owned by
+/// [`coords::window_rect_to_vision_roi`] (proven by 14 unit tests) — we convert the
+/// screen-point region to window-local points and delegate, instead of
+/// re-deriving the transform here with a subtly divergent clamp.
+fn region_to_vision_roi(
+    region_screen_pt: Option<visualops_core::Bbox>,
+    geometry: &CaptureGeometry,
+) -> CGRect {
+    let Some(region) = region_screen_pt else {
         return CGRect {
             origin: CGPoint { x: 0.0, y: 0.0 },
             size: CGSize {
@@ -123,19 +130,20 @@ fn region_to_vision_roi(region: Option<visualops_core::Bbox>, geometry: &Capture
         };
     };
 
+    // screen-point → window-local (window_rect_to_vision_roi re-adds the origin).
     let (origin_x, origin_y) = geometry.window_origin_pt;
-    let (win_w, win_h) = geometry.window_size_pt;
-    let x = ((region.x - origin_x) / win_w).clamp(0.0, 1.0);
-    let top = ((region.y - origin_y) / win_h).clamp(0.0, 1.0);
-    let w = (region.w / win_w).clamp(0.0, 1.0 - x);
-    let h = (region.h / win_h).clamp(0.0, 1.0 - top);
-    let y = (1.0 - top - h).clamp(0.0, 1.0);
-
+    let rect_in_window = visualops_core::Bbox {
+        x: region.x - origin_x,
+        y: region.y - origin_y,
+        w: region.w,
+        h: region.h,
+    };
+    let roi = window_rect_to_vision_roi(rect_in_window, geometry);
     CGRect {
-        origin: CGPoint { x, y },
+        origin: CGPoint { x: roi.x, y: roi.y },
         size: CGSize {
-            width: w,
-            height: h,
+            width: roi.w,
+            height: roi.h,
         },
     }
 }
@@ -144,4 +152,55 @@ unsafe fn borrowed_objc_cg_image(image: &CGImage) -> &ObjcCgImage {
     let ptr = NonNull::new(image.as_ptr().cast::<ObjcCgImage>())
         .expect("Core Graphics returned null CGImage");
     ptr.as_ref()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use visualops_core::Bbox;
+
+    fn geom() -> CaptureGeometry {
+        CaptureGeometry {
+            window_origin_pt: (100.0, 50.0),
+            window_size_pt: (1000.0, 600.0),
+            image_size_px: (2000.0, 1200.0),
+            backing_scale: 2.0,
+        }
+    }
+
+    fn approx(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn roi_none_is_full_unit_square() {
+        let r = region_to_vision_roi(None, &geom());
+        assert!(approx(r.origin.x, 0.0) && approx(r.origin.y, 0.0));
+        assert!(approx(r.size.width, 1.0) && approx(r.size.height, 1.0));
+    }
+
+    #[test]
+    fn roi_delegates_to_coords_transform() {
+        let g = geom();
+        // A concrete in-window region expressed in SCREEN points.
+        let region = Bbox { x: 300.0, y: 200.0, w: 200.0, h: 120.0 };
+        let got = region_to_vision_roi(Some(region), &g);
+
+        // Reference: the same screen→window-local conversion through the tested
+        // coords transform. Locks the unification (audit #1) against regressions.
+        let (ox, oy) = g.window_origin_pt;
+        let want = window_rect_to_vision_roi(
+            Bbox { x: region.x - ox, y: region.y - oy, w: region.w, h: region.h },
+            &g,
+        );
+        assert!(approx(got.origin.x, want.x), "x {} vs {}", got.origin.x, want.x);
+        assert!(approx(got.origin.y, want.y), "y {} vs {}", got.origin.y, want.y);
+        assert!(approx(got.size.width, want.w));
+        assert!(approx(got.size.height, want.h));
+
+        // And the result is a valid sub-rectangle of the unit square.
+        assert!(got.origin.x >= 0.0 && got.origin.y >= 0.0);
+        assert!(got.origin.x + got.size.width <= 1.0 + 1e-9);
+        assert!(got.origin.y + got.size.height <= 1.0 + 1e-9);
+    }
 }
