@@ -679,6 +679,7 @@ dependencies = [
  "visualops-core",
  "visualops-graph",
  "visualops-platform",
+ "visualops-vision",
 ]
 
 [[package]]

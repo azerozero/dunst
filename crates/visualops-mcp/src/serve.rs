@@ -10,7 +10,7 @@ use std::io::{self, BufRead, Write};
 use serde_json::{json, Value};
 
 use crate::engine::{Engine, SceneView};
-use visualops_core::SemanticAction;
+use visualops_core::{Bbox, SemanticAction};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -86,6 +86,26 @@ fn tools_list() -> Vec<Value> {
             "find_element",
             "Find elements whose id/label/role contains the query (case-insensitive).",
             schema(json!({ "query": { "type": "string" } }), &["query"]),
+        ),
+        tool(
+            "read_text",
+            "OCR the target window (or an optional screen-point region x,y,w,h) via Apple Vision; returns recognised text lines with screen bbox + confidence.",
+            schema(
+                json!({
+                    "region": {
+                        "type": "object",
+                        "description": "optional screen-point region; omit for the whole window",
+                        "properties": {
+                            "x": { "type": "number" },
+                            "y": { "type": "number" },
+                            "w": { "type": "number" },
+                            "h": { "type": "number" }
+                        },
+                        "required": ["x", "y", "w", "h"]
+                    }
+                }),
+                &[],
+            ),
         ),
         tool(
             "query_affordances",
@@ -171,6 +191,13 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
             Some(q) => Ok(serde_json::to_value(engine.find_element(&q)).unwrap_or(Value::Null)),
             None => Err("missing 'query'".into()),
         },
+        "read_text" => match parse_region(&args) {
+            Ok(region) => engine
+                .read_text(region)
+                .map(|hits| serde_json::to_value(hits).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(e),
+        },
         "query_affordances" => match arg("action").as_deref().and_then(parse_action) {
             Some(a) => Ok(json!(engine.query_affordances_filtered(a, arg_bool("include_latent").unwrap_or(false)))),
             None => Err("missing/invalid 'action'".into()),
@@ -238,6 +265,22 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
     }
 }
 
+/// Parse the optional `region` argument of `read_text` into a screen-point
+/// [`Bbox`]. Absent or `null` → `None` (OCR the whole window); when present, all of
+/// `x, y, w, h` are required and must be numbers.
+fn parse_region(args: &Value) -> Result<Option<Bbox>, String> {
+    match args.get("region") {
+        None | Some(Value::Null) => Ok(None),
+        Some(r) => {
+            let f = |k: &str| r.get(k).and_then(Value::as_f64);
+            match (f("x"), f("y"), f("w"), f("h")) {
+                (Some(x), Some(y), Some(w), Some(h)) => Ok(Some(Bbox { x, y, w, h })),
+                _ => Err("region requires numeric x, y, w, h".into()),
+            }
+        }
+    }
+}
+
 fn parse_action(s: &str) -> Option<SemanticAction> {
     Some(match s.to_ascii_lowercase().as_str() {
         "click" => SemanticAction::Click,
@@ -274,9 +317,13 @@ mod tests {
     use visualops_core::Target;
 
     fn engine() -> Engine {
+        engine_with_window(105)
+    }
+
+    fn engine_with_window(window_id: u32) -> Engine {
         let perceptor = Box::new(MockPerceptor::notes_fixture().unwrap());
         let exec = Box::<RecordingExecutor>::default();
-        Engine::new(perceptor, exec, Target { pid: 1363, window_id: 105 }).unwrap()
+        Engine::new(perceptor, exec, Target { pid: 1363, window_id }).unwrap()
     }
 
     /// Drive `handle_tool_call` exactly as the stdio loop does.
@@ -330,5 +377,46 @@ mod tests {
         let resp = call(&mut e, "get_scene_graph", json!({ "view": "summary" }));
         assert!(!is_error(&resp), "valid call must not be isError: {resp}");
         assert!(resp["result"]["content"][0]["text"].is_string());
+    }
+
+    #[test]
+    fn tools_list_exposes_read_text_with_object_schema() {
+        let tools = tools_list();
+        assert_eq!(tools.len(), 14, "read_text brings the tool count to 14");
+        // Every tool must declare a JSON-Schema object input (the type:object fix).
+        for t in &tools {
+            assert_eq!(
+                t["inputSchema"]["type"], "object",
+                "tool {} has a non-object inputSchema: {}", t["name"], t["inputSchema"]
+            );
+        }
+        let read_text = tools
+            .iter()
+            .find(|t| t["name"] == "read_text")
+            .expect("read_text tool present");
+        assert_eq!(read_text["inputSchema"]["type"], "object");
+        // `region` is optional → it must not be in `required`.
+        assert_eq!(read_text["inputSchema"]["required"], json!([]));
+    }
+
+    #[test]
+    fn read_text_without_live_window_is_a_clean_error() {
+        // An invalid window id → no live macOS window → a clean Err, never a panic.
+        // (Off macOS, the stub returns the same class of error.)
+        let mut e = engine_with_window(u32::MAX);
+
+        // Direct engine call carries the "live macOS window" message.
+        let err = e.read_text(None).unwrap_err();
+        assert!(err.to_string().contains("live macOS window"), "unexpected error: {err}");
+
+        // Through the dispatcher: a well-formed isError result, not a crash.
+        let resp = call(&mut e, "read_text", json!({}));
+        assert!(is_error(&resp), "read_text without a live window must be isError: {resp}");
+        assert_eq!(resp["jsonrpc"], "2.0");
+
+        // A malformed region is rejected before any capture is attempted.
+        let bad = call(&mut e, "read_text", json!({ "region": { "x": 1.0 } }));
+        assert!(is_error(&bad));
+        assert!(text(&bad).contains("region"), "got: {}", text(&bad));
     }
 }

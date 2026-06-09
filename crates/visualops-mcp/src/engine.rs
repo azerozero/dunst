@@ -43,6 +43,16 @@ impl SceneView {
     }
 }
 
+/// One OCR'd line returned by [`Engine::read_text`]: the recognised `text`, its
+/// bounding box in **screen points** (mapped from Vision's normalised box via
+/// `coords::vision_norm_to_screen_pt`), and Vision's `confidence` in `[0,1]`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TextHit {
+    pub text: String,
+    pub bbox: Bbox,
+    pub confidence: f32,
+}
+
 pub struct Engine {
     perceptor: Box<dyn Perceptor>,
     executor: Box<dyn ActionExecutor>,
@@ -138,6 +148,41 @@ impl Engine {
                     || n.ax_role.to_lowercase().contains(&q)
             })
             .collect()
+    }
+
+    /// OCR the target window via Apple Vision (P1). A pure **read probe** like the
+    /// scene-graph getters: it does **not** risk-gate and records **no** audit entry.
+    /// `region_screen_pt` limits OCR to a screen-point rectangle; `None` reads the
+    /// whole window. Each hit's bbox is mapped from Vision's normalised space to
+    /// screen points. macOS-only — see the non-macOS stub below.
+    #[cfg(target_os = "macos")]
+    pub fn read_text(&self, region_screen_pt: Option<Bbox>) -> visualops_core::Result<Vec<TextHit>> {
+        let captured =
+            visualops_vision::capture::capture_window(self.target.window_id).map_err(|e| {
+                VisualOpsError::Perception(format!(
+                    "OCR requires a live macOS window (capture failed: {e})"
+                ))
+            })?;
+        let boxes =
+            visualops_vision::ocr::ocr_region(&captured.image, &captured.geometry, region_screen_pt)
+                .map_err(|e| VisualOpsError::Perception(format!("OCR failed: {e}")))?;
+        Ok(boxes
+            .into_iter()
+            .map(|b| TextHit {
+                text: b.text,
+                bbox: visualops_vision::coords::vision_norm_to_screen_pt(b.norm, &captured.geometry),
+                confidence: b.confidence,
+            })
+            .collect())
+    }
+
+    /// Non-macOS stub: Apple Vision OCR needs a live macOS window. Keeps
+    /// `visualops-mcp` compilable (and the `read_text` tool present) on other targets.
+    #[cfg(not(target_os = "macos"))]
+    pub fn read_text(&self, _region_screen_pt: Option<Bbox>) -> visualops_core::Result<Vec<TextHit>> {
+        Err(VisualOpsError::Perception(
+            "OCR requires a live macOS window".into(),
+        ))
     }
 
     /// IDs whose affordance offers `action`. WP-J/J2: latent (off-screen /
