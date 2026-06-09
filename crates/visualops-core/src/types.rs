@@ -129,6 +129,36 @@ impl Role {
             Role::Unknown => "el",
         }
     }
+
+    /// The normalised role as the snake_case string used in the JSON encoding —
+    /// it mirrors the `#[serde(rename_all = "snake_case")]` on [`Role`]. Lets
+    /// callers (histogram keys, the compact projection) get the wire string
+    /// directly, with no per-node `serde_json` round-trip. The
+    /// `as_str_matches_serde_rename` test pins the two together.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Button => "button",
+            Role::MenuButton => "menu_button",
+            Role::TextField => "text_field",
+            Role::TextArea => "text_area",
+            Role::Checkbox => "checkbox",
+            Role::Radio => "radio",
+            Role::Row => "row",
+            Role::Cell => "cell",
+            Role::MenuItem => "menu_item",
+            Role::Menu => "menu",
+            Role::MenuBar => "menu_bar",
+            Role::List => "list",
+            Role::Table => "table",
+            Role::Outline => "outline",
+            Role::Window => "window",
+            Role::Toolbar => "toolbar",
+            Role::StaticText => "static_text",
+            Role::Image => "image",
+            Role::Group => "group",
+            Role::Unknown => "unknown",
+        }
+    }
 }
 
 /// Source of truth for a node, in priority order (Accessibility First).
@@ -321,4 +351,45 @@ pub enum ActionResult {
     Failed,
     Denied,
     PendingApproval,
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::Role;
+
+    /// Every variant's [`Role::as_str`] must equal its serde wire string, so the
+    /// hand-written table can never silently drift from the JSON encoding.
+    #[test]
+    fn as_str_matches_serde_rename() {
+        let all = [
+            Role::Button,
+            Role::MenuButton,
+            Role::TextField,
+            Role::TextArea,
+            Role::Checkbox,
+            Role::Radio,
+            Role::Row,
+            Role::Cell,
+            Role::MenuItem,
+            Role::Menu,
+            Role::MenuBar,
+            Role::List,
+            Role::Table,
+            Role::Outline,
+            Role::Window,
+            Role::Toolbar,
+            Role::StaticText,
+            Role::Image,
+            Role::Group,
+            Role::Unknown,
+        ];
+        for r in all {
+            let serde = serde_json::to_value(r).unwrap();
+            assert_eq!(
+                serde,
+                serde_json::Value::String(r.as_str().to_string()),
+                "as_str disagrees with serde for {r:?}"
+            );
+        }
+    }
 }

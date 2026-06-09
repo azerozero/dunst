@@ -15,11 +15,6 @@ criterion = { version = "0.5", optional = true, default-features = false, featur
 # `cargo bench -p visualops-graph --features bench`
 bench = ["dep:criterion"]
 
-[[bench]]
-name = "graph_bench"
-harness = false
-required-features = ["bench"]
-
 # WP-D4: pure-pipeline baseline (build_scene_graph -> derive_affordances -> risk).
 [[bench]]
 name = "pipeline"

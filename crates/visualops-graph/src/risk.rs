@@ -89,9 +89,9 @@ impl RiskEngine {
         }
     }
 
-    /// Assess one node. Combines label, help and ax_identifier text, normalises
-    /// it (lowercase + accent-fold), and matches against the keyword tiers.
-    /// Highest tier wins; `reasons` lists every matched keyword at that tier.
+    /// Assess one node. Combines label, help and ax_identifier text and runs it
+    /// through [`assess_text`](Self::assess_text). Highest tier wins; `reasons`
+    /// lists every matched keyword at that tier.
     pub fn assess(&self, node: &SceneNode) -> RiskAssessment {
         let mut haystack = String::new();
         if let Some(label) = &node.label {
@@ -105,8 +105,15 @@ impl RiskEngine {
         if let Some(ident) = &node.ax_identifier {
             haystack.push_str(ident);
         }
-        let hay = normalize(&haystack);
+        self.assess_text(&haystack)
+    }
 
+    /// Assess arbitrary text against the same keyword tiers — e.g. the payload an
+    /// agent wants to type. Lets a destructive *value* raise the gate even when the
+    /// target field is itself low-risk (audit #13). Normalises (lowercase +
+    /// accent-fold) then matches high, then medium; highest tier wins.
+    pub fn assess_text(&self, text: &str) -> RiskAssessment {
+        let hay = normalize(text);
         if let Some(reasons) = match_tier(&hay, &self.high) {
             return RiskAssessment {
                 level: RiskLevel::High,

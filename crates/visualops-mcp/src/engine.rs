@@ -54,6 +54,17 @@ pub struct Engine {
     affordances: Option<AffordanceGraph>,
     /// Element IDs that have been explicitly approved for high-risk actions.
     approvals: BTreeSet<String>,
+    /// IDs currently awaiting approval — the gated participants of the actions that
+    /// returned `PendingApproval` since the last refresh. Lets [`approve`](Self::approve)
+    /// accept an element whose danger is *contextual* (a destructive value typed into
+    /// an otherwise low-risk field, audit #13), without loosening the rule that a
+    /// plain low-risk id can't be approved.
+    pending_gate_ids: BTreeSet<String>,
+    /// Memoised at [`refresh`](Self::refresh) (audit #9): the window rect and the
+    /// menubar-root id, so the per-listing latent filter doesn't re-scan every node
+    /// on each call.
+    cached_window_rect: Option<Bbox>,
+    cached_menubar_root: Option<String>,
     trace: Vec<AuditEntry>,
 }
 
@@ -74,6 +85,9 @@ impl Engine {
             previous: None,
             affordances: None,
             approvals: BTreeSet::new(),
+            pending_gate_ids: BTreeSet::new(),
+            cached_window_rect: None,
+            cached_menubar_root: None,
             trace: Vec::new(),
         };
         e.refresh()?;
@@ -91,11 +105,16 @@ impl Engine {
         self.previous = self.current.take();
         self.current = Some(graph);
         self.affordances = Some(aff);
+        // Audit #9: compute the window rect + menubar root once per perception and
+        // cache them, instead of re-scanning every node on each listing call.
+        self.cached_window_rect = compute_window_rect(self.scene_graph());
+        self.cached_menubar_root = compute_menubar_root(self.scene_graph());
         // Audit #2: a re-perception means the scene state the operator approved
         // may no longer hold (the dangerous element could have moved, changed
-        // risk, or vanished). Drop every outstanding grant so an approval can
-        // never silently survive a state change.
+        // risk, or vanished). Drop every outstanding grant — and any pending gate —
+        // so an approval can never silently survive a state change.
         self.approvals.clear();
+        self.pending_gate_ids.clear();
         Ok(())
     }
 
@@ -141,9 +160,8 @@ impl Engine {
         action: SemanticAction,
         include_latent: bool,
     ) -> Vec<String> {
-        let window_rect = self.window_rect();
-        let menubar = self.menubar_root_id();
-        let menubar = menubar.as_deref();
+        let window_rect = self.cached_window_rect;
+        let menubar = self.cached_menubar_root.as_deref();
         let g = self.scene_graph();
         self.affordance_graph()
             .affordances
@@ -166,9 +184,8 @@ impl Engine {
         if include_latent {
             return serde_json::to_value(ag).unwrap_or(Value::Null);
         }
-        let window_rect = self.window_rect();
-        let menubar = self.menubar_root_id();
-        let menubar = menubar.as_deref();
+        let window_rect = self.cached_window_rect;
+        let menubar = self.cached_menubar_root.as_deref();
         let g = self.scene_graph();
         let mut map = serde_json::Map::new();
         for (id, aff) in &ag.affordances {
@@ -179,37 +196,12 @@ impl Engine {
         json!({ "affordances": Value::Object(map) })
     }
 
-    /// The window's on-screen rect, read from the `Window` node's bbox (the
-    /// scene graph's [`WindowRef`] carries no geometry). `None` when no window
-    /// node has a bbox — then [`node_on_screen`]'s off-window test is skipped.
-    fn window_rect(&self) -> Option<Bbox> {
-        self.scene_graph()
-            .nodes
-            .values()
-            .find(|n| n.role == Role::Window)
-            .and_then(|n| n.bbox)
-    }
-
-    /// Id of the menubar **root** — the `MenuBar`-role node in `roots` (its
-    /// `AXMenuBarItem` children share that role but have a parent, so iterating
-    /// `roots` disambiguates). Its direct children are the top-level menu openers
-    /// exempted from the latent filter by [`is_top_level_menu`]. Cloned (cheap)
-    /// to keep callers free of a borrow on the graph.
-    fn menubar_root_id(&self) -> Option<String> {
-        let g = self.scene_graph();
-        g.roots
-            .iter()
-            .find(|id| g.get(id).map(|n| n.role == Role::MenuBar).unwrap_or(false))
-            .cloned()
-    }
-
     /// WP-J/J1: the scene graph under a projection `view`, optionally limited to
     /// actionable nodes. `Full` without `actionable_only` is byte-for-byte the
     /// old `get_scene_graph` payload (the escape hatch).
     pub fn scene_graph_view(&self, view: SceneView, actionable_only: bool) -> Value {
-        let window_rect = self.window_rect();
-        let menubar = self.menubar_root_id();
-        let menubar = menubar.as_deref();
+        let window_rect = self.cached_window_rect;
+        let menubar = self.cached_menubar_root.as_deref();
         let g = self.scene_graph();
         match view {
             SceneView::Full if !actionable_only => serde_json::to_value(g).unwrap_or(Value::Null),
@@ -244,10 +236,10 @@ impl Engine {
                 })
             }
             SceneView::Summary => {
-                let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+                let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
                 let mut n_actionable = 0usize;
                 for n in g.nodes.values() {
-                    *counts.entry(role_key(n.role)).or_insert(0) += 1;
+                    *counts.entry(n.role.as_str()).or_insert(0) += 1;
                     if node_actionable(n, window_rect, menubar) {
                         n_actionable += 1;
                     }
@@ -294,29 +286,29 @@ impl Engine {
 
     /// Whitelist a high-risk element so the **next** gated action on it proceeds.
     ///
-    /// Audit #2 — validated at call time, not blindly stored:
-    /// * the id must exist in the current scene (`ElementNotFound` otherwise), and
-    /// * its current risk must actually require approval — approving a phantom or a
-    ///   low-risk element is an error, so a grant can never be parked on something
-    ///   that isn't gated.
+    /// Audit #2 — validated at call time, not blindly stored. The id must exist in
+    /// the current scene (`ElementNotFound` otherwise) and be genuinely gated:
+    /// * its own current risk requires approval (a high-risk element / drop target), **or**
+    /// * it is the subject of a pending contextual gate — e.g. a destructive value
+    ///   typed into an otherwise low-risk field (audit #13).
     ///
-    /// The grant is **one-shot**: [`act`](Self::act) consumes it on the next
-    /// successful action, and every [`refresh`](Self::refresh) clears all grants.
-    /// For a composite drag, approve the high-risk participant (the dangerous drop
-    /// target carries its own high risk, so it is the id passed here).
+    /// Approving a phantom or a plain low-risk id is an error, so a grant can never
+    /// be parked on something that isn't gated. The grant is **one-shot**:
+    /// [`act`](Self::act) consumes it on the next successful action, and every
+    /// [`refresh`](Self::refresh) clears all grants.
     pub fn approve(&mut self, id: &str) -> visualops_core::Result<()> {
         if self.scene_graph().get(id).is_none() {
             return Err(VisualOpsError::ElementNotFound(id.into()));
         }
-        let gated = self
+        let own_gated = self
             .affordance_graph()
             .affordances
             .get(id)
             .map(|a| a.risk.requires_approval)
             .unwrap_or(false);
-        if !gated {
+        if !own_gated && !self.pending_gate_ids.contains(id) {
             return Err(VisualOpsError::Execution(format!(
-                "{id} is not a high-risk element; no approval required"
+                "{id} is not gated; no approval required"
             )));
         }
         self.approvals.insert(id.to_string());
@@ -419,17 +411,28 @@ impl Engine {
             aff.risk.clone()
         };
 
-        // Effective risk = source, or max(source, drop target) for a composite
-        // drag (audit #3). The audit entry reports this combined risk so the
-        // operator sees *why* it is gated (e.g. "drop target: matched keyword …").
-        let effective = match &co_target {
-            Some(co) => combined_drag_risk(&source_risk, &co.risk),
-            None => source_risk.clone(),
+        // Audit #13: for a Type action the *payload* can be destructive even when
+        // the field itself is harmless, so assess the typed text against the same
+        // keyword tiers and fold it in.
+        let text_risk = match (action, argument) {
+            (SemanticAction::Type, Some(arg)) => Some(self.risk.assess_text(arg)),
+            _ => None,
         };
 
-        // Every high-risk participant must be approved to clear the gate. For a
-        // plain action that's just the element; for a composite drag it can be the
-        // source, the target, or both.
+        // Effective risk = max(source, drop target [audit #3], typed text [audit
+        // #13]). The audit entry reports this combined risk so the operator sees
+        // *why* it is gated (e.g. "drop target: …" / "typed text: …").
+        let mut effective = match &co_target {
+            Some(co) => merge_risk(&source_risk, &co.risk, "drop target"),
+            None => source_risk.clone(),
+        };
+        if let Some(tr) = &text_risk {
+            effective = merge_risk(&effective, tr, "typed text");
+        }
+
+        // Every high-risk participant must be approved to clear the gate: the
+        // element itself, a composite drag's drop target, or the field a
+        // destructive value is being typed into.
         let mut gated_ids: Vec<String> = Vec::new();
         if source_risk.requires_approval {
             gated_ids.push(id.to_string());
@@ -439,7 +442,15 @@ impl Engine {
                 gated_ids.push(co.id.clone());
             }
         }
-        let approved = gated_ids.iter().all(|g| self.approvals.contains(g));
+        if text_risk.as_ref().map(|r| r.requires_approval).unwrap_or(false)
+            && !gated_ids.iter().any(|g| g == id)
+        {
+            gated_ids.push(id.to_string());
+        }
+        // A gate with no nameable participant must NOT pass vacuously: require a
+        // non-empty, fully-approved set. (When `effective.requires_approval` is
+        // true, `gated_ids` is always non-empty by the pushes above.)
+        let approved = !gated_ids.is_empty() && gated_ids.iter().all(|g| self.approvals.contains(g));
 
         // Build the audit record once; the two outcome paths only differ in
         // `result` and `graph_diff` (applied via struct update below).
@@ -455,8 +466,12 @@ impl Engine {
         };
 
         // Gate: high-risk actions need prior approval. Note the executor is
-        // never invoked on this path.
+        // never invoked on this path. Record the gated participants so a later
+        // `approve` can authorise a contextually-gated id (audit #13).
         if effective.requires_approval && !approved {
+            for g in &gated_ids {
+                self.pending_gate_ids.insert(g.clone());
+            }
             return Ok(self.push_entry(base));
         }
 
@@ -466,12 +481,13 @@ impl Engine {
             Err(_) => ActionResult::Failed,
         };
         // One-shot consumption (audit #2): a grant authorises exactly one
-        // successful action; drop it so a repeat re-gates. (`refresh` below also
-        // clears all grants — this keeps the semantics explicit and independent
-        // of refresh ordering.)
+        // successful action; drop it (and clear any pending-gate marker) so a
+        // repeat re-gates. (`refresh` below also clears all grants — this keeps
+        // the semantics explicit and independent of refresh ordering.)
         if result == ActionResult::Success {
             for g in &gated_ids {
                 self.approvals.remove(g);
+                self.pending_gate_ids.remove(g);
             }
         }
         let _ = self.refresh();
@@ -499,6 +515,26 @@ impl Engine {
 }
 
 // --- WP-J / J2: latent (non-actionable) node geometry -----------------------
+
+/// The window's on-screen rect, read from the `Window` node's bbox (the scene
+/// graph's [`WindowRef`] carries no geometry). `None` when no window node has a
+/// bbox — then [`node_on_screen`]'s off-window test is skipped. Memoised by
+/// [`Engine::refresh`] into `cached_window_rect` (audit #9).
+fn compute_window_rect(g: &SceneGraph) -> Option<Bbox> {
+    g.nodes.values().find(|n| n.role == Role::Window).and_then(|n| n.bbox)
+}
+
+/// Id of the menubar **root** — the `MenuBar`-role node in `roots` (its
+/// `AXMenuBarItem` children share that role but have a parent, so iterating
+/// `roots` disambiguates). Its direct children are the top-level menu openers
+/// exempted from the latent filter by [`is_top_level_menu`]. Memoised by
+/// [`Engine::refresh`] into `cached_menubar_root` (audit #9).
+fn compute_menubar_root(g: &SceneGraph) -> Option<String> {
+    g.roots
+        .iter()
+        .find(|id| g.get(id).map(|n| n.role == Role::MenuBar).unwrap_or(false))
+        .cloned()
+}
 
 /// Two axis-aligned boxes overlap (shared positive area).
 fn bbox_intersects(a: Bbox, b: Bbox) -> bool {
@@ -553,22 +589,13 @@ fn node_actionable(node: &SceneNode, window_rect: Option<Bbox>, menubar_root: Op
     node.enabled && node_visible_or_menu(node, window_rect, menubar_root)
 }
 
-/// JSON string for a node's normalised [`Role`] (e.g. `"menu_item"`), reusing the
-/// serde rename so histogram keys match the scene-graph encoding.
-fn role_key(role: Role) -> String {
-    match serde_json::to_value(role) {
-        Ok(Value::String(s)) => s,
-        _ => "unknown".to_string(),
-    }
-}
-
 /// WP-J/J1 compact projection of one node: keep only the agent-facing fields and
 /// drop the heavy/derivable AX detail (`ax_role`, `help`, `ax_actions`,
 /// `ax_identifier`, `last_seen_ms`), collapsing `children` to a count.
 fn compact_node(n: &SceneNode) -> Value {
     let mut o = serde_json::Map::new();
     o.insert("id".into(), json!(n.id));
-    o.insert("role".into(), json!(role_key(n.role)));
+    o.insert("role".into(), json!(n.role.as_str()));
     if let Some(l) = &n.label {
         o.insert("label".into(), json!(l));
     }
@@ -599,19 +626,20 @@ struct CoTarget {
     risk: RiskAssessment,
 }
 
-/// Combine the source's and drop target's risk for a composite drag (audit #3):
-/// the higher tier, approval required if *either* side requires it, and reasons
-/// merged with the target's prefixed `drop target: …` so the audit shows which
-/// side raised the gate. `RiskLevel` is `Ord`, so `max` is the stricter tier.
-fn combined_drag_risk(source: &RiskAssessment, target: &RiskAssessment) -> RiskAssessment {
+/// Combine a base risk with an extra risk-bearing facet (a drag's drop target,
+/// audit #3; or the typed payload, audit #13): the higher tier, approval required
+/// if *either* requires it, and the extra's reasons merged in with `label: …` so
+/// the audit shows which facet raised the gate. `RiskLevel` is `Ord`, so `max` is
+/// the stricter tier.
+fn merge_risk(base: &RiskAssessment, extra: &RiskAssessment, label: &str) -> RiskAssessment {
     RiskAssessment {
-        level: source.level.max(target.level),
-        requires_approval: source.requires_approval || target.requires_approval,
-        reasons: source
+        level: base.level.max(extra.level),
+        requires_approval: base.requires_approval || extra.requires_approval,
+        reasons: base
             .reasons
             .iter()
             .cloned()
-            .chain(target.reasons.iter().map(|r| format!("drop target: {r}")))
+            .chain(extra.reasons.iter().map(|r| format!("{label}: {r}")))
             .collect(),
     }
 }
@@ -856,6 +884,52 @@ mod tests {
         assert_eq!(recorded.len(), 1, "executor ran exactly once, on the source");
         assert_eq!(recorded[0].0, source);
         assert_eq!(recorded[0].1, SemanticAction::Drag);
+    }
+
+    // --- Audit #13: a destructive *typed value* gates a low-risk field --------
+
+    #[test]
+    fn destructive_typed_text_gates_low_risk_field_and_is_approvable() {
+        let (mut eng, calls) = engine_with_counter();
+        let field = id_for(&eng, "Corps de la note"); // low-risk, typeable text area
+        assert!(
+            !eng.affordance_graph().affordances[&field].risk.requires_approval,
+            "the field itself is low-risk"
+        );
+
+        // Out of context, a low-risk field is NOT approvable (audit #2 still holds).
+        assert!(eng.approve(&field).is_err(), "low-risk field not approvable out of context");
+
+        // A destructive payload raises the gate even though the field is harmless.
+        let gated = eng.type_into(&field, "supprimer tout", Some("danger")).unwrap();
+        assert_eq!(gated.result, ActionResult::PendingApproval, "destructive text gates the field");
+        assert_eq!(gated.risk.level, RiskLevel::High, "effective risk = max(field, text)");
+        assert!(
+            gated
+                .risk
+                .reasons
+                .iter()
+                .any(|r| r.contains("typed text") && r.to_lowercase().contains("supprimer")),
+            "audit attributes the risk to the typed text: {:?}",
+            gated.risk.reasons
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "gated type never reaches the executor");
+
+        // The field is now the subject of a pending gate → approvable; type proceeds.
+        eng.approve(&field).unwrap();
+        let ok = eng.type_into(&field, "supprimer tout", Some("approved")).unwrap();
+        assert_eq!(ok.result, ActionResult::Success);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // One-shot: a second destructive type gates again (grant consumed + refresh).
+        let regated = eng.type_into(&field, "supprimer tout", None).unwrap();
+        assert_eq!(regated.result, ActionResult::PendingApproval);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Benign text into the same field is never gated.
+        let benign = eng.type_into(&field, "bonjour", None).unwrap();
+        assert_eq!(benign.result, ActionResult::Success);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

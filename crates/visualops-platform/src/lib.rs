@@ -68,6 +68,7 @@ mod macos {
     const BATCH_ATTR_COUNT: usize = 12;
     const DRAG_STEPS: usize = 8;
     const DRAG_STEP_DELAY: Duration = Duration::from_millis(8);
+    const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.0;
 
     thread_local! {
         static AX_CACHE: RefCell<HashMap<CacheKey, AxElement>> = RefCell::new(HashMap::new());
@@ -134,6 +135,11 @@ mod macos {
     struct AxElement(AXUIElementRef);
 
     impl AxElement {
+        fn from_owned(raw: AXUIElementRef) -> Self {
+            set_ax_timeout(raw);
+            Self(raw)
+        }
+
         fn as_ptr(&self) -> AXUIElementRef {
             self.0
         }
@@ -142,7 +148,7 @@ mod macos {
             unsafe {
                 core_foundation_sys::base::CFRetain(self.0 as CFTypeRef);
             }
-            Self(self.0)
+            Self::from_owned(self.0)
         }
     }
 
@@ -157,6 +163,17 @@ mod macos {
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
         fn _AXUIElementGetWindow(element: AXUIElementRef, window_id: *mut u32) -> AXError;
+    }
+
+    fn set_ax_timeout(element: AXUIElementRef) {
+        if !element.is_null() {
+            unsafe {
+                accessibility_sys::AXUIElementSetMessagingTimeout(
+                    element,
+                    AX_MESSAGING_TIMEOUT_SECS,
+                );
+            }
+        }
     }
 
     pub fn capture(target: &Target) -> Result<Vec<RawAxNode>> {
@@ -322,10 +339,7 @@ mod macos {
                 "AXUIElementCreateApplication returned null for pid {pid}"
             )))
         } else {
-            unsafe {
-                accessibility_sys::AXUIElementSetMessagingTimeout(app, 1.0);
-            }
-            Ok(AxElement(app))
+            Ok(AxElement::from_owned(app))
         }
     }
 
@@ -947,7 +961,7 @@ mod macos {
         {
             let raw = value.as_CFTypeRef() as AXUIElementRef;
             mem::forget(value);
-            Some(AxElement(raw))
+            Some(AxElement::from_owned(raw))
         } else {
             None
         }
@@ -1002,7 +1016,7 @@ mod macos {
                 unsafe {
                     core_foundation_sys::base::CFRetain(cf_ref);
                 }
-                elements.push(AxElement(cf_ref as AXUIElementRef));
+                elements.push(AxElement::from_owned(cf_ref as AXUIElementRef));
             }
         }
         elements
