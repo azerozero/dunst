@@ -70,7 +70,37 @@ mod macos {
     const DRAG_STEP_DELAY: Duration = Duration::from_millis(8);
 
     thread_local! {
-        static AX_CACHE: RefCell<HashMap<ElementKey, AxElement>> = RefCell::new(HashMap::new());
+        static AX_CACHE: RefCell<HashMap<CacheKey, AxElement>> = RefCell::new(HashMap::new());
+    }
+
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    struct TargetKey {
+        pid: i32,
+        window_id: u32,
+    }
+
+    impl TargetKey {
+        fn from_target(target: &Target) -> Self {
+            Self {
+                pid: target.pid,
+                window_id: target.window_id,
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    struct CacheKey {
+        target: TargetKey,
+        element: ElementKey,
+    }
+
+    impl CacheKey {
+        fn from_scene(target: &Target, node: &SceneNode) -> Self {
+            Self {
+                target: TargetKey::from_target(target),
+                element: ElementKey::from_scene(node),
+            }
+        }
     }
 
     #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -132,13 +162,26 @@ mod macos {
     pub fn capture(target: &Target) -> Result<Vec<RawAxNode>> {
         ensure_trusted()?;
         clear_cache();
+        let target_key = TargetKey::from_target(target);
         let app = app_element(target.pid)?;
         let window = resolve_window(&app, target.window_id)?;
         let walk_attrs = WalkAttributes::new();
         let mut state = WalkState::default();
-        let mut roots = vec![walk_element(&window, 0, &mut state, &walk_attrs)?];
+        let mut roots = vec![walk_element(
+            &window,
+            &target_key,
+            0,
+            &mut state,
+            &walk_attrs,
+        )?];
         if let Some(menu_bar) = attr_ax_element(&app, kAXMenuBarAttribute) {
-            roots.push(walk_element(&menu_bar, 0, &mut state, &walk_attrs)?);
+            roots.push(walk_element(
+                &menu_bar,
+                &target_key,
+                0,
+                &mut state,
+                &walk_attrs,
+            )?);
         }
         if state.capped {
             eprintln!(
@@ -168,7 +211,7 @@ mod macos {
     ) -> Result<()> {
         ensure_trusted()?;
         let started = Instant::now();
-        let key = ElementKey::from_scene(node);
+        let key = CacheKey::from_scene(target, node);
         let mut path = "direct";
         let result = perform_with_cache(target, node, action, argument, &key, &mut path);
         if env::var_os("VO_ACTION_TIMING").is_some() {
@@ -185,7 +228,7 @@ mod macos {
         node: &SceneNode,
         action: SemanticAction,
         argument: Option<&str>,
-        key: &ElementKey,
+        key: &CacheKey,
         path: &mut &'static str,
     ) -> Result<()> {
         if matches!(action, SemanticAction::Hover | SemanticAction::Drag) {
@@ -195,13 +238,17 @@ mod macos {
 
         if env::var_os("VO_ACTION_DISABLE_CACHE").is_none() {
             if let Some(element) = cached_element(key) {
-                *path = "cached";
-                match perform_on_element(Some(&element), target.pid, node, action, argument) {
-                    Ok(()) => return Ok(()),
-                    Err(err) if err.is_stale() => {
-                        remove_cached_element(key);
+                if !cached_element_matches_target(&element, target) {
+                    remove_cached_element(key);
+                } else {
+                    *path = "cached";
+                    match perform_on_element(Some(&element), target.pid, node, action, argument) {
+                        Ok(()) => return Ok(()),
+                        Err(err) if err.is_stale() => {
+                            remove_cached_element(key);
+                        }
+                        Err(err) => return Err(err.into()),
                     }
-                    Err(err) => return Err(err.into()),
                 }
             }
         }
@@ -294,12 +341,18 @@ mod macos {
             return Ok(windows.remove(index));
         }
 
-        if let Some(main_window) = attr_ax_element(app, kAXMainWindowAttribute) {
-            if requested_window_id != 0 {
-                eprintln!(
-                    "visualops-platform: window id {requested_window_id} not found; using AXMainWindow"
-                );
+        if requested_window_id != 0 {
+            if let Some(main_window) = attr_ax_element(app, kAXMainWindowAttribute) {
+                if ax_window_id(&main_window) == Some(requested_window_id) {
+                    return Ok(main_window);
+                }
             }
+            return Err(VisualOpsError::Perception(format!(
+                "window id {requested_window_id} not found; target window may be closed"
+            )));
+        }
+
+        if let Some(main_window) = attr_ax_element(app, kAXMainWindowAttribute) {
             return Ok(main_window);
         }
 
@@ -404,13 +457,14 @@ mod macos {
 
     fn walk_element(
         element: &AxElement,
+        target_key: &TargetKey,
         depth: usize,
         state: &mut WalkState,
         attrs: &WalkAttributes,
     ) -> Result<RawAxNode> {
         state.count += 1;
         let Some(batch) = BatchValues::read(element, attrs) else {
-            return walk_element_single(element, depth, state, attrs);
+            return walk_element_single(element, target_key, depth, state, attrs);
         };
         let ax_role = batch
             .get(0)
@@ -441,7 +495,7 @@ mod macos {
             focused: batch.get(10).and_then(cf_bool).unwrap_or(false),
             children: Vec::new(),
         };
-        cache_element(&node, element);
+        cache_element(target_key, &node, element);
 
         if depth >= MAX_DEPTH || state.count >= MAX_NODES {
             state.capped = true;
@@ -455,7 +509,7 @@ mod macos {
                     break;
                 }
                 node.children
-                    .push(walk_element(&child, depth + 1, state, attrs)?);
+                    .push(walk_element(&child, target_key, depth + 1, state, attrs)?);
             }
         }
 
@@ -464,6 +518,7 @@ mod macos {
 
     fn walk_element_single(
         element: &AxElement,
+        target_key: &TargetKey,
         depth: usize,
         state: &mut WalkState,
         attrs: &WalkAttributes,
@@ -492,7 +547,7 @@ mod macos {
             focused: attr_bool(element, kAXFocusedAttribute).unwrap_or(false),
             children: Vec::new(),
         };
-        cache_element(&node, element);
+        cache_element(target_key, &node, element);
 
         if depth >= MAX_DEPTH || state.count >= MAX_NODES {
             state.capped = true;
@@ -506,7 +561,7 @@ mod macos {
                     break;
                 }
                 node.children
-                    .push(walk_element(&child, depth + 1, state, attrs)?);
+                    .push(walk_element(&child, target_key, depth + 1, state, attrs)?);
             }
         }
 
@@ -550,22 +605,30 @@ mod macos {
         AX_CACHE.with(|cache| cache.borrow_mut().clear());
     }
 
-    fn cache_element(node: &RawAxNode, element: &AxElement) {
+    fn cache_element(target_key: &TargetKey, node: &RawAxNode, element: &AxElement) {
         AX_CACHE.with(|cache| {
-            cache
-                .borrow_mut()
-                .insert(ElementKey::from_raw(node), element.retain_clone());
+            cache.borrow_mut().insert(
+                CacheKey {
+                    target: target_key.clone(),
+                    element: ElementKey::from_raw(node),
+                },
+                element.retain_clone(),
+            );
         });
     }
 
-    fn cached_element(key: &ElementKey) -> Option<AxElement> {
+    fn cached_element(key: &CacheKey) -> Option<AxElement> {
         AX_CACHE.with(|cache| cache.borrow().get(key).map(AxElement::retain_clone))
     }
 
-    fn remove_cached_element(key: &ElementKey) {
+    fn remove_cached_element(key: &CacheKey) {
         AX_CACHE.with(|cache| {
             cache.borrow_mut().remove(key);
         });
+    }
+
+    fn cached_element_matches_target(element: &AxElement, target: &Target) -> bool {
+        target.window_id == 0 || ax_window_id(element) == Some(target.window_id)
     }
 
     fn element_key(element: &AxElement) -> Option<ElementKey> {
@@ -768,9 +831,11 @@ mod macos {
         );
         let source = event_source("create drag CGEventSource")?;
         let saved_cursor = current_cursor_position(&source)?;
+        let mut mouse_down_posted = false;
 
         let result = (|| {
             post_mouse(source.clone(), pid, CGEventType::LeftMouseDown, start)?;
+            mouse_down_posted = true;
             thread::sleep(DRAG_STEP_DELAY);
             for step in 1..=DRAG_STEPS {
                 let t = step as f64 / DRAG_STEPS as f64;
@@ -781,8 +846,13 @@ mod macos {
                 post_mouse(source.clone(), pid, CGEventType::LeftMouseDragged, point)?;
                 thread::sleep(DRAG_STEP_DELAY);
             }
-            post_mouse(source, pid, CGEventType::LeftMouseUp, end)
+            post_mouse(source.clone(), pid, CGEventType::LeftMouseUp, end)?;
+            mouse_down_posted = false;
+            Ok(())
         })();
+        if result.is_err() && mouse_down_posted {
+            let _ = post_mouse(source.clone(), pid, CGEventType::LeftMouseUp, end);
+        }
         restore_cursor_position(saved_cursor)?;
         result
     }
