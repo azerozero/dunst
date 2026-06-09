@@ -136,6 +136,8 @@ impl Engine {
         include_latent: bool,
     ) -> Vec<String> {
         let window_rect = self.window_rect();
+        let menubar = self.menubar_root_id();
+        let menubar = menubar.as_deref();
         let g = self.scene_graph();
         self.affordance_graph()
             .affordances
@@ -143,7 +145,9 @@ impl Engine {
             .filter(|a| a.actions.contains(&action))
             .filter(|a| {
                 include_latent
-                    || g.get(&a.id).map(|n| node_on_screen(n, window_rect)).unwrap_or(false)
+                    || g.get(&a.id)
+                        .map(|n| node_visible_or_menu(n, window_rect, menubar))
+                        .unwrap_or(false)
             })
             .map(|a| a.id.clone())
             .collect()
@@ -157,10 +161,12 @@ impl Engine {
             return serde_json::to_value(ag).unwrap_or(Value::Null);
         }
         let window_rect = self.window_rect();
+        let menubar = self.menubar_root_id();
+        let menubar = menubar.as_deref();
         let g = self.scene_graph();
         let mut map = serde_json::Map::new();
         for (id, aff) in &ag.affordances {
-            if g.get(id).map(|n| node_on_screen(n, window_rect)).unwrap_or(false) {
+            if g.get(id).map(|n| node_visible_or_menu(n, window_rect, menubar)).unwrap_or(false) {
                 map.insert(id.clone(), serde_json::to_value(aff).unwrap_or(Value::Null));
             }
         }
@@ -178,18 +184,33 @@ impl Engine {
             .and_then(|n| n.bbox)
     }
 
+    /// Id of the menubar **root** — the `MenuBar`-role node in `roots` (its
+    /// `AXMenuBarItem` children share that role but have a parent, so iterating
+    /// `roots` disambiguates). Its direct children are the top-level menu openers
+    /// exempted from the latent filter by [`is_top_level_menu`]. Cloned (cheap)
+    /// to keep callers free of a borrow on the graph.
+    fn menubar_root_id(&self) -> Option<String> {
+        let g = self.scene_graph();
+        g.roots
+            .iter()
+            .find(|id| g.get(id).map(|n| n.role == Role::MenuBar).unwrap_or(false))
+            .cloned()
+    }
+
     /// WP-J/J1: the scene graph under a projection `view`, optionally limited to
     /// actionable nodes. `Full` without `actionable_only` is byte-for-byte the
     /// old `get_scene_graph` payload (the escape hatch).
     pub fn scene_graph_view(&self, view: SceneView, actionable_only: bool) -> Value {
-        let g = self.scene_graph();
         let window_rect = self.window_rect();
+        let menubar = self.menubar_root_id();
+        let menubar = menubar.as_deref();
+        let g = self.scene_graph();
         match view {
             SceneView::Full if !actionable_only => serde_json::to_value(g).unwrap_or(Value::Null),
             SceneView::Full => {
                 let mut map = serde_json::Map::new();
                 for (id, n) in &g.nodes {
-                    if node_actionable(n, window_rect) {
+                    if node_actionable(n, window_rect, menubar) {
                         map.insert(id.clone(), serde_json::to_value(n).unwrap_or(Value::Null));
                     }
                 }
@@ -203,7 +224,7 @@ impl Engine {
             SceneView::Compact => {
                 let mut map = serde_json::Map::new();
                 for (id, n) in &g.nodes {
-                    if actionable_only && !node_actionable(n, window_rect) {
+                    if actionable_only && !node_actionable(n, window_rect, menubar) {
                         continue;
                     }
                     map.insert(id.clone(), compact_node(n));
@@ -221,7 +242,7 @@ impl Engine {
                 let mut n_actionable = 0usize;
                 for n in g.nodes.values() {
                     *counts.entry(role_key(n.role)).or_insert(0) += 1;
-                    if node_actionable(n, window_rect) {
+                    if node_actionable(n, window_rect, menubar) {
                         n_actionable += 1;
                     }
                 }
@@ -410,10 +431,34 @@ fn node_on_screen(node: &SceneNode, window_rect: Option<Bbox>) -> bool {
     }
 }
 
-/// J1 actionability: on-screen **and** enabled (what `actionable_only` keeps and
-/// what `summary.n_actionable` counts).
-fn node_actionable(node: &SceneNode, window_rect: Option<Bbox>) -> bool {
-    node.enabled && node_on_screen(node, window_rect)
+/// WP-J follow-up — a node is a **top-level menu opener** when it sits directly
+/// under the menubar root (Fichier, Édition, Format, …). These are legitimately
+/// actionable (click / open_menu opens the menu) even with a null/off-window
+/// bbox, so they are exempt from the latent filter. The rule is *structural*
+/// (parent == menubar root id): deep collapsed submenu items — whose parent is a
+/// closed `Menu`, not the menubar root — are NOT exempt and stay filtered.
+fn is_top_level_menu(node: &SceneNode, menubar_root: Option<&str>) -> bool {
+    matches!(
+        (node.parent.as_deref(), menubar_root),
+        (Some(parent), Some(root)) if parent == root
+    )
+}
+
+/// Visible in actionable listings: a real on-screen footprint OR a top-level
+/// menu opener (see [`is_top_level_menu`]). This is the predicate the affordance
+/// listings filter on (geometry, no `enabled` requirement).
+fn node_visible_or_menu(
+    node: &SceneNode,
+    window_rect: Option<Bbox>,
+    menubar_root: Option<&str>,
+) -> bool {
+    node_on_screen(node, window_rect) || is_top_level_menu(node, menubar_root)
+}
+
+/// J1 actionability: visible (on-screen or a top-level menu opener) **and**
+/// enabled (what `actionable_only` keeps and `summary.n_actionable` counts).
+fn node_actionable(node: &SceneNode, window_rect: Option<Bbox>, menubar_root: Option<&str>) -> bool {
+    node.enabled && node_visible_or_menu(node, window_rect, menubar_root)
 }
 
 /// JSON string for a node's normalised [`Role`] (e.g. `"menu_item"`), reusing the
@@ -740,5 +785,60 @@ mod tests {
         assert_eq!(e.result, ActionResult::PendingApproval);
         assert!(e.risk.requires_approval);
         assert_eq!(calls.load(Ordering::SeqCst), 0, "gated action never reaches the executor");
+    }
+
+    #[test]
+    fn top_level_menu_opener_listed_but_deep_submenu_item_filtered() {
+        let (mut eng, calls) = engine_with_counter();
+        // "Édition" is a top-level menu opener: direct child of the menubar root,
+        // bbox null. "Supprimer" is a deep item under a closed Menu, bbox null.
+        let edition = id_for(&eng, "Édition");
+        let supprimer = id_for(&eng, "Supprimer");
+
+        // Both are geometrically latent (no bbox) — only structure differs.
+        assert!(eng.scene_graph().get(&edition).unwrap().bbox.is_none());
+        assert!(eng.scene_graph().get(&supprimer).unwrap().bbox.is_none());
+
+        // The exemption is STRUCTURAL, not role-based: Édition's parent IS the
+        // menubar root; Supprimer's parent is a closed Menu, not the root.
+        let menubar_root = eng
+            .scene_graph()
+            .roots
+            .iter()
+            .find(|id| eng.scene_graph().get(id).map(|n| n.role == Role::MenuBar).unwrap_or(false))
+            .cloned()
+            .expect("menubar root in roots");
+        assert_eq!(
+            eng.scene_graph().get(&edition).unwrap().parent.as_deref(),
+            Some(menubar_root.as_str()),
+            "Édition sits directly under the menubar root"
+        );
+        assert_ne!(
+            eng.scene_graph().get(&supprimer).unwrap().parent.as_deref(),
+            Some(menubar_root.as_str()),
+            "Supprimer sits under a closed Menu, not the menubar root"
+        );
+
+        // query_affordances("click"): the opener is listed, the deep item is not.
+        let click = eng.query_affordances(SemanticAction::Click);
+        assert!(click.contains(&edition), "top-level menu opener listed despite null bbox");
+        assert!(!click.contains(&supprimer), "deep submenu item stays filtered (phantom)");
+
+        // include_latent brings back the deep phantom too (superset).
+        let all = eng.query_affordances_filtered(SemanticAction::Click, true);
+        assert!(all.contains(&edition));
+        assert!(all.contains(&supprimer));
+
+        // get_affordances mirrors the same exemption.
+        let aff = eng.affordances_view(false);
+        assert!(aff["affordances"].get(edition.as_str()).is_some(), "opener kept in get_affordances");
+        assert!(aff["affordances"].get(supprimer.as_str()).is_none(), "deep item omitted in get_affordances");
+
+        // find_element still locates both; the gate still acts on the deep item by id.
+        assert!(!eng.find_element("Édition").is_empty());
+        assert!(!eng.find_element("Supprimer").is_empty());
+        let gated = eng.click_element(&supprimer, Some("delete")).unwrap();
+        assert_eq!(gated.result, ActionResult::PendingApproval);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "exemption never opens the gate");
     }
 }
