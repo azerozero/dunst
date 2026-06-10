@@ -142,6 +142,16 @@ fn tools_list() -> Vec<Value> {
             ),
         ),
         tool(
+            "click_at",
+            "Click at a raw screen point (x,y). For OCR-driven navigation: read_text a link, then click_at its bbox centre. NOTE: not bound to an element — bypasses per-element risk gating.",
+            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
+        ),
+        tool(
+            "press_key",
+            "Press a named key on the target (e.g. \"Return\"/\"Enter\" to submit a typed URL, \"Tab\", \"Escape\"). Raw, ungated keyboard input.",
+            schema(json!({ "key": {"type":"string"} }), &["key"]),
+        ),
+        tool(
             "approve",
             "Whitelist a high-risk element so the next action on it proceeds.",
             schema(json!({ "id": {"type":"string"} }), &["id"]),
@@ -229,6 +239,23 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string()),
             _ => Err("missing 'source_id' or 'target_id'".into()),
+        },
+        "click_at" => match (
+            args.get("x").and_then(Value::as_f64),
+            args.get("y").and_then(Value::as_f64),
+        ) {
+            (Some(x), Some(y)) => engine
+                .click_at(x, y)
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string()),
+            _ => Err("click_at requires numeric 'x' and 'y'".into()),
+        },
+        "press_key" => match arg("key") {
+            Some(key) => engine
+                .press_key(&key)
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string()),
+            None => Err("missing 'key'".into()),
         },
         "approve" => match arg("id") {
             Some(eid) => engine
@@ -326,6 +353,12 @@ mod tests {
         Engine::new(perceptor, exec, Target { pid: 1363, window_id }).unwrap()
     }
 
+    fn engine_with_pid(pid: i32) -> Engine {
+        let perceptor = Box::new(MockPerceptor::notes_fixture().unwrap());
+        let exec = Box::<RecordingExecutor>::default();
+        Engine::new(perceptor, exec, Target { pid, window_id: 105 }).unwrap()
+    }
+
     /// Drive `handle_tool_call` exactly as the stdio loop does.
     fn call(engine: &mut Engine, name: &str, arguments: Value) -> Value {
         let req = json!({
@@ -382,7 +415,8 @@ mod tests {
     #[test]
     fn tools_list_exposes_read_text_with_object_schema() {
         let tools = tools_list();
-        assert_eq!(tools.len(), 14, "read_text brings the tool count to 14");
+        // read_text + click_at + press_key brought the set to 16.
+        assert_eq!(tools.len(), 16, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(
@@ -418,5 +452,50 @@ mod tests {
         let bad = call(&mut e, "read_text", json!({ "region": { "x": 1.0 } }));
         assert!(is_error(&bad));
         assert!(text(&bad).contains("region"), "got: {}", text(&bad));
+    }
+
+    #[test]
+    fn tools_list_exposes_click_at_and_press_key() {
+        let tools = tools_list();
+        let click = tools
+            .iter()
+            .find(|t| t["name"] == "click_at")
+            .expect("click_at tool present");
+        assert_eq!(click["inputSchema"]["type"], "object");
+        assert_eq!(click["inputSchema"]["required"], json!(["x", "y"]));
+
+        let press = tools
+            .iter()
+            .find(|t| t["name"] == "press_key")
+            .expect("press_key tool present");
+        assert_eq!(press["inputSchema"]["type"], "object");
+        assert_eq!(press["inputSchema"]["required"], json!(["key"]));
+    }
+
+    #[test]
+    fn raw_input_tools_dispatch_and_error_cleanly() {
+        // A non-existent pid: on macOS the raw CGEvent posts to nothing (no test
+        // side effect); the dispatch wiring is what we assert here.
+        let mut e = engine_with_pid(i32::MAX);
+
+        // Missing required args → isError, before reaching the engine.
+        assert!(is_error(&call(&mut e, "press_key", json!({}))), "press_key needs 'key'");
+        assert!(
+            is_error(&call(&mut e, "click_at", json!({ "x": 10.0 }))),
+            "click_at needs both 'x' and 'y'"
+        );
+
+        // press_key with an unknown key → a clean isError on both platforms (macOS:
+        // the backend rejects the key name; non-macOS: the stub is unsupported).
+        let bad = call(&mut e, "press_key", json!({ "key": "definitely-not-a-real-key-xyz" }));
+        assert!(is_error(&bad), "unknown key must be a clean isError: {bad}");
+        assert_eq!(bad["jsonrpc"], "2.0");
+
+        // click_at with valid coords reaches the engine and returns a well-formed
+        // JSON-RPC response (success when a live window backs the pid, isError on the
+        // non-macOS stub) — never a panic.
+        let resp = call(&mut e, "click_at", json!({ "x": 100.0, "y": 200.0 }));
+        assert_eq!(resp["jsonrpc"], "2.0");
+        assert!(resp.get("result").is_some(), "well-formed response: {resp}");
     }
 }

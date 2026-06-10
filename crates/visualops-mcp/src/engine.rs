@@ -432,6 +432,91 @@ impl Engine {
         )
     }
 
+    // --- raw input tools (ungated) ------------------------------------------
+
+    /// Click at a raw **screen point** (P1 navigation: OCR a link with `read_text`,
+    /// then click its bbox centre).
+    ///
+    /// ⚠️ Unlike [`click_element`](Self::click_element), this is **not** bound to an
+    /// element or affordance, so it **bypasses per-element risk gating entirely** —
+    /// there is no label to assess, so the entry is audited LOW. The agent owns the
+    /// coordinate it derived from OCR and is responsible for it; a raw click can land
+    /// on anything under that point. It is still audited (`target_id =
+    /// "screen@x,y"`) and re-perceives afterwards like [`act`](Self::act).
+    #[cfg(target_os = "macos")]
+    pub fn click_at(&mut self, x: f64, y: f64) -> visualops_core::Result<AuditEntry> {
+        let outcome = visualops_platform::click_at_point(self.target.pid, x, y);
+        self.audit_raw_input(
+            format!("screen@{x},{y}"),
+            SemanticAction::Click,
+            Some(format!("{x},{y}")),
+            Some("raw screen click — bypasses per-element risk gating (agent owns the OCR coordinate)"),
+            outcome,
+        )
+    }
+
+    /// Non-macOS stub: raw CGEvent input needs the macOS backend.
+    #[cfg(not(target_os = "macos"))]
+    pub fn click_at(&mut self, _x: f64, _y: f64) -> visualops_core::Result<AuditEntry> {
+        Err(VisualOpsError::Execution("click_at requires a macOS backend".into()))
+    }
+
+    /// Press a named key (e.g. `"Return"`/`"Enter"` to submit a typed URL). A raw,
+    /// ungated keyboard input audited LOW; re-perceives afterwards like
+    /// [`act`](Self::act).
+    #[cfg(target_os = "macos")]
+    pub fn press_key(&mut self, key: &str) -> visualops_core::Result<AuditEntry> {
+        let outcome = visualops_platform::press_key(self.target.pid, key);
+        self.audit_raw_input(
+            "keyboard".to_string(),
+            SemanticAction::Type,
+            Some(key.to_string()),
+            Some("raw key press (ungated)"),
+            outcome,
+        )
+    }
+
+    /// Non-macOS stub: raw CGEvent input needs the macOS backend.
+    #[cfg(not(target_os = "macos"))]
+    pub fn press_key(&mut self, _key: &str) -> visualops_core::Result<AuditEntry> {
+        Err(VisualOpsError::Execution("press_key requires a macOS backend".into()))
+    }
+
+    /// Record a **raw input** (`click_at` / `press_key`) — a coordinate/key not bound
+    /// to any element, hence no affordance and no per-element gating (LOW risk by
+    /// construction). The attempt is always written to the trace; on platform
+    /// failure the entry is `Failed` and the error is surfaced to the caller. Mirrors
+    /// [`act`](Self::act)'s re-perceive (`refresh` + `diff_since`).
+    #[cfg(target_os = "macos")]
+    fn audit_raw_input(
+        &mut self,
+        target_id: String,
+        action: SemanticAction,
+        argument: Option<String>,
+        reasoning: Option<&str>,
+        outcome: visualops_core::Result<()>,
+    ) -> visualops_core::Result<AuditEntry> {
+        let ts_ms = visualops_core::now_ms();
+        let result = if outcome.is_ok() {
+            ActionResult::Success
+        } else {
+            ActionResult::Failed
+        };
+        let _ = self.refresh();
+        let graph_diff = self.diff_since();
+        let entry = self.push_entry(AuditEntry {
+            ts_ms,
+            target_id,
+            action,
+            argument,
+            risk: RiskAssessment::low(),
+            reasoning: reasoning.map(str::to_owned),
+            result,
+            graph_diff,
+        });
+        outcome.map(|()| entry)
+    }
+
     /// Compute an action's **effective risk** and the set of ids whose approval
     /// clears its gate. Folds a composite drag's drop target (audit #3) and a
     /// destructive typed payload (audit #13) into the source element's own risk via
