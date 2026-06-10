@@ -41,6 +41,23 @@ pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
     macos::hover_at_point(pid, x, y)
 }
 
+/// Time-multiplex the single OS cursor for a synthetic hover on a non-CDP
+/// surface: save the current position, **decouple the hardware mouse** (so the
+/// user can't fight the warp), warp to `(x, y)` and post a hover. Returns the
+/// saved position to restore with [`cursor_restore`]. The user's mouse is frozen
+/// until restore — keep the borrow brief (~tens of ms).
+#[cfg(target_os = "macos")]
+pub fn cursor_borrow_to(x: f64, y: f64) -> Result<(f64, f64)> {
+    macos::cursor_borrow_to(x, y)
+}
+
+/// End a [`cursor_borrow_to`]: warp the cursor back to `(x, y)` and **re-couple**
+/// the hardware mouse so the user controls it again.
+#[cfg(target_os = "macos")]
+pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
+    macos::cursor_restore(x, y)
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     //! macOS FFI ownership contract:
@@ -1046,6 +1063,40 @@ mod macos {
             .map_err(|err| ActionFailure::Execution(format!("create hover CGEvent: {err:?}")))?;
         event.post(CGEventTapLocation::HID);
         Ok(())
+    }
+
+    pub fn cursor_borrow_to(x: f64, y: f64) -> Result<(f64, f64)> {
+        cursor_borrow_to_impl(x, y).map_err(ActionFailure::into)
+    }
+
+    fn cursor_borrow_to_impl(x: f64, y: f64) -> std::result::Result<(f64, f64), ActionFailure> {
+        let source = event_source("create borrow CGEventSource")?;
+        let saved = current_cursor_position(&source)?;
+        let point = clamp_point_to_bounds(CGPoint::new(x, y), all_displays_bounds());
+        // Decouple the hardware mouse so the user moving it can't fight our warp
+        // during the brief borrow; cursor_restore re-couples it.
+        CGDisplay::associate_mouse_and_mouse_cursor_position(false)
+            .map_err(|err| ActionFailure::Execution(format!("decouple mouse: {err:?}")))?;
+        CGDisplay::warp_mouse_cursor_position(point)
+            .map_err(|err| ActionFailure::Execution(format!("warp for borrowed hover: {err:?}")))?;
+        let event =
+            CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
+                .map_err(|err| ActionFailure::Execution(format!("create hover CGEvent: {err:?}")))?;
+        event.post(CGEventTapLocation::HID);
+        Ok((saved.x, saved.y))
+    }
+
+    pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
+        cursor_restore_impl(x, y).map_err(ActionFailure::into)
+    }
+
+    fn cursor_restore_impl(x: f64, y: f64) -> std::result::Result<(), ActionFailure> {
+        let warped = CGDisplay::warp_mouse_cursor_position(CGPoint::new(x, y))
+            .map_err(|err| ActionFailure::Execution(format!("restore cursor: {err:?}")));
+        // Always re-couple the hardware mouse, even if the warp failed, so we never
+        // leave the user's mouse decoupled.
+        let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(true);
+        warped
     }
 
     pub fn press_key(pid: i32, key: &str) -> Result<()> {

@@ -157,6 +157,19 @@ fn tools_list() -> Vec<Value> {
             schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
         ),
         tool(
+            "read_at",
+            "Read the value at a screen point by time-multiplexing the cursor: briefly BORROW the OS cursor (decouple the user's mouse so it can't fight the warp), warp to (x,y) to trigger a real hover (chart crosshair), OCR around it, then restore the cursor + re-couple the mouse. For non-CDP surfaces.",
+            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
+        ),
+        tool(
+            "read_series",
+            "Read values at SEVERAL screen points in ONE cursor borrow — efficient for sampling a chart at intervals: decouple once, warp+OCR each point, restore once (the user's mouse freezes once, not per point). points = [[x,y], ...]; returns one OCR list per point.",
+            schema(
+                json!({ "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } } }),
+                &["points"],
+            ),
+        ),
+        tool(
             "press_key",
             "Press a named key on the target (e.g. \"Return\"/\"Enter\" to submit a typed URL, \"Tab\", \"Escape\"). Raw, ungated keyboard input.",
             schema(json!({ "key": {"type":"string"} }), &["key"]),
@@ -273,6 +286,32 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map(|()| json!("ok"))
                 .map_err(|e| e.to_string()),
             _ => Err("hover_at requires numeric 'x' and 'y'".into()),
+        },
+        "read_at" => match (
+            args.get("x").and_then(Value::as_f64),
+            args.get("y").and_then(Value::as_f64),
+        ) {
+            (Some(x), Some(y)) => engine
+                .read_at(x, y)
+                .map(|h| serde_json::to_value(h).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string()),
+            _ => Err("read_at requires numeric 'x' and 'y'".into()),
+        },
+        "read_series" => match args.get("points").and_then(Value::as_array) {
+            Some(arr) => {
+                let pts: Vec<(f64, f64)> = arr
+                    .iter()
+                    .filter_map(|p| {
+                        let a = p.as_array()?;
+                        Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+                    })
+                    .collect();
+                engine
+                    .read_series(&pts)
+                    .map(|h| serde_json::to_value(h).unwrap_or(Value::Null))
+                    .map_err(|e| e.to_string())
+            }
+            None => Err("read_series requires 'points': [[x,y], ...]".into()),
         },
         "press_key" => match arg("key") {
             Some(key) => engine
@@ -439,8 +478,8 @@ mod tests {
     #[test]
     fn tools_list_exposes_read_text_with_object_schema() {
         let tools = tools_list();
-        // read_text + read_shapes + click_at + hover_at + press_key brought the set to 18.
-        assert_eq!(tools.len(), 18, "tool count");
+        // + read_at + read_series brought the set to 20.
+        assert_eq!(tools.len(), 20, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(

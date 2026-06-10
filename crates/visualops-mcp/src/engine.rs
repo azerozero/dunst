@@ -540,6 +540,49 @@ impl Engine {
         Err(VisualOpsError::Execution("hover_at requires a macOS backend".into()))
     }
 
+    /// Read text at **several** screen points by time-multiplexing the OS cursor
+    /// (the operator's idea): one borrow for the whole sweep — decouple the
+    /// hardware mouse, warp to each point in turn to trigger its hover (e.g. a
+    /// chart crosshair value-at-cursor), OCR a region around it — then restore the
+    /// cursor and re-couple the mouse. Reading N values at intervals freezes the
+    /// user's mouse **once** (briefly), not N times. For Chrome/web prefer CDP
+    /// (no borrow). macOS-only.
+    #[cfg(target_os = "macos")]
+    pub fn read_series(&self, points: &[(f64, f64)]) -> visualops_core::Result<Vec<Vec<TextHit>>> {
+        if points.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (x0, y0) = points[0];
+        let saved = visualops_platform::cursor_borrow_to(x0, y0)?;
+        let mut out = Vec::with_capacity(points.len());
+        for &(x, y) in points {
+            // A single warp often isn't seen by a canvas crosshair — it reacts to
+            // *motion*. Jiggle a few moves around the point (ending on it) so the
+            // page's mousemove handler fires, then let it render before the OCR.
+            for &dx in &[-5.0_f64, 5.0, 0.0] {
+                let _ = visualops_platform::hover_at_point(self.target.pid, x + dx, y);
+                std::thread::sleep(std::time::Duration::from_millis(35));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(160));
+            let region = Bbox { x: x - 130.0, y: y - 80.0, w: 280.0, h: 170.0 };
+            out.push(self.read_text(Some(region)).unwrap_or_default());
+        }
+        let _ = visualops_platform::cursor_restore(saved.0, saved.1);
+        Ok(out)
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn read_series(&self, _points: &[(f64, f64)]) -> visualops_core::Result<Vec<Vec<TextHit>>> {
+        Err(VisualOpsError::Execution("read_series requires a macOS backend".into()))
+    }
+
+    /// Single-point [`read_series`](Self::read_series): borrow the cursor, hover
+    /// `(x, y)`, OCR around it, restore.
+    pub fn read_at(&self, x: f64, y: f64) -> visualops_core::Result<Vec<TextHit>> {
+        Ok(self.read_series(&[(x, y)])?.into_iter().next().unwrap_or_default())
+    }
+
     /// Record a **raw input** (`click_at` / `press_key`) — a coordinate/key not bound
     /// to any element, hence no affordance and no per-element gating (LOW risk by
     /// construction). The attempt is always written to the trace; on platform
