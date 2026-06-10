@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{json, Value};
 use visualops_core::{
     ActionExecutor, ActionResult, AffordanceGraph, AuditEntry, Bbox, GraphDiff, Perceptor,
-    RiskAssessment, RiskLevel, Role, SceneGraph, SceneNode, SemanticAction, Target, VisualOpsError,
+    RiskAssessment, Role, SceneGraph, SceneNode, SemanticAction, Target, VisualOpsError,
     WindowRef,
 };
 use visualops_graph::{audit, derive_affordances, scene, RiskEngine};
@@ -193,7 +193,11 @@ impl Engine {
     /// Ergonomic default over [`query_affordances_filtered`](Self::query_affordances_filtered);
     /// the MCP server calls the latter directly, so in the binary this wrapper is
     /// exercised only by callers/tests that want the filtered listing.
-    #[allow(dead_code)]
+    // `expect` is scoped to non-test builds: these fns ARE used by the test module,
+    // so a bare `#[expect(dead_code)]` would be "unfulfilled" under the test target.
+    // In the binary they are genuinely dead — and clippy will flag this expectation
+    // the moment a non-test caller appears (the point of `expect` over `allow`).
+    #[cfg_attr(not(test), expect(dead_code, reason = "ergonomic unfiltered wrapper, exercised only by tests"))]
     pub fn query_affordances(&self, action: SemanticAction) -> Vec<String> {
         self.query_affordances_filtered(action, false)
     }
@@ -428,9 +432,64 @@ impl Engine {
         )
     }
 
-    /// The gated action path. Always returns an [`AuditEntry`] describing the
-    /// outcome (also appended to the trace); only structural problems
-    /// (unknown id / unavailable action) are `Err`.
+    /// Compute an action's **effective risk** and the set of ids whose approval
+    /// clears its gate. Folds a composite drag's drop target (audit #3) and a
+    /// destructive typed payload (audit #13) into the source element's own risk via
+    /// [`merge_risk`]. Pure over its inputs and `self.risk` — no scene mutation — so
+    /// it is unit-testable in isolation (the `effective_risk_*` tests).
+    ///
+    /// Returns `(effective, gated_ids)`: `effective.requires_approval` decides
+    /// whether the gate fires; `gated_ids` lists every high-risk participant that
+    /// must be approved (the element, the drop target, or the typed-into field).
+    fn effective_risk(
+        &self,
+        id: &str,
+        action: SemanticAction,
+        argument: Option<&str>,
+        source_risk: &RiskAssessment,
+        co_target: Option<&CoTarget>,
+    ) -> (RiskAssessment, Vec<String>) {
+        // Audit #13: for a Type action the *payload* can be destructive even when
+        // the field itself is harmless — assess the typed text and fold it in.
+        let text_risk = match (action, argument) {
+            (SemanticAction::Type, Some(arg)) => Some(self.risk.assess_text(arg)),
+            _ => None,
+        };
+
+        // Effective risk = max(source, drop target [#3], typed text [#13]). The
+        // merged `reasons` ("drop target: …" / "typed text: …") say which facet
+        // raised the gate.
+        let mut effective = match co_target {
+            Some(co) => merge_risk(source_risk, &co.risk, "drop target"),
+            None => source_risk.clone(),
+        };
+        if let Some(tr) = &text_risk {
+            effective = merge_risk(&effective, tr, "typed text");
+        }
+
+        // Every high-risk participant must be approved to clear the gate: the
+        // element itself, a composite drag's drop target, or the typed-into field.
+        let mut gated_ids: Vec<String> = Vec::new();
+        if source_risk.requires_approval {
+            gated_ids.push(id.to_string());
+        }
+        if let Some(co) = co_target {
+            if co.risk.requires_approval {
+                gated_ids.push(co.id.clone());
+            }
+        }
+        if text_risk.as_ref().map(|r| r.requires_approval).unwrap_or(false)
+            && !gated_ids.iter().any(|g| g == id)
+        {
+            gated_ids.push(id.to_string());
+        }
+        (effective, gated_ids)
+    }
+
+    /// The gated action path: **resolve → effective_risk → gate → execute →
+    /// audit**. Always returns an [`AuditEntry`] describing the outcome (also
+    /// appended to the trace); only structural problems (unknown id / unavailable
+    /// action) are `Err`.
     ///
     /// `co_target` carries a second risk-bearing participant (audit #3 — a drag's
     /// drop target). The gate fires on the **max** of the acted-on element and the
@@ -464,45 +523,14 @@ impl Engine {
             aff.risk.clone()
         };
 
-        // Audit #13: for a Type action the *payload* can be destructive even when
-        // the field itself is harmless, so assess the typed text against the same
-        // keyword tiers and fold it in.
-        let text_risk = match (action, argument) {
-            (SemanticAction::Type, Some(arg)) => Some(self.risk.assess_text(arg)),
-            _ => None,
-        };
-
-        // Effective risk = max(source, drop target [audit #3], typed text [audit
-        // #13]). The audit entry reports this combined risk so the operator sees
-        // *why* it is gated (e.g. "drop target: …" / "typed text: …").
-        let mut effective = match &co_target {
-            Some(co) => merge_risk(&source_risk, &co.risk, "drop target"),
-            None => source_risk.clone(),
-        };
-        if let Some(tr) = &text_risk {
-            effective = merge_risk(&effective, tr, "typed text");
-        }
-
-        // Every high-risk participant must be approved to clear the gate: the
-        // element itself, a composite drag's drop target, or the field a
-        // destructive value is being typed into.
-        let mut gated_ids: Vec<String> = Vec::new();
-        if source_risk.requires_approval {
-            gated_ids.push(id.to_string());
-        }
-        if let Some(co) = &co_target {
-            if co.risk.requires_approval {
-                gated_ids.push(co.id.clone());
-            }
-        }
-        if text_risk.as_ref().map(|r| r.requires_approval).unwrap_or(false)
-            && !gated_ids.iter().any(|g| g == id)
-        {
-            gated_ids.push(id.to_string());
-        }
+        // Risk: fold in a composite drag target (#3) and a destructive typed
+        // payload (#13). `effective.requires_approval` decides the gate; `gated_ids`
+        // names the participants whose approval clears it.
+        let (effective, gated_ids) =
+            self.effective_risk(id, action, argument, &source_risk, co_target.as_ref());
         // A gate with no nameable participant must NOT pass vacuously: require a
         // non-empty, fully-approved set. (When `effective.requires_approval` is
-        // true, `gated_ids` is always non-empty by the pushes above.)
+        // true, `gated_ids` is always non-empty by construction in `effective_risk`.)
         let approved = !gated_ids.is_empty() && gated_ids.iter().all(|g| self.approvals.contains(g));
 
         // Build the audit record once; the two outcome paths only differ in
@@ -557,7 +585,7 @@ impl Engine {
 
     /// Public accessor over the audit trail; exercised by the gating tests and
     /// part of the engine API the MCP layer may surface.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), expect(dead_code, reason = "public audit-trail accessor, exercised only by tests"))]
     pub fn trace(&self) -> &[AuditEntry] {
         &self.trace
     }
@@ -665,12 +693,6 @@ fn compact_node(n: &SceneNode) -> Value {
     Value::Object(o)
 }
 
-/// True if any element in the graph is high-risk (utility for demos/reports).
-#[allow(dead_code)]
-pub fn has_high_risk(g: &AffordanceGraph) -> bool {
-    g.affordances.values().any(|a| a.risk.level == RiskLevel::High)
-}
-
 /// A second risk-bearing participant in an action — the **drop target** of a drag
 /// (audit #3). Carried into [`Engine::act`] so the gate can combine its risk with
 /// the dragged element's.
@@ -703,6 +725,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use visualops_core::mock::MockPerceptor;
+    use visualops_core::RiskLevel;
 
     /// Executor that counts invocations, so we can assert a gated action never
     /// reaches the OS.
@@ -983,6 +1006,42 @@ mod tests {
         let benign = eng.type_into(&field, "bonjour", None).unwrap();
         assert_eq!(benign.result, ActionResult::Success);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    // --- effective_risk in isolation (C2 refactor) --------------------------
+
+    #[test]
+    fn effective_risk_folds_drag_target_and_typed_text() {
+        let (eng, _) = engine_with_counter();
+        let low = RiskAssessment::low();
+        let high = RiskAssessment {
+            level: RiskLevel::High,
+            requires_approval: true,
+            reasons: vec!["matched keyword: supprimer".into()],
+        };
+
+        // Low source dragged onto a high-risk target → effective High, target gated.
+        let co = CoTarget { id: "tgt".into(), risk: high.clone() };
+        let (eff, gated) =
+            eng.effective_risk("src", SemanticAction::Drag, None, &low, Some(&co));
+        assert_eq!(eff.level, RiskLevel::High);
+        assert!(eff.requires_approval);
+        assert_eq!(gated, vec!["tgt".to_string()]);
+        assert!(eff.reasons.iter().any(|r| r.contains("drop target")));
+
+        // Destructive text into a low-risk field → effective High, field gated.
+        let (eff2, gated2) =
+            eng.effective_risk("field", SemanticAction::Type, Some("supprimer tout"), &low, None);
+        assert_eq!(eff2.level, RiskLevel::High);
+        assert!(eff2.requires_approval);
+        assert_eq!(gated2, vec!["field".to_string()]);
+        assert!(eff2.reasons.iter().any(|r| r.contains("typed text")));
+
+        // Benign: low source, no co-target, benign text → Low, no gate.
+        let (eff3, gated3) = eng.effective_risk("x", SemanticAction::Click, None, &low, None);
+        assert!(!eff3.requires_approval);
+        assert_eq!(eff3.level, RiskLevel::Low);
+        assert!(gated3.is_empty());
     }
 
     #[test]
