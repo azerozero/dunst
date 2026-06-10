@@ -66,6 +66,18 @@ mod macos {
     const MAX_DEPTH: usize = 40;
     const AX_FRAME_ATTRIBUTE: &str = "AXFrame";
     const BATCH_ATTR_COUNT: usize = 12;
+    const IDX_ROLE: usize = 0;
+    const IDX_VALUE: usize = 1;
+    const IDX_TITLE: usize = 2;
+    const IDX_DESCRIPTION: usize = 3;
+    const IDX_HELP: usize = 4;
+    const IDX_IDENTIFIER: usize = 5;
+    const IDX_FRAME: usize = 6;
+    const IDX_POSITION: usize = 7;
+    const IDX_SIZE: usize = 8;
+    const IDX_ENABLED: usize = 9;
+    const IDX_FOCUSED: usize = 10;
+    const IDX_CHILDREN: usize = 11;
     const DRAG_STEPS: usize = 8;
     const DRAG_STEP_DELAY: Duration = Duration::from_millis(8);
     const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.0;
@@ -294,24 +306,26 @@ mod macos {
             // AX actions/set-attribute are non-intrusive: no global cursor movement
             // and no foreground activation. `Raise` below is the intentional exception.
             SemanticAction::Click | SemanticAction::Pick => {
-                perform_ax_action(element.expect("AX element required"), kAXPressAction)
+                let element = require_ax_element(element)?;
+                perform_ax_action(element, kAXPressAction)
             }
             SemanticAction::OpenMenu => {
-                perform_ax_action(element.expect("AX element required"), kAXShowMenuAction)
+                let element = require_ax_element(element)?;
+                perform_ax_action(element, kAXShowMenuAction)
             }
             SemanticAction::Raise => {
-                perform_ax_action(element.expect("AX element required"), kAXRaiseAction)
+                let element = require_ax_element(element)?;
+                perform_ax_action(element, kAXRaiseAction)
             }
-            SemanticAction::Focus => set_bool_attr(
-                element.expect("AX element required"),
-                kAXFocusedAttribute,
-                true,
-            ),
+            SemanticAction::Focus => {
+                set_bool_attr(require_ax_element(element)?, kAXFocusedAttribute, true)
+            }
             SemanticAction::Type => {
                 let text = argument.ok_or_else(|| {
                     ActionFailure::Execution("type action requires an argument".into())
                 })?;
-                type_text(element.expect("AX element required"), pid, text)
+                let element = require_ax_element(element)?;
+                type_text(element, pid, text)
             }
             SemanticAction::Hover => hover(pid, node),
             SemanticAction::Drag => drag(pid, node, argument),
@@ -319,6 +333,13 @@ mod macos {
                 "semantic action {other:?} is not supported by macOS AX backend"
             ))),
         }
+    }
+
+    fn require_ax_element(
+        element: Option<&AxElement>,
+    ) -> std::result::Result<&AxElement, ActionFailure> {
+        element
+            .ok_or_else(|| ActionFailure::Execution("action requires a resolved AX element".into()))
     }
 
     fn ensure_trusted() -> Result<()> {
@@ -390,6 +411,8 @@ mod macos {
 
     fn round_bbox(bbox: Bbox) -> Option<(i64, i64, i64, i64)> {
         if bbox.x.is_finite() && bbox.y.is_finite() && bbox.w.is_finite() && bbox.h.is_finite() {
+            // Saturating `as i64` conversion is intentional here: these values
+            // come from AX/CG FFI and are used only as coarse cache keys.
             Some((
                 bbox.x.round() as i64,
                 bbox.y.round() as i64,
@@ -522,41 +545,31 @@ mod macos {
             return walk_element_single(element, target_key, depth, state, attrs);
         };
         let ax_role = batch
-            .get(0)
+            .get(IDX_ROLE)
             .and_then(cf_string)
             .unwrap_or_else(|| "AXUnknown".into());
 
-        let mut node = assemble_node(NodeFields {
+        let fields = NodeFields {
             ax_role,
-            value: batch.get(1).and_then(cf_string),
-            title: batch.get(2).and_then(cf_label_string),
-            description: batch.get(3).and_then(cf_label_string),
-            help: batch.get(4).and_then(cf_string),
-            ax_identifier: batch.get(5).and_then(cf_string),
+            value: batch.get(IDX_VALUE).and_then(cf_string),
+            title: batch.get(IDX_TITLE).and_then(cf_label_string),
+            description: batch.get(IDX_DESCRIPTION).and_then(cf_label_string),
+            help: batch.get(IDX_HELP).and_then(cf_string),
+            ax_identifier: batch.get(IDX_IDENTIFIER).and_then(cf_string),
             ax_actions: read_node_actions(element),
             frame: frame_from_batch(&batch),
-            enabled: batch.get(9).and_then(cf_bool).unwrap_or(true),
-            focused: batch.get(10).and_then(cf_bool).unwrap_or(false),
-        });
-        cache_element(target_key, &node, element);
-
-        if depth >= MAX_DEPTH || state.count >= MAX_NODES {
-            state.capped = true;
-            return Ok(node);
-        }
-
-        if let Some(children) = batch.get(11).and_then(cf_array) {
-            for child in ax_elements(&children) {
-                if state.count >= MAX_NODES {
-                    state.capped = true;
-                    break;
-                }
-                node.children
-                    .push(walk_element(&child, target_key, depth + 1, state, attrs)?);
-            }
-        }
-
-        Ok(node)
+            enabled: batch.get(IDX_ENABLED).and_then(cf_bool).unwrap_or(true),
+            focused: batch.get(IDX_FOCUSED).and_then(cf_bool).unwrap_or(false),
+        };
+        finish_walk_element(
+            element,
+            target_key,
+            depth,
+            state,
+            attrs,
+            fields,
+            batch.get(IDX_CHILDREN).and_then(cf_array),
+        )
     }
 
     fn walk_element_single(
@@ -568,7 +581,7 @@ mod macos {
     ) -> Result<RawAxNode> {
         let ax_role = attr_string(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
 
-        let mut node = assemble_node(NodeFields {
+        let fields = NodeFields {
             ax_role,
             value: attr_string(element, kAXValueAttribute),
             title: attr_label_string(element, kAXTitleAttribute),
@@ -579,7 +592,28 @@ mod macos {
             frame: frame(element),
             enabled: attr_bool(element, kAXEnabledAttribute).unwrap_or(true),
             focused: attr_bool(element, kAXFocusedAttribute).unwrap_or(false),
-        });
+        };
+        finish_walk_element(
+            element,
+            target_key,
+            depth,
+            state,
+            attrs,
+            fields,
+            attr_array(element, kAXChildrenAttribute),
+        )
+    }
+
+    fn finish_walk_element(
+        element: &AxElement,
+        target_key: &TargetKey,
+        depth: usize,
+        state: &mut WalkState,
+        attrs: &WalkAttributes,
+        fields: NodeFields,
+        children: Option<CFArray>,
+    ) -> Result<RawAxNode> {
+        let mut node = assemble_node(fields);
         cache_element(target_key, &node, element);
 
         if depth >= MAX_DEPTH || state.count >= MAX_NODES {
@@ -587,7 +621,7 @@ mod macos {
             return Ok(node);
         }
 
-        if let Some(children) = attr_array(element, kAXChildrenAttribute) {
+        if let Some(children) = children {
             for child in ax_elements(&children) {
                 if state.count >= MAX_NODES {
                     state.capped = true;
@@ -1082,9 +1116,9 @@ mod macos {
     }
 
     fn frame_from_batch(values: &BatchValues) -> Option<Bbox> {
-        cgrect_from_value(values.get(6)?).or_else(|| {
-            let origin = cgpoint_from_value(values.get(7)?)?;
-            let size = cgsize_from_value(values.get(8)?)?;
+        cgrect_from_value(values.get(IDX_FRAME)?).or_else(|| {
+            let origin = cgpoint_from_value(values.get(IDX_POSITION)?)?;
+            let size = cgsize_from_value(values.get(IDX_SIZE)?)?;
             Some(Bbox {
                 x: origin.x,
                 y: origin.y,
