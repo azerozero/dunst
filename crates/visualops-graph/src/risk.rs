@@ -113,6 +113,12 @@ impl RiskEngine {
     /// target field is itself low-risk (audit #13). Normalises (lowercase +
     /// accent-fold) then matches high, then medium; highest tier wins.
     pub fn assess_text(&self, text: &str) -> RiskAssessment {
+        // Keyword matching is unbounded substring containment (see `match_tier`),
+        // so it can over-match a keyword embedded in a larger token ("reset" in
+        // "preset"). That direction is **fail-safe for a risk gate**: over-matching
+        // only ever asks for *more* approval, never less — a destructive word can't
+        // be *missed* by substring search. If false-positive gating gets noisy,
+        // switch to word-boundary matching on the normalised haystack.
         let hay = normalize(text);
         if let Some(reasons) = match_tier(&hay, &self.high) {
             return RiskAssessment {
