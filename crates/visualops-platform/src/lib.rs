@@ -20,6 +20,19 @@ impl MacosBackend {
     }
 }
 
+/// Post a background click at a screen point to a macOS process without moving
+/// the visible cursor.
+#[cfg(target_os = "macos")]
+pub fn click_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
+    macos::click_at_point(pid, x, y)
+}
+
+/// Post a named keyboard key to a macOS process without touching the mouse.
+#[cfg(target_os = "macos")]
+pub fn press_key(pid: i32, key: &str) -> Result<()> {
+    macos::press_key(pid, key)
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     //! macOS FFI ownership contract:
@@ -63,7 +76,7 @@ mod macos {
     use core_foundation_sys::base::CFNullGetTypeID;
     use core_graphics::{
         display::CGDisplay,
-        event::{CGEvent, CGEventType, CGMouseButton},
+        event::{CGEvent, CGEventType, CGKeyCode, CGMouseButton, KeyCode},
         event_source::{CGEventSource, CGEventSourceStateID},
         geometry::{CGPoint, CGRect, CGSize},
     };
@@ -979,6 +992,72 @@ mod macos {
             .parse::<f64>()
             .map_err(|_| ActionFailure::Execution("Drag requires an \"x,y\" argument".into()))?;
         Ok(CGPoint::new(x, y))
+    }
+
+    pub fn click_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
+        click_at_point_impl(pid, x, y).map_err(ActionFailure::into)
+    }
+
+    fn click_at_point_impl(pid: i32, x: f64, y: f64) -> std::result::Result<(), ActionFailure> {
+        let point = clamp_point_to_bounds(CGPoint::new(x, y), CGDisplay::main().bounds());
+        let source = event_source("create click CGEventSource")?;
+        let saved_cursor = current_cursor_position(&source)?;
+        let mut mouse_down_posted = false;
+
+        let result = (|| {
+            post_mouse(source.clone(), pid, CGEventType::LeftMouseDown, point)?;
+            mouse_down_posted = true;
+            post_mouse(source.clone(), pid, CGEventType::LeftMouseUp, point)?;
+            mouse_down_posted = false;
+            Ok(())
+        })();
+        if result.is_err() && mouse_down_posted {
+            let _ = post_mouse(source.clone(), pid, CGEventType::LeftMouseUp, point);
+        }
+        restore_cursor_position(saved_cursor)?;
+        result
+    }
+
+    pub fn press_key(pid: i32, key: &str) -> Result<()> {
+        press_key_impl(pid, key).map_err(ActionFailure::into)
+    }
+
+    fn press_key_impl(pid: i32, key: &str) -> std::result::Result<(), ActionFailure> {
+        let keycode = named_keycode(key)?;
+        let source = event_source("create keyboard CGEventSource")?;
+        post_keycode(source, pid, keycode)
+    }
+
+    fn named_keycode(key: &str) -> std::result::Result<CGKeyCode, ActionFailure> {
+        match key.trim().to_ascii_lowercase().as_str() {
+            "return" | "enter" => Ok(KeyCode::RETURN),
+            "tab" => Ok(KeyCode::TAB),
+            "escape" | "esc" => Ok(KeyCode::ESCAPE),
+            "space" | "spacebar" => Ok(KeyCode::SPACE),
+            "delete" | "backspace" => Ok(KeyCode::DELETE),
+            "up" | "arrowup" | "up_arrow" => Ok(KeyCode::UP_ARROW),
+            "down" | "arrowdown" | "down_arrow" => Ok(KeyCode::DOWN_ARROW),
+            "left" | "arrowleft" | "left_arrow" => Ok(KeyCode::LEFT_ARROW),
+            "right" | "arrowright" | "right_arrow" => Ok(KeyCode::RIGHT_ARROW),
+            other => Err(ActionFailure::Execution(format!(
+                "unsupported key {other:?}; expected return|enter, tab, escape, space, delete, up/down/left/right"
+            ))),
+        }
+    }
+
+    fn post_keycode(
+        source: CGEventSource,
+        pid: i32,
+        keycode: CGKeyCode,
+    ) -> std::result::Result<(), ActionFailure> {
+        let down = CGEvent::new_keyboard_event(source.clone(), keycode, true)
+            .map_err(|err| ActionFailure::Execution(format!("create key down CGEvent: {err:?}")))?;
+        down.post_to_pid(pid);
+
+        let up = CGEvent::new_keyboard_event(source, keycode, false)
+            .map_err(|err| ActionFailure::Execution(format!("create key up CGEvent: {err:?}")))?;
+        up.post_to_pid(pid);
+        Ok(())
     }
 
     fn clamp_point_to_bounds(point: CGPoint, bounds: CGRect) -> CGPoint {
