@@ -556,15 +556,11 @@ impl Engine {
         let saved = visualops_platform::cursor_borrow_to(x0, y0)?;
         let mut out = Vec::with_capacity(points.len());
         for &(x, y) in points {
-            // A single warp often isn't seen by a canvas crosshair — it reacts to
-            // *motion*. Jiggle a few moves around the point (ending on it) so the
-            // page's mousemove handler fires, then let it render before the OCR.
-            for &dx in &[-5.0_f64, 5.0, 0.0] {
-                let _ = visualops_platform::hover_at_point(self.target.pid, x + dx, y);
-                std::thread::sleep(std::time::Duration::from_millis(35));
-            }
-            std::thread::sleep(std::time::Duration::from_millis(160));
-            let region = Bbox { x: x - 130.0, y: y - 80.0, w: 280.0, h: 170.0 };
+            // Move to the point (the hover already triggers reliably — no circle
+            // needed) and OCR a tight region where the value-at-cursor renders.
+            let _ = visualops_platform::hover_at_point(self.target.pid, x, y);
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            let region = Bbox { x: x - 30.0, y: y - 70.0, w: 240.0, h: 150.0 };
             out.push(self.read_text(Some(region)).unwrap_or_default());
         }
         let _ = visualops_platform::cursor_restore(saved.0, saved.1);
