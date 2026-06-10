@@ -108,6 +108,11 @@ fn tools_list() -> Vec<Value> {
             ),
         ),
         tool(
+            "read_shapes",
+            "Detect geometric primitives (rect/bar/circle/line) in the target window via the CV layer; returns shapes with kind, screen bbox + confidence. The figures (charts, custom-drawn UI) AX and OCR miss.",
+            json!({}),
+        ),
+        tool(
             "query_affordances",
             "List element ids that expose a given semantic action (click|type|hover|open_menu|pick|drag|...). Latent (off-screen / zero-bbox) nodes are omitted unless include_latent is true.",
             schema(
@@ -208,6 +213,10 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map_err(|e| e.to_string()),
             Err(e) => Err(e),
         },
+        "read_shapes" => engine
+            .read_shapes()
+            .map(|shapes| serde_json::to_value(shapes).unwrap_or(Value::Null))
+            .map_err(|e| e.to_string()),
         "query_affordances" => match arg("action").as_deref().and_then(parse_action) {
             Some(a) => Ok(json!(engine.query_affordances_filtered(a, arg_bool("include_latent").unwrap_or(false)))),
             None => Err("missing/invalid 'action'".into()),
@@ -415,8 +424,8 @@ mod tests {
     #[test]
     fn tools_list_exposes_read_text_with_object_schema() {
         let tools = tools_list();
-        // read_text + click_at + press_key brought the set to 16.
-        assert_eq!(tools.len(), 16, "tool count");
+        // read_text + read_shapes + click_at + press_key brought the set to 17.
+        assert_eq!(tools.len(), 17, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(

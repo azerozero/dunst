@@ -53,6 +53,17 @@ pub struct TextHit {
     pub confidence: f32,
 }
 
+/// One geometric primitive returned by [`Engine::read_shapes`]: its `kind`
+/// (`"Rect"`/`"Bar"`/`"Circle"`/`"Line"`/`"Unknown"`), bounding box in **screen
+/// points**, and a heuristic `confidence`. The CV layer for figures (charts,
+/// custom-drawn UI) that neither AX nor OCR exposes.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ShapeHit {
+    pub kind: String,
+    pub bbox: Bbox,
+    pub confidence: f32,
+}
+
 pub struct Engine {
     perceptor: Box<dyn Perceptor>,
     executor: Box<dyn ActionExecutor>,
@@ -182,6 +193,38 @@ impl Engine {
     pub fn read_text(&self, _region_screen_pt: Option<Bbox>) -> visualops_core::Result<Vec<TextHit>> {
         Err(VisualOpsError::Perception(
             "OCR requires a live macOS window".into(),
+        ))
+    }
+
+    /// Detect geometric primitives (rect/bar/circle/line) in the target window
+    /// via the CV `shapes` layer — the figures (charts, custom-drawn UI) AX and
+    /// OCR can't expose. A pure **read probe** like [`read_text`](Self::read_text):
+    /// no risk-gating, no audit entry. macOS-only.
+    #[cfg(target_os = "macos")]
+    pub fn read_shapes(&self) -> visualops_core::Result<Vec<ShapeHit>> {
+        let captured =
+            visualops_vision::capture::capture_window(self.target.window_id).map_err(|e| {
+                VisualOpsError::Perception(format!(
+                    "shape detection requires a live macOS window (capture failed: {e})"
+                ))
+            })?;
+        Ok(
+            visualops_vision::shapes::detect_shapes(&captured.image, &captured.geometry)
+                .into_iter()
+                .map(|s| ShapeHit {
+                    kind: format!("{:?}", s.kind),
+                    bbox: s.bbox,
+                    confidence: s.confidence,
+                })
+                .collect(),
+        )
+    }
+
+    /// Non-macOS stub: shape detection needs a live macOS window.
+    #[cfg(not(target_os = "macos"))]
+    pub fn read_shapes(&self) -> visualops_core::Result<Vec<ShapeHit>> {
+        Err(VisualOpsError::Perception(
+            "shape detection requires a live macOS window".into(),
         ))
     }
 
