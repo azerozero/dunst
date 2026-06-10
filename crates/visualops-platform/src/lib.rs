@@ -948,7 +948,7 @@ mod macos {
         let start_bbox = node
             .bbox
             .ok_or_else(|| ActionFailure::Execution("Drag requires a source bbox".into()))?;
-        let display_bounds = CGDisplay::main().bounds();
+        let display_bounds = all_displays_bounds();
         let end = clamp_point_to_bounds(parse_drop_point(argument)?, display_bounds);
         let start = clamp_point_to_bounds(
             CGPoint::new(
@@ -1007,7 +1007,7 @@ mod macos {
     }
 
     fn click_at_point_impl(pid: i32, x: f64, y: f64) -> std::result::Result<(), ActionFailure> {
-        let point = clamp_point_to_bounds(CGPoint::new(x, y), CGDisplay::main().bounds());
+        let point = clamp_point_to_bounds(CGPoint::new(x, y), all_displays_bounds());
         let source = event_source("create click CGEventSource")?;
         let saved_cursor = current_cursor_position(&source)?;
         let mut mouse_down_posted = false;
@@ -1038,7 +1038,7 @@ mod macos {
         // — unavoidable to reveal a value-at-cursor — but the window does NOT need
         // focus: macOS routes mouse-moved/hover to the window under the cursor
         // regardless of which app is frontmost.
-        let point = clamp_point_to_bounds(CGPoint::new(x, y), CGDisplay::main().bounds());
+        let point = clamp_point_to_bounds(CGPoint::new(x, y), all_displays_bounds());
         CGDisplay::warp_mouse_cursor_position(point)
             .map_err(|err| ActionFailure::Execution(format!("warp cursor for hover: {err:?}")))?;
         let source = event_source("create hover CGEventSource")?;
@@ -1088,6 +1088,32 @@ mod macos {
             .map_err(|err| ActionFailure::Execution(format!("create key up CGEvent: {err:?}")))?;
         up.post_to_pid(pid);
         Ok(())
+    }
+
+    /// Union of every active display's bounds (the full virtual desktop). Cursor
+    /// warps and CGEvents use the GLOBAL coordinate space, so clamping to the main
+    /// display alone would pin a point on a secondary monitor to the main display's
+    /// edge — which is exactly where a window on an external screen lives.
+    fn all_displays_bounds() -> CGRect {
+        let main = CGDisplay::main().bounds();
+        let (mut min_x, mut min_y) = (main.origin.x, main.origin.y);
+        let (mut max_x, mut max_y) = (
+            main.origin.x + main.size.width,
+            main.origin.y + main.size.height,
+        );
+        if let Ok(ids) = CGDisplay::active_displays() {
+            for id in ids {
+                let b = CGDisplay::new(id).bounds();
+                min_x = min_x.min(b.origin.x);
+                min_y = min_y.min(b.origin.y);
+                max_x = max_x.max(b.origin.x + b.size.width);
+                max_y = max_y.max(b.origin.y + b.size.height);
+            }
+        }
+        CGRect::new(
+            &CGPoint::new(min_x, min_y),
+            &CGSize::new(max_x - min_x, max_y - min_y),
+        )
     }
 
     fn clamp_point_to_bounds(point: CGPoint, bounds: CGRect) -> CGPoint {
