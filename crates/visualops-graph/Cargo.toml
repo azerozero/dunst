@@ -20,3 +20,6 @@ bench = ["dep:criterion"]
 name = "pipeline"
 harness = false
 required-features = ["bench"]
+
+[lints]
+workspace = true

@@ -21,3 +21,11 @@ visualops-platform = { path = "crates/visualops-platform" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
+
+# Shared lints, opted into per-crate with `[lints] workspace = true`. We do NOT
+# enable `unwrap_used`/`expect_used` (they would flag the many justified `unwrap`s
+# outside tests). The goal is narrow: make every `unsafe` block carry a `// SAFETY:`
+# note. Crates with FFI (visualops-platform, visualops-vision) opt in and document
+# their blocks; pure crates inherit it for free.
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"

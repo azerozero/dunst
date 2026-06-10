@@ -197,7 +197,7 @@ fn detect_edge_shapes(edges: &BoolImage, geometry: &CaptureGeometry, out: &mut V
             continue;
         }
         let aspect = b.w as f32 / b.h.max(1) as f32;
-        if aspect > 8.0 || aspect < 0.125 {
+        if !(0.125..=8.0).contains(&aspect) {
             let confidence =
                 (0.45 + (component.pixels as f32 / b.area() as f32).min(0.35)).min(0.8);
             out.push(shape(

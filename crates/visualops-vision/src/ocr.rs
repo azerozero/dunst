@@ -50,16 +50,22 @@ pub fn ocr_region_with_mode(
     region_screen_pt: Option<visualops_core::Bbox>,
     mode: RecognitionMode,
 ) -> Result<Vec<OcrBox>, OcrError> {
+    // SAFETY: objc2 allocation/init follows the framework convention; the
+    // returned retained request owns the Objective-C object.
     let request = unsafe { VNRecognizeTextRequest::init(VNRecognizeTextRequest::alloc()) };
     request.setRecognitionLevel(match mode {
         RecognitionMode::Fast => VNRequestTextRecognitionLevel::Fast,
         RecognitionMode::Accurate => VNRequestTextRecognitionLevel::Accurate,
     });
     request.setUsesLanguageCorrection(false);
+    // SAFETY: `region_to_vision_roi` returns a finite normalized CGRect in
+    // Vision coordinates; the request object is alive for the call.
     unsafe {
         request.setRegionOfInterest(region_to_vision_roi(region_screen_pt, geometry));
     }
 
+    // SAFETY: `borrowed_objc_cg_image` returns an ObjC-compatible borrowed view
+    // of the live CGImage; `options` and the image live through handler init.
     let handler = unsafe {
         let image_ref = borrowed_objc_cg_image(image);
         let options = NSDictionary::<VNImageOption, objc2::runtime::AnyObject>::new();
@@ -97,6 +103,8 @@ fn observation_to_box(observation: &VNRecognizedTextObservation) -> Option<OcrBo
     if text.trim().is_empty() {
         return None;
     }
+    // SAFETY: `observation` is a live Vision object yielded by the request
+    // results; `boundingBox` returns a value CGRect without retained pointers.
     let rect = unsafe { observation.boundingBox() };
     let norm = NormRect {
         x: rect.origin.x,
@@ -151,6 +159,9 @@ fn region_to_vision_roi(
 unsafe fn borrowed_objc_cg_image(image: &CGImage) -> &ObjcCgImage {
     let ptr = NonNull::new(image.as_ptr().cast::<ObjcCgImage>())
         .expect("Core Graphics returned null CGImage");
+    // SAFETY: `CGImage` and objc2's `CGImage` are transparent wrappers for the
+    // same CoreGraphics object. The returned reference is borrowed from `image`
+    // and cannot outlive the input reference.
     ptr.as_ref()
 }
 

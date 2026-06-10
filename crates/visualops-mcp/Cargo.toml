@@ -9,6 +9,9 @@ default-run = "visualops-mcp"
 name = "visualops-mcp"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 visualops-core = { workspace = true }
 visualops-graph = { workspace = true }

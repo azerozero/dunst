@@ -22,6 +22,15 @@ impl MacosBackend {
 
 #[cfg(target_os = "macos")]
 mod macos {
+    //! macOS FFI ownership contract:
+    //!
+    //! CoreFoundation "create/copy" APIs return +1 owned references and are
+    //! wrapped with `wrap_under_create_rule`. "get" APIs return borrowed
+    //! references and are wrapped only for the current scope or explicitly
+    //! retained before storage. `AxElement` always owns a +1 `AXUIElementRef`;
+    //! cloning calls `CFRetain`, and `Drop` balances that retain with
+    //! `CFRelease`.
+
     use std::{
         cell::RefCell,
         collections::HashMap,
@@ -157,6 +166,8 @@ mod macos {
         }
 
         fn retain_clone(&self) -> Self {
+            // SAFETY: `self.0` is a non-null AXUIElementRef owned by this
+            // AxElement. CFRetain creates a second +1 reference for the clone.
             unsafe {
                 core_foundation_sys::base::CFRetain(self.0 as CFTypeRef);
             }
@@ -167,6 +178,8 @@ mod macos {
     impl Drop for AxElement {
         fn drop(&mut self) {
             if !self.0.is_null() {
+                // SAFETY: AxElement owns exactly one +1 reference by contract.
+                // Drop releases that ownership once.
                 unsafe { CFRelease(self.0 as CFTypeRef) };
             }
         }
@@ -179,6 +192,8 @@ mod macos {
 
     fn set_ax_timeout(element: AXUIElementRef) {
         if !element.is_null() {
+            // SAFETY: `element` is a valid AXUIElementRef supplied by AX APIs
+            // or retained by AxElement; the timeout value is finite.
             unsafe {
                 accessibility_sys::AXUIElementSetMessagingTimeout(
                     element,
@@ -343,6 +358,8 @@ mod macos {
     }
 
     fn ensure_trusted() -> Result<()> {
+        // SAFETY: AXIsProcessTrusted takes no pointers and returns a Boolean
+        // process trust status.
         let trusted = unsafe { AXIsProcessTrusted() };
         if trusted {
             Ok(())
@@ -354,6 +371,8 @@ mod macos {
     }
 
     fn app_element(pid: i32) -> Result<AxElement> {
+        // SAFETY: AXUIElementCreateApplication is a create-rule AX API. The
+        // returned pointer is null-checked and then owned by AxElement.
         let app = unsafe { AXUIElementCreateApplication(pid) };
         if app.is_null() {
             Err(VisualOpsError::Perception(format!(
@@ -405,6 +424,8 @@ mod macos {
 
     fn ax_window_id(element: &AxElement) -> Option<u32> {
         let mut window_id = 0;
+        // SAFETY: `element.as_ptr()` is a valid AXUIElementRef and
+        // `window_id` is a valid out-parameter for the duration of the call.
         let err = unsafe { _AXUIElementGetWindow(element.as_ptr(), &mut window_id) };
         (err == kAXErrorSuccess).then_some(window_id)
     }
@@ -463,6 +484,8 @@ mod macos {
     impl BatchValues {
         fn read(element: &AxElement, attrs: &WalkAttributes) -> Option<Self> {
             let mut values: CFArrayRef = ptr::null();
+            // SAFETY: `element` and the CFArray of attribute names are valid;
+            // `values` is a valid out-parameter and is checked before wrapping.
             let err = unsafe {
                 AXUIElementCopyMultipleAttributeValues(
                     element.as_ptr(),
@@ -472,7 +495,10 @@ mod macos {
                 )
             };
             if err == kAXErrorSuccess && !values.is_null() {
+                // SAFETY: AXUIElementCopyMultipleAttributeValues follows the
+                // create rule on success, transferring a +1 CFArray to Rust.
                 let values = unsafe { CFArray::wrap_under_create_rule(values) };
+                // SAFETY: `values` is a valid CFArray just wrapped above.
                 let len = unsafe { CFArrayGetCount(values.as_concrete_TypeRef()) as usize };
                 Some(Self { values, len })
             } else {
@@ -484,6 +510,8 @@ mod macos {
             if index >= BATCH_ATTR_COUNT || index >= self.len {
                 return None;
             }
+            // SAFETY: index is bounds-checked against the CFArray count; the
+            // returned item is borrowed and used only during this call path.
             let value = unsafe {
                 CFArrayGetValueAtIndex(self.values.as_concrete_TypeRef(), index as isize)
                     as CFTypeRef
@@ -753,6 +781,8 @@ mod macos {
         action: &str,
     ) -> std::result::Result<(), ActionFailure> {
         let action = CFString::new(action);
+        // SAFETY: `element` is a valid AXUIElementRef, and `action` is a valid
+        // CFString for the duration of the AX call; the AXError is checked.
         let err =
             unsafe { AXUIElementPerformAction(element.as_ptr(), action.as_concrete_TypeRef()) };
         ax_action_result(err, "perform AX action")
@@ -772,6 +802,8 @@ mod macos {
     fn set_bool_attr_raw(element: &AxElement, attr: &str, value: bool) -> AXError {
         let attr = CFString::new(attr);
         let value = CFBoolean::from(value);
+        // SAFETY: `element`, `attr`, and `value` are valid CF/AX objects for
+        // the duration of the call; AXError is returned to the caller.
         unsafe {
             AXUIElementSetAttributeValue(
                 element.as_ptr(),
@@ -784,6 +816,8 @@ mod macos {
     fn set_string_attr_raw(element: &AxElement, attr: &str, value: &str) -> AXError {
         let attr = CFString::new(attr);
         let value = CFString::new(value);
+        // SAFETY: `element`, `attr`, and `value` are valid CF/AX objects for
+        // the duration of the call; AXError is returned to the caller.
         unsafe {
             AXUIElementSetAttributeValue(
                 element.as_ptr(),
@@ -832,6 +866,8 @@ mod macos {
     fn attr_settable(element: &AxElement, attr: &str) -> bool {
         let attr = CFString::new(attr);
         let mut settable: c_uchar = 0;
+        // SAFETY: `element` and `attr` are valid; `settable` is a valid
+        // out-parameter and AXError is checked before reading it as true.
         let err = unsafe {
             AXUIElementIsAttributeSettable(
                 element.as_ptr(),
@@ -999,10 +1035,14 @@ mod macos {
     fn attr_value(element: &AxElement, attr: &str) -> Option<CFType> {
         let attr = CFString::new(attr);
         let mut value: CFTypeRef = ptr::null();
+        // SAFETY: `element` and `attr` are valid AX/CF objects; `value` is a
+        // valid out-parameter and is null/error checked before wrapping.
         let err = unsafe {
             AXUIElementCopyAttributeValue(element.as_ptr(), attr.as_concrete_TypeRef(), &mut value)
         };
         if err == kAXErrorSuccess && !value.is_null() {
+            // SAFETY: AXUIElementCopyAttributeValue returns a +1 CF object on
+            // success, transferred to CFType with create-rule ownership.
             Some(unsafe { CFType::wrap_under_create_rule(value) })
         } else {
             None
@@ -1030,9 +1070,11 @@ mod macos {
 
     fn attr_ax_element(element: &AxElement, attr: &str) -> Option<AxElement> {
         let value = attr_value(element, attr)?;
-        if unsafe { CFGetTypeID(value.as_CFTypeRef()) }
-            == unsafe { accessibility_sys::AXUIElementGetTypeID() }
-        {
+        // SAFETY: `value` is a valid CF object owned by `attr_value`.
+        let value_type = unsafe { CFGetTypeID(value.as_CFTypeRef()) };
+        // SAFETY: AXUIElementGetTypeID takes no inputs and returns a stable CFTypeID.
+        let ax_type = unsafe { accessibility_sys::AXUIElementGetTypeID() };
+        if value_type == ax_type {
             let raw = value.as_CFTypeRef() as AXUIElementRef;
             mem::forget(value);
             Some(AxElement::from_owned(raw))
@@ -1049,11 +1091,14 @@ mod macos {
 
     fn action_names(element: &AxElement) -> Vec<String> {
         let mut actions: CFArrayRef = ptr::null();
+        // SAFETY: `element` is a valid AXUIElementRef and `actions` is a valid
+        // out-parameter; success/null are checked before wrapping.
         let err = unsafe { AXUIElementCopyActionNames(element.as_ptr(), &mut actions) };
         if err != kAXErrorSuccess || actions.is_null() {
             return Vec::new();
         }
 
+        // SAFETY: AXUIElementCopyActionNames returns a +1 CFArray on success.
         let actions = unsafe { CFArray::wrap_under_create_rule(actions) };
         cf_strings(&actions)
             .into_iter()
@@ -1068,12 +1113,17 @@ mod macos {
 
     fn cf_strings(array: &CFArray) -> Vec<String> {
         let mut values = Vec::new();
+        // SAFETY: `array` is a valid CFArray reference for this scope.
         let len = unsafe { CFArrayGetCount(array.as_concrete_TypeRef()) };
         for index in 0..len {
+            // SAFETY: `index` is in 0..len, so CFArray returns a borrowed item
+            // valid for as long as `array` is alive.
             let value = unsafe { CFArrayGetValueAtIndex(array.as_concrete_TypeRef(), index) };
             if value.is_null() {
                 continue;
             }
+            // SAFETY: the CFArray item is a borrowed CF object. wrap_under_get_rule
+            // retains it for the temporary CFType wrapper.
             let value = unsafe { CFType::wrap_under_get_rule(value as CFTypeRef) };
             if let Some(string) = value.downcast::<CFString>() {
                 values.push(string.to_string());
@@ -1084,15 +1134,22 @@ mod macos {
 
     fn ax_elements(array: &CFArray) -> Vec<AxElement> {
         let mut elements = Vec::new();
+        // SAFETY: `array` is a valid CFArray reference for this scope.
         let len = unsafe { CFArrayGetCount(array.as_concrete_TypeRef()) };
+        // SAFETY: AXUIElementGetTypeID takes no inputs and returns a stable CFTypeID.
         let ax_type = unsafe { accessibility_sys::AXUIElementGetTypeID() };
         for index in 0..len {
+            // SAFETY: `index` is in 0..len, so CFArray returns a borrowed item
+            // valid for as long as `array` is alive.
             let value = unsafe { CFArrayGetValueAtIndex(array.as_concrete_TypeRef(), index) };
             if value.is_null() {
                 continue;
             }
             let cf_ref = value as CFTypeRef;
+            // SAFETY: `cf_ref` is a non-null CF object borrowed from `array`.
             if unsafe { CFGetTypeID(cf_ref) } == ax_type {
+                // SAFETY: the CFArray item is borrowed; CFRetain creates the
+                // +1 ownership required by AxElement::from_owned.
                 unsafe {
                     core_foundation_sys::base::CFRetain(cf_ref);
                 }
@@ -1157,6 +1214,8 @@ mod macos {
 
     fn cgrect_from_ax_value(value: AXValueRef) -> Option<Bbox> {
         let mut rect = CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(0.0, 0.0));
+        // SAFETY: `value` has already been type-checked as an AXValueRef; `rect`
+        // is a correctly sized out-parameter for kAXValueTypeCGRect.
         let ok = unsafe {
             AXValueGetValue(
                 value,
@@ -1174,6 +1233,8 @@ mod macos {
 
     fn cgpoint_from_ax_value(value: AXValueRef) -> Option<CGPoint> {
         let mut point = CGPoint::new(0.0, 0.0);
+        // SAFETY: `value` has already been type-checked as an AXValueRef; `point`
+        // is a correctly sized out-parameter for kAXValueTypeCGPoint.
         let ok = unsafe {
             AXValueGetValue(
                 value,
@@ -1186,6 +1247,8 @@ mod macos {
 
     fn cgsize_from_ax_value(value: AXValueRef) -> Option<CGSize> {
         let mut size = CGSize::new(0.0, 0.0);
+        // SAFETY: `value` has already been type-checked as an AXValueRef; `size`
+        // is a correctly sized out-parameter for kAXValueTypeCGSize.
         let ok = unsafe {
             AXValueGetValue(
                 value,
@@ -1197,6 +1260,8 @@ mod macos {
     }
 
     fn cf_string(value: CFTypeRef) -> Option<String> {
+        // SAFETY: caller passes a valid borrowed CF object; wrap_under_get_rule
+        // retains it for this temporary wrapper.
         let value = unsafe { CFType::wrap_under_get_rule(value) };
         value.downcast::<CFString>().map(|s| s.to_string())
     }
@@ -1206,22 +1271,33 @@ mod macos {
     }
 
     fn cf_bool(value: CFTypeRef) -> Option<bool> {
+        // SAFETY: caller passes a valid borrowed CF object; wrap_under_get_rule
+        // retains it for this temporary wrapper.
         let value = unsafe { CFType::wrap_under_get_rule(value) };
         value.downcast::<CFBoolean>().map(bool::from)
     }
 
     fn cf_array(value: CFTypeRef) -> Option<CFArray> {
+        // SAFETY: caller passes a valid borrowed CF object; wrap_under_get_rule
+        // retains it for this temporary wrapper.
         let value = unsafe { CFType::wrap_under_get_rule(value) };
         value.downcast_into::<CFArray>()
     }
 
     fn ax_value_ref(value: CFTypeRef) -> Option<AXValueRef> {
-        if unsafe { CFGetTypeID(value) } != unsafe { accessibility_sys::AXValueGetTypeID() } {
+        // SAFETY: caller passes a valid borrowed CF object.
+        let value_type = unsafe { CFGetTypeID(value) };
+        // SAFETY: AXValueGetTypeID takes no inputs and returns a stable CFTypeID.
+        let ax_value_type = unsafe { accessibility_sys::AXValueGetTypeID() };
+        if value_type != ax_value_type {
             return None;
         }
         let value = value as AXValueRef;
+        // SAFETY: the CFTypeID check above proves `value` is an AXValueRef.
         if unsafe { AXValueGetType(value) } == kAXValueTypeAXError {
             let mut err = kAXErrorSuccess;
+            // SAFETY: `value` is an AXValueRef containing an AXError payload;
+            // `err` is a correctly sized out-parameter.
             let ok = unsafe {
                 AXValueGetValue(
                     value,
@@ -1240,14 +1316,20 @@ mod macos {
         if value.is_null() {
             return None;
         }
+        // SAFETY: `value` is a non-null borrowed CF object.
         let type_id = unsafe { CFGetTypeID(value) };
+        // SAFETY: CFNullGetTypeID takes no inputs and returns a stable CFTypeID.
         if type_id == unsafe { CFNullGetTypeID() } {
             return None;
         }
+        // SAFETY: AXValueGetTypeID takes no inputs and returns a stable CFTypeID.
         if type_id == unsafe { accessibility_sys::AXValueGetTypeID() } {
             let ax_value = value as AXValueRef;
+            // SAFETY: the CFTypeID check above proves `ax_value` is an AXValueRef.
             if unsafe { AXValueGetType(ax_value) } == kAXValueTypeAXError {
                 let mut err = kAXErrorSuccess;
+                // SAFETY: `ax_value` is an AXValueRef containing an AXError
+                // payload; `err` is a correctly sized out-parameter.
                 let ok = unsafe {
                     AXValueGetValue(
                         ax_value,

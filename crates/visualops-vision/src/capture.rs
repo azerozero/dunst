@@ -60,6 +60,8 @@ fn capture_cg_window_with_bounds(
     window_id: u32,
     bounds: CGRect,
 ) -> Result<CapturedWindow, CaptureError> {
+    // SAFETY: `CGRectNull` is a CoreGraphics sentinel constant used here to ask
+    // CGWindowListCreateImage to derive the capture rect from `window_id`.
     let image = create_image(
         unsafe { CGRectNull },
         kCGWindowListOptionIncludingWindow,
@@ -108,6 +110,8 @@ fn cg_window_bounds(window_id: u32) -> Result<CGRect, CaptureError> {
 
 fn bounds_from_window_info(info: CFDictionaryRef) -> Option<CGRect> {
     let mut bounds_ptr: *const c_void = std::ptr::null();
+    // SAFETY: `info` is a CGWindow dictionary borrowed from CoreGraphics;
+    // `bounds_ptr` is a valid out-parameter and is null-checked before use.
     let found = unsafe {
         CFDictionaryGetValueIfPresent(info, kCGWindowBounds.cast::<c_void>(), &mut bounds_ptr)
     };
@@ -127,6 +131,8 @@ fn bounds_from_window_info(info: CFDictionaryRef) -> Option<CGRect> {
 
 fn window_number(info: CFDictionaryRef) -> Option<u32> {
     let mut number_ptr: *const c_void = std::ptr::null();
+    // SAFETY: `info` is a CGWindow dictionary borrowed from CoreGraphics;
+    // `number_ptr` is a valid out-parameter and is null-checked before use.
     let found = unsafe {
         CFDictionaryGetValueIfPresent(info, kCGWindowNumber.cast::<c_void>(), &mut number_ptr)
     };
@@ -151,6 +157,8 @@ fn rect_from_bounds_dict(bounds: CFDictionaryRef) -> Option<CGRect> {
 fn dict_number(dict: CFDictionaryRef, key: &str) -> Option<f64> {
     let key = CFString::new(key);
     let mut number_ptr: *const c_void = std::ptr::null();
+    // SAFETY: `dict` and `key` are valid CF objects for this scope;
+    // `number_ptr` is a valid out-parameter and is null-checked before use.
     let found = unsafe {
         CFDictionaryGetValueIfPresent(dict, key.as_CFTypeRef().cast::<c_void>(), &mut number_ptr)
     };
@@ -162,6 +170,8 @@ fn dict_number(dict: CFDictionaryRef, key: &str) -> Option<f64> {
 
 fn cf_number_i64(number: CFNumberRef) -> Option<i64> {
     let mut value = 0_i64;
+    // SAFETY: `number` is expected to be a CFNumberRef from the CGWindow
+    // dictionary; `value` is a correctly sized out-parameter.
     let ok = unsafe {
         CFNumberGetValue(
             number,
@@ -174,6 +184,8 @@ fn cf_number_i64(number: CFNumberRef) -> Option<i64> {
 
 fn cf_number_f64(number: CFNumberRef) -> Option<f64> {
     let mut value = 0.0_f64;
+    // SAFETY: `number` is expected to be a CFNumberRef from the CGWindow
+    // dictionary; `value` is a correctly sized out-parameter.
     let ok = unsafe {
         CFNumberGetValue(
             number,
