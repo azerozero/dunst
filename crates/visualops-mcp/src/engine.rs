@@ -583,12 +583,14 @@ impl Engine {
     /// includes GPU overlays a window capture misses, and reads any app's pixels.
     #[cfg(target_os = "macos")]
     fn ocr_screen_fovea(&self, cx: f64, cy: f64) -> Vec<TextHit> {
-        const W: f64 = 420.0;
-        const H: f64 = 240.0;
+        const W: f64 = 680.0;
+        const H: f64 = 420.0;
         let (x, y) = (cx - W / 2.0, cy - H / 2.0);
         // `screencapture` grabs the COMPOSITED screen, including GPU/WebGL overlays
         // (a chart crosshair value bubble) that CoreGraphics window/display capture
-        // miss. Its -R rect is in global screen points. App/browser agnostic.
+        // miss. Its -R rect is in global screen points. App/browser agnostic. The
+        // fovea is generous because the bubble renders at a data-dependent offset
+        // from the cursor.
         let path = format!("/tmp/visualops_fovea_{}.png", std::process::id());
         let ok = std::process::Command::new("/usr/sbin/screencapture")
             .args(["-x", "-o", "-t", "png", "-R"])
