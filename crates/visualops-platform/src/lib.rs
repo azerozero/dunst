@@ -33,6 +33,14 @@ pub fn press_key(pid: i32, key: &str) -> Result<()> {
     macos::press_key(pid, key)
 }
 
+/// Post a background mouse-move (hover) at a screen point so the target's hover
+/// handlers fire (e.g. a chart crosshair tooltip / value-at-cursor) without
+/// moving the visible cursor — read the result afterwards with OCR.
+#[cfg(target_os = "macos")]
+pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
+    macos::hover_at_point(pid, x, y)
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     //! macOS FFI ownership contract:
@@ -1016,6 +1024,18 @@ mod macos {
         }
         restore_cursor_position(saved_cursor)?;
         result
+    }
+
+    pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
+        hover_at_point_impl(pid, x, y).map_err(ActionFailure::into)
+    }
+
+    fn hover_at_point_impl(pid: i32, x: f64, y: f64) -> std::result::Result<(), ActionFailure> {
+        // A single background MouseMoved delivered to the pid via post_to_pid, so
+        // the target's hover handlers fire without moving the visible cursor.
+        let point = clamp_point_to_bounds(CGPoint::new(x, y), CGDisplay::main().bounds());
+        let source = event_source("create hover CGEventSource")?;
+        post_mouse(source, pid, CGEventType::MouseMoved, point)
     }
 
     pub fn press_key(pid: i32, key: &str) -> Result<()> {

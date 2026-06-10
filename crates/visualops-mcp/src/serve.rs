@@ -152,6 +152,11 @@ fn tools_list() -> Vec<Value> {
             schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
         ),
         tool(
+            "hover_at",
+            "Hover (background mouse-move, no cursor movement) at a raw screen point (x,y) so the target reveals a hover state — e.g. a chart crosshair tooltip / value-at-cursor — then read_text it. A probe: no gating, no audit.",
+            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
+        ),
+        tool(
             "press_key",
             "Press a named key on the target (e.g. \"Return\"/\"Enter\" to submit a typed URL, \"Tab\", \"Escape\"). Raw, ungated keyboard input.",
             schema(json!({ "key": {"type":"string"} }), &["key"]),
@@ -258,6 +263,16 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string()),
             _ => Err("click_at requires numeric 'x' and 'y'".into()),
+        },
+        "hover_at" => match (
+            args.get("x").and_then(Value::as_f64),
+            args.get("y").and_then(Value::as_f64),
+        ) {
+            (Some(x), Some(y)) => engine
+                .hover_at(x, y)
+                .map(|()| json!("ok"))
+                .map_err(|e| e.to_string()),
+            _ => Err("hover_at requires numeric 'x' and 'y'".into()),
         },
         "press_key" => match arg("key") {
             Some(key) => engine
@@ -424,8 +439,8 @@ mod tests {
     #[test]
     fn tools_list_exposes_read_text_with_object_schema() {
         let tools = tools_list();
-        // read_text + read_shapes + click_at + press_key brought the set to 17.
-        assert_eq!(tools.len(), 17, "tool count");
+        // read_text + read_shapes + click_at + hover_at + press_key brought the set to 18.
+        assert_eq!(tools.len(), 18, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(

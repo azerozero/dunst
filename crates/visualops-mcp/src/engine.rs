@@ -525,6 +525,21 @@ impl Engine {
         Err(VisualOpsError::Execution("press_key requires a macOS backend".into()))
     }
 
+    /// Background hover at a screen point so the target shows a hover state (e.g.
+    /// a chart crosshair tooltip / value-at-cursor) without moving the visible
+    /// cursor. A pure probe — no risk-gating, no audit, **no refresh** — so a
+    /// following `read_text` reads the hovered result.
+    #[cfg(target_os = "macos")]
+    pub fn hover_at(&self, x: f64, y: f64) -> visualops_core::Result<()> {
+        visualops_platform::hover_at_point(self.target.pid, x, y)
+    }
+
+    /// Non-macOS stub: raw CGEvent input needs the macOS backend.
+    #[cfg(not(target_os = "macos"))]
+    pub fn hover_at(&self, _x: f64, _y: f64) -> visualops_core::Result<()> {
+        Err(VisualOpsError::Execution("hover_at requires a macOS backend".into()))
+    }
+
     /// Record a **raw input** (`click_at` / `press_key`) — a coordinate/key not bound
     /// to any element, hence no affordance and no per-element gating (LOW risk by
     /// construction). The attempt is always written to the trace; on platform
