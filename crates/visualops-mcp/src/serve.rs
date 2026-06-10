@@ -170,6 +170,11 @@ fn tools_list() -> Vec<Value> {
             ),
         ),
         tool(
+            "scan_chart",
+            "Detect → confirm rendered → traverse → series. Coarse-to-fine CV first answers whether a chart is actually rendered (not a blank plot) and where it sits; only if present does it traverse the plot at mid-height and read the value-at-cursor across it. Returns {present, fill_ratio, region, samples:[{x,value,time,raw}]}. Honest 'present:false' over an empty plot.",
+            schema(json!({ "samples": { "type": "integer", "description": "points across the width (2-12, default 5)" } }), &[]),
+        ),
+        tool(
             "press_key",
             "Press a named key on the target (e.g. \"Return\"/\"Enter\" to submit a typed URL, \"Tab\", \"Escape\"). Raw, ungated keyboard input.",
             schema(json!({ "key": {"type":"string"} }), &["key"]),
@@ -313,6 +318,13 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
             }
             None => Err("read_series requires 'points': [[x,y], ...]".into()),
         },
+        "scan_chart" => {
+            let n = args.get("samples").and_then(Value::as_u64).unwrap_or(5) as usize;
+            engine
+                .scan_chart(n)
+                .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string())
+        }
         "press_key" => match arg("key") {
             Some(key) => engine
                 .press_key(&key)
@@ -479,7 +491,7 @@ mod tests {
     fn tools_list_exposes_read_text_with_object_schema() {
         let tools = tools_list();
         // + read_at + read_series brought the set to 20.
-        assert_eq!(tools.len(), 20, "tool count");
+        assert_eq!(tools.len(), 21, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(

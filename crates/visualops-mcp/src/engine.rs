@@ -64,6 +64,40 @@ pub struct ShapeHit {
     pub confidence: f32,
 }
 
+/// One traversal point of [`Engine::scan_chart`]: the screen x it hovered, a
+/// best-effort value/time pulled from the crosshair bubble, and the raw OCR.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ChartSample {
+    pub x: f64,
+    pub value: Option<String>,
+    pub time: Option<String>,
+    pub raw: Vec<String>,
+}
+
+/// Result of [`Engine::scan_chart`]: whether a chart is **rendered** (vs a blank
+/// plot), where it sits, and the value series sampled along it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScanResult {
+    pub present: bool,
+    pub fill_ratio: f32,
+    pub region: Option<Bbox>,
+    pub samples: Vec<ChartSample>,
+}
+
+/// Heuristic: looks like a numeric value (≥3 digits with a decimal comma/dot).
+fn looks_like_price(s: &str) -> bool {
+    let digits = s.chars().filter(char::is_ascii_digit).count();
+    (s.contains(',') || s.contains('.')) && digits >= 3 && s.len() <= 16
+}
+
+/// Heuristic: contains a clock time like `HH:MM`.
+fn looks_like_clock(s: &str) -> bool {
+    let b = s.as_bytes();
+    (1..b.len().saturating_sub(2)).any(|i| {
+        b[i] == b':' && b[i - 1].is_ascii_digit() && b[i + 1].is_ascii_digit() && b[i + 2].is_ascii_digit()
+    })
+}
+
 pub struct Engine {
     perceptor: Box<dyn Perceptor>,
     executor: Box<dyn ActionExecutor>,
@@ -628,6 +662,64 @@ impl Engine {
     /// `(x, y)`, OCR around it, restore.
     pub fn read_at(&self, x: f64, y: f64) -> visualops_core::Result<Vec<TextHit>> {
         Ok(self.read_series(&[(x, y)])?.into_iter().next().unwrap_or_default())
+    }
+
+    /// **Detect → confirm rendered → traverse → series.** Coarse-to-fine CV first
+    /// answers "is a chart actually rendered (not a blank plot) and where" from a
+    /// cheap window grab; only if present does it traverse the plot at mid-height,
+    /// reading the value-at-cursor at `samples` points. Returns a blank-but-honest
+    /// [`ScanResult`] (`present: false`) when there is nothing to read, instead of
+    /// hovering an empty plot. macOS-only.
+    #[cfg(target_os = "macos")]
+    pub fn scan_chart(&self, samples: usize) -> visualops_core::Result<ScanResult> {
+        let captured =
+            visualops_vision::capture::capture_window(self.target.window_id).map_err(|e| {
+                VisualOpsError::Perception(format!("chart scan requires a live window: {e}"))
+            })?;
+        let det = visualops_vision::detect::detect_chart_region(&captured.image, &captured.geometry);
+        let Some(region) = det.region.filter(|_| det.present) else {
+            return Ok(ScanResult {
+                present: false,
+                fill_ratio: det.fill_ratio,
+                region: det.region,
+                samples: Vec::new(),
+            });
+        };
+        let mid_y = region.y + region.h * 0.5;
+        let n = samples.clamp(2, 12);
+        let pts: Vec<(f64, f64)> = (0..n)
+            .map(|k| {
+                let f = if n > 1 { k as f64 / (n - 1) as f64 } else { 0.5 };
+                // inset from the plot edges (axes/labels live there)
+                (region.x + region.w * (0.06 + 0.88 * f), mid_y)
+            })
+            .collect();
+        let rows = self.read_series(&pts)?;
+        let samples_out = pts
+            .iter()
+            .zip(rows)
+            .map(|(&(x, _), hits)| {
+                let raw: Vec<String> = hits.iter().map(|h| h.text.clone()).collect();
+                let value = raw.iter().find(|t| looks_like_price(t)).cloned();
+                let time = raw
+                    .iter()
+                    .find(|t| t.contains("UTC") || looks_like_clock(t))
+                    .cloned();
+                ChartSample { x, value, time, raw }
+            })
+            .collect();
+        Ok(ScanResult {
+            present: true,
+            fill_ratio: det.fill_ratio,
+            region: Some(region),
+            samples: samples_out,
+        })
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn scan_chart(&self, _samples: usize) -> visualops_core::Result<ScanResult> {
+        Err(VisualOpsError::Execution("scan_chart requires a macOS backend".into()))
     }
 
     /// Record a **raw input** (`click_at` / `press_key`) — a coordinate/key not bound
