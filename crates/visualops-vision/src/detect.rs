@@ -23,64 +23,130 @@ pub struct ChartDetection {
     pub fill_ratio: f32,
 }
 
-/// Luma at/above this is treated as background; the (dark) curve and axis text
-/// fall below it, a pale watermark on a blank plot does not.
-const CONTENT_LUMA_MAX: u8 = 205;
+/// Luma at/above this is background; the curve, its (pale) area fill, and text
+/// fall below it. Set high enough to include a pale gradient fill.
+const CONTENT_LUMA_MAX: u8 = 236;
 /// Coarse grid width — fast blank/present gate.
 const COARSE_W: usize = 80;
 /// Fine grid width — locate the content bbox.
 const FINE_W: usize = 256;
-/// Plot band insets (skip the header / axis / surrounding UI chrome).
-const BAND_X0: usize = 4;
-const BAND_X1: usize = 97;
-const BAND_Y0: usize = 5;
-const BAND_Y1: usize = 78;
-/// Minimum band fill to call the plot "rendered".
-const PRESENT_RATIO: f32 = 0.008;
+/// Minimum overall fill (coarse) to bother running the fine pass.
+const COARSE_MIN_FILL: f32 = 0.01;
+/// A chart plot blob must span at least this fraction of the grid width and
+/// height — wide AND tall separates a curve+fill from thin text lines.
+const PLOT_MIN_W_FRAC: f32 = 0.33;
+const PLOT_MIN_H_FRAC: f32 = 0.12;
 
 /// Detect whether the target's chart is rendered and, if so, where its plotted
 /// content lies (in screen points). Use a base window/display capture — the data
 /// curve is base content (a window grab captures it; only the transient crosshair
 /// overlay needs the composited path).
 pub fn detect_chart_region(image: &CGImage, geometry: &CaptureGeometry) -> ChartDetection {
-    // L0 — very coarse: blank plots reject here without touching the fine grid.
-    let Some((w0, h0, d0)) = luma_grid(image, COARSE_W) else {
-        return ChartDetection {
-            present: false,
-            region: None,
-            fill_ratio: 0.0,
-        };
+    let absent = |fill_ratio| ChartDetection {
+        present: false,
+        region: None,
+        fill_ratio,
     };
-    let (r0, _) = band_fill(w0, h0, &d0);
-    if r0 < PRESENT_RATIO {
-        return ChartDetection {
-            present: false,
-            region: None,
-            fill_ratio: r0,
-        };
+
+    // L0 — very coarse: a near-empty grid rejects here without the fine pass.
+    let Some((w0, h0, d0)) = luma_grid(image, COARSE_W) else {
+        return absent(0.0);
+    };
+    if overall_fill(w0, h0, &d0) < COARSE_MIN_FILL {
+        return absent(0.0);
     }
 
-    // L1 — finer: confirm and locate the content bounding box.
+    // L1 — finer: the chart PLOT is the largest content blob that is both wide
+    // AND tall (a curve + area fill), which separates it from thin text lines and
+    // from a blank plot (which has no such blob).
     let (w, h, d) = luma_grid(image, FINE_W).unwrap_or((w0, h0, d0));
-    let (r1, bb) = band_fill(w, h, &d);
-    let present = r1 >= PRESENT_RATIO;
-    let region = bb.filter(|_| present).map(|(minx, miny, maxx, maxy)| {
-        let (ox, oy) = geometry.window_origin_pt;
-        let (sw, sh) = geometry.window_size_pt;
-        let sx = |gx: usize| ox + (gx as f64 / w as f64) * sw;
-        let sy = |gy: usize| oy + (gy as f64 / h as f64) * sh;
-        Bbox {
-            x: sx(minx),
-            y: sy(miny),
-            w: sx(maxx + 1) - sx(minx),
-            h: sy(maxy + 1) - sy(miny),
-        }
-    });
+    let r1 = overall_fill(w, h, &d);
+    let min_w = (w as f32 * PLOT_MIN_W_FRAC) as usize;
+    let min_h = (h as f32 * PLOT_MIN_H_FRAC) as usize;
+    let Some(plot) = largest_blob(w, h, &d).filter(|b| {
+        (b.maxx - b.minx + 1) >= min_w && (b.maxy - b.miny + 1) >= min_h
+    }) else {
+        return absent(r1);
+    };
+
+    let (ox, oy) = geometry.window_origin_pt;
+    let (sw, sh) = geometry.window_size_pt;
+    let sx = |gx: usize| ox + (gx as f64 / w as f64) * sw;
+    let sy = |gy: usize| oy + (gy as f64 / h as f64) * sh;
     ChartDetection {
-        present,
-        region,
+        present: true,
+        region: Some(Bbox {
+            x: sx(plot.minx),
+            y: sy(plot.miny),
+            w: sx(plot.maxx + 1) - sx(plot.minx),
+            h: sy(plot.maxy + 1) - sy(plot.miny),
+        }),
         fill_ratio: r1,
     }
+}
+
+#[derive(Clone, Copy)]
+struct Blob {
+    minx: usize,
+    miny: usize,
+    maxx: usize,
+    maxy: usize,
+    pixels: usize,
+}
+
+/// Largest 4-connected component of content cells (luma < [`CONTENT_LUMA_MAX`]),
+/// by pixel count. Iterative flood fill (no recursion).
+fn largest_blob(w: usize, h: usize, data: &[u8]) -> Option<Blob> {
+    let mut seen = vec![false; w * h];
+    let mut best: Option<Blob> = None;
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    for sy in 0..h {
+        for sx in 0..w {
+            let idx = sy * w + sx;
+            if seen[idx] || data[idx] >= CONTENT_LUMA_MAX {
+                continue;
+            }
+            let (mut minx, mut miny, mut maxx, mut maxy, mut pixels) = (sx, sy, sx, sy, 0usize);
+            stack.push((sx, sy));
+            seen[idx] = true;
+            while let Some((x, y)) = stack.pop() {
+                pixels += 1;
+                minx = minx.min(x);
+                miny = miny.min(y);
+                maxx = maxx.max(x);
+                maxy = maxy.max(y);
+                let mut push = |nx: usize, ny: usize, stack: &mut Vec<(usize, usize)>| {
+                    let nidx = ny * w + nx;
+                    if !seen[nidx] && data[nidx] < CONTENT_LUMA_MAX {
+                        seen[nidx] = true;
+                        stack.push((nx, ny));
+                    }
+                };
+                if x > 0 {
+                    push(x - 1, y, &mut stack);
+                }
+                if x + 1 < w {
+                    push(x + 1, y, &mut stack);
+                }
+                if y > 0 {
+                    push(x, y - 1, &mut stack);
+                }
+                if y + 1 < h {
+                    push(x, y + 1, &mut stack);
+                }
+            }
+            if best.is_none_or(|b| pixels > b.pixels) {
+                best = Some(Blob {
+                    minx,
+                    miny,
+                    maxx,
+                    maxy,
+                    pixels,
+                });
+            }
+        }
+    }
+    best
 }
 
 /// Downsample the CGImage to a `target_w`-wide luminance grid. Mirrors the
@@ -118,33 +184,11 @@ fn luma_grid(image: &CGImage, target_w: usize) -> Option<(usize, usize, Vec<u8>)
     Some((dst_w, dst_h, data))
 }
 
-/// Fraction of non-background cells inside the central plot band, plus their
-/// bounding box (in grid cells).
-#[allow(clippy::type_complexity)]
-fn band_fill(w: usize, h: usize, data: &[u8]) -> (f32, Option<(usize, usize, usize, usize)>) {
-    let x0 = (w * BAND_X0 / 100).min(w.saturating_sub(1));
-    let x1 = (w * BAND_X1 / 100).max(x0 + 1).min(w);
-    let y0 = (h * BAND_Y0 / 100).min(h.saturating_sub(1));
-    let y1 = (h * BAND_Y1 / 100).max(y0 + 1).min(h);
-    let (mut content, mut total) = (0u32, 0u32);
-    let (mut minx, mut miny, mut maxx, mut maxy) = (usize::MAX, usize::MAX, 0usize, 0usize);
-    for gy in y0..y1 {
-        for gx in x0..x1 {
-            total += 1;
-            if data[gy * w + gx] < CONTENT_LUMA_MAX {
-                content += 1;
-                minx = minx.min(gx);
-                miny = miny.min(gy);
-                maxx = maxx.max(gx);
-                maxy = maxy.max(gy);
-            }
-        }
+/// Fraction of non-background cells over the whole grid.
+fn overall_fill(w: usize, h: usize, data: &[u8]) -> f32 {
+    if w * h == 0 {
+        return 0.0;
     }
-    let ratio = if total > 0 {
-        content as f32 / total as f32
-    } else {
-        0.0
-    };
-    let bbox = (content > 0).then_some((minx, miny, maxx, maxy));
-    (ratio, bbox)
+    let content = data.iter().filter(|&&v| v < CONTENT_LUMA_MAX).count();
+    content as f32 / (w * h) as f32
 }
