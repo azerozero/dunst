@@ -556,12 +556,17 @@ impl Engine {
         let saved = visualops_platform::cursor_borrow_to(x0, y0)?;
         let mut out = Vec::with_capacity(points.len());
         for &(x, y) in points {
-            // Move to the point (the hover already triggers reliably — no circle
-            // needed) and OCR a tight region where the value-at-cursor renders.
+            // Move to the point (the hover triggers reliably — no circle needed),
+            // then DISPLAY-capture a fovea around the cursor: the crosshair value
+            // bubble is a GPU overlay a window capture misses, but a composited
+            // screen grab includes it — and it's app/browser agnostic + fast.
+            // A small move INTO the point (a delta, not a circle) makes the
+            // crosshair render; then let it paint before the composited grab.
+            let _ = visualops_platform::hover_at_point(self.target.pid, x - 8.0, y);
+            std::thread::sleep(std::time::Duration::from_millis(30));
             let _ = visualops_platform::hover_at_point(self.target.pid, x, y);
-            std::thread::sleep(std::time::Duration::from_millis(120));
-            let region = Bbox { x: x - 30.0, y: y - 70.0, w: 240.0, h: 150.0 };
-            out.push(self.read_text(Some(region)).unwrap_or_default());
+            std::thread::sleep(std::time::Duration::from_millis(320));
+            out.push(self.ocr_screen_fovea(x, y));
         }
         let _ = visualops_platform::cursor_restore(saved.0, saved.1);
         Ok(out)
@@ -571,6 +576,50 @@ impl Engine {
     #[cfg(not(target_os = "macos"))]
     pub fn read_series(&self, _points: &[(f64, f64)]) -> visualops_core::Result<Vec<Vec<TextHit>>> {
         Err(VisualOpsError::Execution("read_series requires a macOS backend".into()))
+    }
+
+    /// OCR a small fovea of the **composited display** around `(cx, cy)` — the
+    /// crosshair / value-at-cursor bubble renders near the cursor. Display capture
+    /// includes GPU overlays a window capture misses, and reads any app's pixels.
+    #[cfg(target_os = "macos")]
+    fn ocr_screen_fovea(&self, cx: f64, cy: f64) -> Vec<TextHit> {
+        const W: f64 = 420.0;
+        const H: f64 = 240.0;
+        let (x, y) = (cx - W / 2.0, cy - H / 2.0);
+        // `screencapture` grabs the COMPOSITED screen, including GPU/WebGL overlays
+        // (a chart crosshair value bubble) that CoreGraphics window/display capture
+        // miss. Its -R rect is in global screen points. App/browser agnostic.
+        let path = format!("/tmp/visualops_fovea_{}.png", std::process::id());
+        let ok = std::process::Command::new("/usr/sbin/screencapture")
+            .args(["-x", "-o", "-t", "png", "-R"])
+            .arg(format!("{x},{y},{W},{H}"))
+            .arg(&path)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return Vec::new();
+        }
+        let geom = visualops_vision::CaptureGeometry {
+            window_origin_pt: (x, y),
+            window_size_pt: (W, H),
+            image_size_px: (W * 2.0, H * 2.0),
+            backing_scale: 2.0,
+        };
+        let boxes = visualops_vision::ocr::ocr_image_file(
+            &path,
+            visualops_vision::ocr::RecognitionMode::Fast,
+        )
+        .unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        boxes
+            .into_iter()
+            .map(|b| TextHit {
+                text: b.text,
+                bbox: visualops_vision::coords::vision_norm_to_screen_pt(b.norm, &geom),
+                confidence: b.confidence,
+            })
+            .collect()
     }
 
     /// Single-point [`read_series`](Self::read_series): borrow the cursor, hover

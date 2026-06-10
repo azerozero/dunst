@@ -1073,10 +1073,12 @@ mod macos {
         let source = event_source("create borrow CGEventSource")?;
         let saved = current_cursor_position(&source)?;
         let point = clamp_point_to_bounds(CGPoint::new(x, y), all_displays_bounds());
-        // Decouple the hardware mouse so the user moving it can't fight our warp
-        // during the brief borrow; cursor_restore re-couples it.
-        CGDisplay::associate_mouse_and_mouse_cursor_position(false)
-            .map_err(|err| ActionFailure::Execution(format!("decouple mouse: {err:?}")))?;
+        // NOTE: we deliberately do NOT decouple the hardware mouse. Decoupling
+        // (CGAssociateMouseAndMouseCursorPosition(false)) stops the warped cursor's
+        // move from routing to the window under it, so a web/canvas hover never
+        // fires and the crosshair stays hidden. Keep the mouse coupled (the user
+        // just shouldn't fight it during the brief borrow); we restore the cursor
+        // afterwards.
         CGDisplay::warp_mouse_cursor_position(point)
             .map_err(|err| ActionFailure::Execution(format!("warp for borrowed hover: {err:?}")))?;
         let event =

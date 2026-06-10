@@ -7,7 +7,7 @@ use foreign_types::ForeignType;
 use objc2::{rc::Retained, AnyThread, ClassType};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGImage as ObjcCgImage;
-use objc2_foundation::{NSArray, NSDictionary};
+use objc2_foundation::{NSArray, NSDictionary, NSString, NSURL};
 use objc2_vision::{
     VNImageOption, VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedText,
     VNRecognizedTextObservation, VNRequest, VNRequestTextRecognitionLevel,
@@ -74,6 +74,48 @@ pub fn ocr_region_with_mode(
             image_ref,
             &options,
         )
+    };
+
+    let request_ref: &VNRecognizeTextRequest = &request;
+    let request_base: &VNRequest = request_ref.as_super().as_super();
+    let requests: Retained<NSArray<VNRequest>> = NSArray::from_slice(&[request_base]);
+    handler
+        .performRequests_error(&requests)
+        .map_err(|err| OcrError::Vision(err.localizedDescription().to_string()))?;
+
+    let mut out = Vec::new();
+    if let Some(results) = request.results() {
+        for observation in results.iter() {
+            if let Some(ocr_box) = observation_to_box(&observation) {
+                out.push(ocr_box);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// OCR an image **file** by URL (e.g. a `screencapture` PNG). The composited
+/// screen grab includes GPU/WebGL overlays — a chart crosshair value-at-cursor —
+/// that a CGImage window or display capture misses. Returns boxes in normalized
+/// Vision coords (bottom-left origin); the caller maps them with the geometry of
+/// the captured rect. Whole-image (no region of interest).
+pub fn ocr_image_file(path: &str, mode: RecognitionMode) -> Result<Vec<OcrBox>, OcrError> {
+    // SAFETY: objc2 allocation/init follows the framework convention; the
+    // returned retained request owns the Objective-C object.
+    let request = unsafe { VNRecognizeTextRequest::init(VNRecognizeTextRequest::alloc()) };
+    request.setRecognitionLevel(match mode {
+        RecognitionMode::Fast => VNRequestTextRecognitionLevel::Fast,
+        RecognitionMode::Accurate => VNRequestTextRecognitionLevel::Accurate,
+    });
+    request.setUsesLanguageCorrection(false);
+
+    let ns_path = NSString::from_str(path);
+    let url = NSURL::fileURLWithPath(&ns_path);
+    // SAFETY: objc2 alloc/init per framework convention; `url` and `options` live
+    // through handler init.
+    let handler = unsafe {
+        let options = NSDictionary::<VNImageOption, objc2::runtime::AnyObject>::new();
+        VNImageRequestHandler::initWithURL_options(VNImageRequestHandler::alloc(), &url, &options)
     };
 
     let request_ref: &VNRecognizeTextRequest = &request;

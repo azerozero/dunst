@@ -9,7 +9,7 @@ use core_foundation::{
     string::CFString,
 };
 use core_graphics::{
-    display::CGRectNull,
+    display::{CGDisplay, CGRectNull},
     geometry::{CGPoint, CGRect, CGSize},
     window::{
         copy_window_info, create_image, kCGWindowBounds, kCGWindowImageBestResolution,
@@ -54,6 +54,57 @@ pub struct CapturedWindow {
 pub fn capture_window(window_id: u32) -> Result<CapturedWindow, CaptureError> {
     let bounds = cg_window_bounds(window_id)?;
     capture_cg_window_with_bounds(window_id, bounds)
+}
+
+/// Capture a rectangle of the **composited display** (what is actually on screen,
+/// including GPU/WebGL overlays such as a chart crosshair that a window capture
+/// misses) around a global screen-point rect. Returns the same [`CapturedWindow`]
+/// shape, so the OCR + coord-mapping path is unchanged. App/browser agnostic —
+/// it reads pixels off the screen, not a specific window's backing store.
+pub fn capture_screen_rect(x: f64, y: f64, w: f64, h: f64) -> Result<CapturedWindow, CaptureError> {
+    let display = display_containing(x + w / 2.0, y + h / 2.0);
+    let db = display.bounds();
+    // CGDisplayCreateImageForRect takes the rect in the display's LOCAL space
+    // (origin at that display's top-left), so a global point on a secondary
+    // monitor must be shifted by the display origin — otherwise it lands
+    // off-screen and the capture is empty. The geometry stays in GLOBAL points
+    // so OCR boxes map straight back to screen coordinates.
+    let local = CGRect::new(
+        &CGPoint::new(x - db.origin.x, y - db.origin.y),
+        &CGSize::new(w, h),
+    );
+    let image = display
+        .image_for_rect(local)
+        .ok_or(CaptureError::CoreGraphicsImage(0))?;
+    let image_size_px = (image.width() as f64, image.height() as f64);
+    let backing_scale = if w > 0.0 && h > 0.0 {
+        ((image_size_px.0 / w) + (image_size_px.1 / h)) / 2.0
+    } else {
+        1.0
+    };
+    let global = CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h));
+    Ok(CapturedWindow {
+        image,
+        geometry: geometry_from_rect(global, image_size_px, backing_scale),
+    })
+}
+
+/// The active display whose global bounds contain `(x, y)`, or the main display.
+fn display_containing(x: f64, y: f64) -> CGDisplay {
+    if let Ok(ids) = CGDisplay::active_displays() {
+        for id in ids {
+            let d = CGDisplay::new(id);
+            let b = d.bounds();
+            if x >= b.origin.x
+                && x < b.origin.x + b.size.width
+                && y >= b.origin.y
+                && y < b.origin.y + b.size.height
+            {
+                return d;
+            }
+        }
+    }
+    CGDisplay::main()
 }
 
 fn capture_cg_window_with_bounds(
