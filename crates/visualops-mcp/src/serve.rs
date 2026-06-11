@@ -59,7 +59,7 @@ fn initialize_result() -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": {} },
-        "serverInfo": { "name": "visualops-mcp", "version": env!("CARGO_PKG_VERSION") }
+        "serverInfo": { "name": "dunst", "version": env!("CARGO_PKG_VERSION") }
     })
 }
 

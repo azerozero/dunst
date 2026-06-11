@@ -1,8 +1,11 @@
 {
   "mcpServers": {
-    "visualops": {
+    "dunst": {
       "command": "/Users/ludwig/workspace/viewcontrolermcp/target/debug/visualops-mcp",
-      "args": ["serve", "--live"]
+      "args": [
+        "serve",
+        "--live"
+      ]
     }
   }
 }
