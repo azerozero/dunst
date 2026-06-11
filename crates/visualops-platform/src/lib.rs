@@ -58,6 +58,17 @@ pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
     macos::cursor_restore(x, y)
 }
 
+/// Make `window_id`'s app **AppKit-active without raising it or switching Spaces**
+/// (SkyLight focus-without-raise, the recipe cua-driver ports from yabai). A
+/// backgrounded web canvas (e.g. a chart) only paints when its window is active,
+/// so this lets it render before a capture — without foregrounding. Returns
+/// `false` if the private SkyLight SPIs don't resolve (best-effort, no-op
+/// fallback).
+#[cfg(target_os = "macos")]
+pub fn focus_without_raise(window_id: u32) -> bool {
+    macos::focus_without_raise(window_id)
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     //! macOS FFI ownership contract:
@@ -1099,6 +1110,130 @@ mod macos {
         // leave the user's mouse decoupled.
         let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(true);
         warped
+    }
+
+    pub fn focus_without_raise(window_id: u32) -> bool {
+        skylight::focus_without_raise(window_id)
+    }
+
+    /// Best-effort bridge to SkyLight's private focus-without-raise SPIs, resolved
+    /// once via `dlopen`/`dlsym` so a missing framework degrades to a no-op rather
+    /// than a link failure. Recipe ported from cua-driver (itself from yabai's
+    /// `window_manager_focus_window_without_raise`).
+    mod skylight {
+        use std::ffi::{c_char, c_int, c_void, CStr};
+        use std::sync::OnceLock;
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Psn {
+            high: u32,
+            low: u32,
+        }
+
+        type GetFrontProcess = unsafe extern "C" fn(*mut Psn) -> i32;
+        type MainConnectionId = unsafe extern "C" fn() -> u32;
+        type GetWindowOwner = unsafe extern "C" fn(u32, u32, *mut u32) -> i32;
+        type GetConnectionPsn = unsafe extern "C" fn(u32, *mut Psn) -> i32;
+        type PostEventRecordTo = unsafe extern "C" fn(*const Psn, *const u8) -> i32;
+
+        extern "C" {
+            fn dlopen(path: *const c_char, flag: c_int) -> *mut c_void;
+            fn dlsym(handle: *mut c_void, sym: *const c_char) -> *mut c_void;
+        }
+
+        struct Spi {
+            get_front: GetFrontProcess,
+            main_cid: MainConnectionId,
+            window_owner: GetWindowOwner,
+            conn_psn: GetConnectionPsn,
+            post: PostEventRecordTo,
+        }
+        // SAFETY: the fields are C function pointers into a system framework,
+        // read-only after one-time resolution; sharing them across threads is sound.
+        unsafe impl Send for Spi {}
+        // SAFETY: same as the `Send` impl above — immutable resolved fn pointers.
+        unsafe impl Sync for Spi {}
+
+        static SPI: OnceLock<Option<Spi>> = OnceLock::new();
+
+        fn resolve() -> &'static Option<Spi> {
+            SPI.get_or_init(|| {
+                const RTLD_NOW: c_int = 2;
+                let path = c"/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight";
+                // SAFETY: `path` is a valid NUL-terminated C string; dlopen returns
+                // null on failure, which is checked.
+                let handle = unsafe { dlopen(path.as_ptr(), RTLD_NOW) };
+                if handle.is_null() {
+                    return None;
+                }
+                // SAFETY: `handle` is a live dlopen handle and each name is a valid
+                // C string; dlsym returns null for missing symbols (checked below).
+                let sym = |name: &CStr| unsafe { dlsym(handle, name.as_ptr()) };
+                let get_front = sym(c"_SLPSGetFrontProcess");
+                let main_cid = sym(c"SLSMainConnectionID");
+                let window_owner = sym(c"SLSGetWindowOwner");
+                let conn_psn = sym(c"SLSGetConnectionPSN");
+                let post = sym(c"SLPSPostEventRecordTo");
+                if get_front.is_null()
+                    || main_cid.is_null()
+                    || window_owner.is_null()
+                    || conn_psn.is_null()
+                    || post.is_null()
+                {
+                    return None;
+                }
+                // SAFETY: each pointer is a non-null symbol from SkyLight with the
+                // documented C signature transmuted to the matching fn type.
+                unsafe {
+                    Some(Spi {
+                        get_front: std::mem::transmute::<*mut c_void, GetFrontProcess>(get_front),
+                        main_cid: std::mem::transmute::<*mut c_void, MainConnectionId>(main_cid),
+                        window_owner: std::mem::transmute::<*mut c_void, GetWindowOwner>(
+                            window_owner,
+                        ),
+                        conn_psn: std::mem::transmute::<*mut c_void, GetConnectionPsn>(conn_psn),
+                        post: std::mem::transmute::<*mut c_void, PostEventRecordTo>(post),
+                    })
+                }
+            })
+        }
+
+        pub fn focus_without_raise(window_id: u32) -> bool {
+            let Some(spi) = resolve() else {
+                return false;
+            };
+            // SAFETY: the fns are resolved SkyLight SPIs; `prev`/`target` are
+            // correctly sized PSN out-parameters and `buf` is the 248-byte event
+            // record the SLPSPostEventRecordTo recipe expects.
+            unsafe {
+                let mut prev = Psn { high: 0, low: 0 };
+                if (spi.get_front)(&mut prev) != 0 {
+                    return false;
+                }
+                let cid = (spi.main_cid)();
+                let mut owner: u32 = 0;
+                if (spi.window_owner)(cid, window_id, &mut owner) != 0 {
+                    return false;
+                }
+                let mut target = Psn { high: 0, low: 0 };
+                if (spi.conn_psn)(owner, &mut target) != 0 {
+                    return false;
+                }
+                let mut buf = [0u8; 0xF8];
+                buf[0x04] = 0xF8;
+                buf[0x08] = 0x0D;
+                buf[0x3C] = (window_id & 0xFF) as u8;
+                buf[0x3D] = ((window_id >> 8) & 0xFF) as u8;
+                buf[0x3E] = ((window_id >> 16) & 0xFF) as u8;
+                buf[0x3F] = ((window_id >> 24) & 0xFF) as u8;
+                buf[0x8A] = 0x02; // defocus the previous front
+                let defocus = (spi.post)(&prev, buf.as_ptr());
+                buf[0x8A] = 0x01; // focus the target window
+                let focus = (spi.post)(&target, buf.as_ptr());
+                defocus == 0 && focus == 0
+            }
+        }
     }
 
     pub fn press_key(pid: i32, key: &str) -> Result<()> {

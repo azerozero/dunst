@@ -79,6 +79,9 @@ pub struct ChartSample {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScanResult {
     pub present: bool,
+    /// Whether SkyLight focus-without-raise activated the window (so a web canvas
+    /// paints) before the scan.
+    pub focused: bool,
     pub fill_ratio: f32,
     pub region: Option<Bbox>,
     pub samples: Vec<ChartSample>,
@@ -672,6 +675,13 @@ impl Engine {
     /// hovering an empty plot. macOS-only.
     #[cfg(target_os = "macos")]
     pub fn scan_chart(&self, samples: usize) -> visualops_core::Result<ScanResult> {
+        // Make the (possibly backgrounded) window active WITHOUT raising it, so a
+        // web canvas paints; give it a beat to render before we look.
+        let focused = visualops_platform::focus_without_raise(self.target.window_id);
+        if focused {
+            // Give the just-activated web canvas time to paint before we look.
+            std::thread::sleep(std::time::Duration::from_millis(900));
+        }
         let captured =
             visualops_vision::capture::capture_window(self.target.window_id).map_err(|e| {
                 VisualOpsError::Perception(format!("chart scan requires a live window: {e}"))
@@ -680,6 +690,7 @@ impl Engine {
         let Some(region) = det.region.filter(|_| det.present) else {
             return Ok(ScanResult {
                 present: false,
+                focused,
                 fill_ratio: det.fill_ratio,
                 region: det.region,
                 samples: Vec::new(),
@@ -710,6 +721,7 @@ impl Engine {
             .collect();
         Ok(ScanResult {
             present: true,
+            focused,
             fill_ratio: det.fill_ratio,
             region: Some(region),
             samples: samples_out,
@@ -720,6 +732,19 @@ impl Engine {
     #[cfg(not(target_os = "macos"))]
     pub fn scan_chart(&self, _samples: usize) -> visualops_core::Result<ScanResult> {
         Err(VisualOpsError::Execution("scan_chart requires a macOS backend".into()))
+    }
+
+    /// Make the target window AppKit-active **without raising it** (SkyLight
+    /// focus-without-raise) so a backgrounded web canvas paints. Best-effort.
+    #[cfg(target_os = "macos")]
+    pub fn focus_window(&self) -> bool {
+        visualops_platform::focus_without_raise(self.target.window_id)
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn focus_window(&self) -> bool {
+        false
     }
 
     /// Record a **raw input** (`click_at` / `press_key`) — a coordinate/key not bound
