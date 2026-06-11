@@ -126,24 +126,34 @@ fn run_serve() -> i32 {
     let mut pid = flag(&args, "--pid").and_then(|s| s.parse::<i32>().ok());
     let mut window = flag(&args, "--window").and_then(|s| s.parse::<u32>().ok());
 
-    // `--app "<Owner Name>"`: discover the largest on-screen window of that app
-    // (robust to window-id churn, e.g. Chrome recreating windows).
+    // Dynamic targeting: `--app "<Owner Name>"` picks that app's largest on-screen
+    // window; `--live` bootstraps to the largest on-screen window of ANY app. In
+    // both cases the client re-targets at runtime with `list_windows` + `attach`,
+    // so nothing is hardcoded. (Robust to window-id churn, e.g. Chrome.)
     #[cfg(target_os = "macos")]
     if pid.is_none() || window.is_none() {
-        if let Some(app) = flag(&args, "--app") {
-            if let Some(w) = visualops_vision::capture::list_windows()
+        let app = flag(&args, "--app");
+        let live = args.iter().any(|a| a == "--live");
+        if app.is_some() || live {
+            let pick = visualops_vision::capture::list_windows()
                 .into_iter()
-                .filter(|w| w.on_screen && w.app == app && w.w > 200.0 && w.h > 200.0)
-                .max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)))
-            {
-                eprintln!(
-                    "visualops-mcp: --app {app:?} -> pid={} window={} {:?}",
-                    w.pid, w.window_id, w.title
-                );
-                pid = Some(w.pid);
-                window = Some(w.window_id);
-            } else {
-                eprintln!("visualops-mcp: --app {app:?} found no on-screen window");
+                .filter(|w| {
+                    w.on_screen
+                        && w.w > 200.0
+                        && w.h > 200.0
+                        && app.as_ref().is_none_or(|a| &w.app == a)
+                })
+                .max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)));
+            match pick {
+                Some(w) => {
+                    eprintln!(
+                        "visualops-mcp: target -> pid={} window={} {:?} (attach to re-target)",
+                        w.pid, w.window_id, w.title
+                    );
+                    pid = Some(w.pid);
+                    window = Some(w.window_id);
+                }
+                None => eprintln!("visualops-mcp: no matching on-screen window found"),
             }
         }
     }

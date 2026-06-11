@@ -185,6 +185,11 @@ fn tools_list() -> Vec<Value> {
             json!({}),
         ),
         tool(
+            "attach",
+            "Re-target the daemon to a window_id (from list_windows) at runtime — dynamic targeting, no fixed/hardcoded target. Re-perceives and returns the new target + scene summary.",
+            schema(json!({ "window_id": { "type": "integer" } }), &["window_id"]),
+        ),
+        tool(
             "press_key",
             "Press a named key on the target (e.g. \"Return\"/\"Enter\" to submit a typed URL, \"Tab\", \"Escape\"). Raw, ungated keyboard input.",
             schema(json!({ "key": {"type":"string"} }), &["key"]),
@@ -342,6 +347,20 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
         }
         "focus_window" => Ok(json!({ "focused": engine.focus_window() })),
         "list_windows" => Ok(serde_json::to_value(engine.list_windows()).unwrap_or(Value::Null)),
+        "attach" => match args.get("window_id").and_then(Value::as_u64) {
+            Some(wid) => match engine.attach_window(wid as u32) {
+                Ok(()) => {
+                    let (tpid, twin) = engine.target();
+                    let g = engine.scene_graph();
+                    Ok(json!({
+                        "attached": { "pid": tpid, "window_id": twin, "title": g.window.title },
+                        "n_nodes": g.nodes.len()
+                    }))
+                }
+                Err(e) => Err(e.to_string()),
+            },
+            None => Err("attach requires integer 'window_id'".into()),
+        },
         "press_key" => match arg("key") {
             Some(key) => engine
                 .press_key(&key)
@@ -515,7 +534,7 @@ mod tests {
     fn tools_list_exposes_read_text_with_object_schema() {
         let tools = tools_list();
         // + read_at + read_series brought the set to 20.
-        assert_eq!(tools.len(), 24, "tool count");
+        assert_eq!(tools.len(), 25, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(

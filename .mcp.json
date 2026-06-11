@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "visualops": {
-      "command": "/Users/ludwig/workspace/viewcontrolermcp/scripts/mcp-chrome.sh",
-      "args": []
+      "command": "/Users/ludwig/workspace/viewcontrolermcp/target/debug/visualops-mcp",
+      "args": ["serve", "--live"]
     }
   }
 }

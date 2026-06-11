@@ -301,6 +301,39 @@ impl Engine {
         Ok(())
     }
 
+    /// Re-target the engine to a different window at runtime — the MCP client
+    /// picks one from `list_windows` and attaches, so the server has no fixed,
+    /// hardcoded target. Re-perceives the new window.
+    pub fn attach(&mut self, pid: i32, window_id: u32) -> visualops_core::Result<()> {
+        self.target = Target { pid, window_id };
+        self.window = self.perceptor.window_ref(&self.target)?;
+        self.refresh()
+    }
+
+    /// Attach by `window_id` alone, resolving the owning pid via `list_windows`.
+    #[cfg(target_os = "macos")]
+    pub fn attach_window(&mut self, window_id: u32) -> visualops_core::Result<()> {
+        let pid = visualops_vision::capture::list_windows()
+            .into_iter()
+            .find(|w| w.window_id == window_id)
+            .map(|w| w.pid)
+            .ok_or_else(|| {
+                VisualOpsError::Perception(format!("window {window_id} not found"))
+            })?;
+        self.attach(pid, window_id)
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn attach_window(&mut self, _window_id: u32) -> visualops_core::Result<()> {
+        Err(VisualOpsError::Perception("attach requires a macOS backend".into()))
+    }
+
+    /// The current target as `(pid, window_id)`.
+    pub fn target(&self) -> (i32, u32) {
+        (self.target.pid, self.target.window_id)
+    }
+
     pub fn scene_graph(&self) -> &SceneGraph {
         self.current.as_ref().expect("refreshed in new()")
     }
