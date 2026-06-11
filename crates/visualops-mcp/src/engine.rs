@@ -109,6 +109,60 @@ fn parse_value(s: &str) -> Option<f64> {
     kept.replacen(',', ".", 1).replace(',', "").parse::<f64>().ok()
 }
 
+/// Parse a hotkey combo like `"cmd+l"` into `(modifier flags, keycode)`.
+fn parse_combo(combo: &str) -> Option<(u64, u16)> {
+    let mut flags = 0u64;
+    let mut key = None;
+    for part in combo.split('+') {
+        match part.trim().to_ascii_lowercase().as_str() {
+            "cmd" | "command" | "meta" => flags |= 0x0010_0000,
+            "shift" => flags |= 0x0002_0000,
+            "opt" | "option" | "alt" => flags |= 0x0008_0000,
+            "ctrl" | "control" => flags |= 0x0004_0000,
+            other => key = keycode_for(other),
+        }
+    }
+    Some((flags, key?))
+}
+
+/// macOS virtual keycode for a key name or single character (US ANSI layout).
+fn keycode_for(k: &str) -> Option<u16> {
+    Some(match k {
+        "enter" | "return" => 0x24,
+        "tab" => 0x30,
+        "escape" | "esc" => 0x35,
+        "space" => 0x31,
+        "delete" | "backspace" => 0x33,
+        "left" => 0x7B,
+        "right" => 0x7C,
+        "down" => 0x7D,
+        "up" => 0x7E,
+        "pagedown" => 0x79,
+        "pageup" => 0x74,
+        "home" => 0x73,
+        "end" => 0x77,
+        "plus" => 0x18,
+        "minus" => 0x1B,
+        s if s.chars().count() == 1 => char_keycode(s.chars().next()?)?,
+        _ => return None,
+    })
+}
+
+/// macOS virtual keycode for a single character (US ANSI layout).
+fn char_keycode(c: char) -> Option<u16> {
+    Some(match c.to_ascii_lowercase() {
+        'a' => 0x00, 'b' => 0x0B, 'c' => 0x08, 'd' => 0x02, 'e' => 0x0E, 'f' => 0x03,
+        'g' => 0x05, 'h' => 0x04, 'i' => 0x22, 'j' => 0x26, 'k' => 0x28, 'l' => 0x25,
+        'm' => 0x2E, 'n' => 0x2D, 'o' => 0x1F, 'p' => 0x23, 'q' => 0x0C, 'r' => 0x0F,
+        's' => 0x01, 't' => 0x11, 'u' => 0x20, 'v' => 0x09, 'w' => 0x0D, 'x' => 0x07,
+        'y' => 0x10, 'z' => 0x06,
+        '0' => 0x1D, '1' => 0x12, '2' => 0x13, '3' => 0x14, '4' => 0x15, '5' => 0x17,
+        '6' => 0x16, '7' => 0x1A, '8' => 0x1C, '9' => 0x19,
+        '=' => 0x18, '-' => 0x1B,
+        _ => return None,
+    })
+}
+
 /// Heuristic: contains a clock time like `HH:MM`.
 fn looks_like_clock(s: &str) -> bool {
     let b = s.as_bytes();
@@ -214,16 +268,33 @@ fn region_from_axis(hits: &[TextHit]) -> Option<Bbox> {
     })
 }
 
-/// The X-axis time label (`HH:MM`) whose centre-x is nearest `x`.
-fn nearest_time_label(hits: &[TextHit], x: f64) -> Option<String> {
+/// The X-axis time/date label nearest `x`, restricted to the axis row at the
+/// BOTTOM of `region` so a header timestamp (e.g. "à la clôture de 17:35") can't
+/// masquerade as the axis. A clock OR a short token (a day-date like "09 Juin").
+fn nearest_time_label(hits: &[TextHit], x: f64, region: &Bbox) -> Option<String> {
+    // axis band: from just below mid-plot to a little under the plot bottom.
+    let y_lo = region.y + region.h * 0.6;
+    let y_hi = region.y + region.h + 60.0;
     hits.iter()
-        .filter(|h| looks_like_clock(&h.text))
+        .filter(|h| {
+            let cy = h.bbox.y + h.bbox.h / 2.0;
+            cy >= y_lo && cy <= y_hi && (looks_like_clock(&h.text) || is_axis_token(&h.text))
+        })
         .min_by(|a, b| {
             let da = (a.bbox.x + a.bbox.w / 2.0 - x).abs();
             let db = (b.bbox.x + b.bbox.w / 2.0 - x).abs();
             da.total_cmp(&db)
         })
-        .map(|h| h.text.clone())
+        .map(|h| h.text.trim().to_string())
+}
+
+/// A short axis tick token: a clock, a bare day-number, or a `<num> <month>` date.
+fn is_axis_token(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty()
+        && t.len() <= 12
+        && t.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && t.chars().filter(char::is_ascii_digit).count() <= 4
 }
 
 pub struct Engine {
@@ -769,6 +840,126 @@ impl Engine {
         Err(VisualOpsError::Execution("type_keys requires a macOS backend".into()))
     }
 
+    /// Scroll the FOCUSED page in the background via auth-signed Page/Home/End keys
+    /// (reaches web content, no cursor, no foreground). `direction` =
+    /// up|down|top|bottom; `pages` = how many Page presses (down/up). Re-perceives.
+    #[cfg(target_os = "macos")]
+    pub fn scroll(&mut self, direction: &str, pages: usize) -> visualops_core::Result<AuditEntry> {
+        // macOS virtual keycodes: PageDown=0x79, PageUp=0x74, Home=0x73, End=0x77.
+        let (keycode, n) = match direction {
+            "up" => (0x74_u16, pages.clamp(1, 20)),
+            "top" => (0x73, 1),
+            "bottom" => (0x77, 1),
+            _ => (0x79, pages.clamp(1, 20)), // down (default)
+        };
+        let mut ok = true;
+        for _ in 0..n {
+            ok &= visualops_platform::key_web_background(
+                self.target.pid,
+                self.target.window_id,
+                keycode,
+                0,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(60));
+        }
+        let outcome = if ok {
+            Ok(())
+        } else {
+            Err(VisualOpsError::Execution(
+                "scroll requires the SkyLight backend".into(),
+            ))
+        };
+        self.audit_raw_input(
+            "keyboard".to_string(),
+            SemanticAction::Type,
+            Some(format!("scroll {direction} x{n}")),
+            Some("background web scroll (Page/Home/End keys, auth-signed)"),
+            outcome,
+        )
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn scroll(&mut self, _direction: &str, _pages: usize) -> visualops_core::Result<AuditEntry> {
+        Err(VisualOpsError::Execution("scroll requires a macOS backend".into()))
+    }
+
+    /// Zoom the focused page (browser/native) in the background: `in`/`out`/`reset`
+    /// → Cmd+= / Cmd+- / Cmd+0, auth-signed (reaches web). Re-perceives.
+    #[cfg(target_os = "macos")]
+    pub fn zoom(&mut self, direction: &str) -> visualops_core::Result<AuditEntry> {
+        const CMD: u64 = 0x0010_0000;
+        // keycodes: '=' 0x18, '-' 0x1B, '0' 0x1D.
+        let keycode = match direction {
+            "out" => 0x1B_u16,
+            "reset" => 0x1D,
+            _ => 0x18, // in (default)
+        };
+        let ok = visualops_platform::key_web_background(
+            self.target.pid,
+            self.target.window_id,
+            keycode,
+            CMD,
+        );
+        let outcome = if ok {
+            Ok(())
+        } else {
+            Err(VisualOpsError::Execution(
+                "zoom requires the SkyLight backend".into(),
+            ))
+        };
+        self.audit_raw_input(
+            "keyboard".to_string(),
+            SemanticAction::Type,
+            Some(format!("zoom {direction}")),
+            Some("background zoom (Cmd =/-/0, auth-signed)"),
+            outcome,
+        )
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn zoom(&mut self, _direction: &str) -> visualops_core::Result<AuditEntry> {
+        Err(VisualOpsError::Execution("zoom requires a macOS backend".into()))
+    }
+
+    /// A keyboard shortcut in the background: modifiers (cmd|shift|opt|ctrl, `+`-
+    /// separated) plus a key (a single character, or a name like enter/tab/escape/
+    /// space/delete/left/right/up/down). E.g. "cmd+l" (focus omnibox), "cmd+t",
+    /// "cmd+a". Auth-signed so it reaches web content. Re-perceives.
+    #[cfg(target_os = "macos")]
+    pub fn hotkey(&mut self, combo: &str) -> visualops_core::Result<AuditEntry> {
+        let (flags, keycode) = parse_combo(combo).ok_or_else(|| {
+            VisualOpsError::Execution(format!("unrecognised hotkey {combo:?}"))
+        })?;
+        let ok = visualops_platform::key_web_background(
+            self.target.pid,
+            self.target.window_id,
+            keycode,
+            flags,
+        );
+        let outcome = if ok {
+            Ok(())
+        } else {
+            Err(VisualOpsError::Execution(
+                "hotkey requires the SkyLight backend".into(),
+            ))
+        };
+        self.audit_raw_input(
+            "keyboard".to_string(),
+            SemanticAction::Type,
+            Some(combo.to_string()),
+            Some("background hotkey (modifier combo, auth-signed)"),
+            outcome,
+        )
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn hotkey(&mut self, _combo: &str) -> visualops_core::Result<AuditEntry> {
+        Err(VisualOpsError::Execution("hotkey requires a macOS backend".into()))
+    }
+
     /// Background hover at a screen point so the target shows a hover state (e.g.
     /// a chart crosshair tooltip / value-at-cursor) without moving the visible
     /// cursor. A pure probe — no risk-gating, no audit, **no refresh** — so a
@@ -935,7 +1126,7 @@ impl Engine {
                 ChartSample {
                     x,
                     value,
-                    time: nearest_time_label(&hits, x),
+                    time: nearest_time_label(&hits, x, &region),
                     raw: Vec::new(),
                 }
             })
@@ -962,12 +1153,16 @@ impl Engine {
         visualops_platform::focus_without_raise(self.target.window_id)
     }
 
-    /// Enumerate top-level windows (incl. off-screen / other-Space) for picking a
-    /// `window_id` to drive — the MCP's own target discovery (no external tool).
+    /// Enumerate top-level windows for picking a `window_id` to drive — the MCP's
+    /// own target discovery (no external tool). By default returns only **real,
+    /// drivable** windows (a sizeable content window), dropping the tab-strip /
+    /// shadow / menubar fragments that swamp the raw list; pass `all` for every
+    /// layer-0 window.
     #[cfg(target_os = "macos")]
-    pub fn list_windows(&self) -> Vec<WindowSummary> {
+    pub fn list_windows(&self, all: bool) -> Vec<WindowSummary> {
         visualops_vision::capture::list_windows()
             .into_iter()
+            .filter(|w| all || (w.w >= 300.0 && w.h >= 200.0 && !w.title.trim().is_empty()))
             .map(|w| WindowSummary {
                 window_id: w.window_id,
                 pid: w.pid,
@@ -986,7 +1181,7 @@ impl Engine {
 
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
-    pub fn list_windows(&self) -> Vec<WindowSummary> {
+    pub fn list_windows(&self, _all: bool) -> Vec<WindowSummary> {
         Vec::new()
     }
 

@@ -181,8 +181,8 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "list_windows",
-            "Enumerate top-level windows (incl. off-screen / other-Space) — window_id, pid, app, title, bounds, on_screen — to pick a target. The daemon's own discovery (no external tool needed).",
-            json!({}),
+            "Enumerate REAL, drivable windows (sizeable + titled; tab-strip/shadow/menubar fragments dropped) — window_id, pid, app, title, bounds, on_screen — to pick a target. Pass all:true for every layer-0 window. The daemon's own discovery (no external tool).",
+            schema(json!({ "all": { "type": "boolean", "description": "include every layer-0 window incl. fragments (default false)" } }), &[]),
         ),
         tool(
             "attach",
@@ -198,6 +198,21 @@ fn tools_list() -> Vec<Value> {
             "type_keys",
             "Type text into the FOCUSED element via the SkyLight auth-signed keyboard path — reaches a backgrounded/occluded window's web content (trusted, no cursor, no foreground). Focus the field first (e.g. click_at it). Raw, ungated.",
             schema(json!({ "text": {"type":"string"} }), &["text"]),
+        ),
+        tool(
+            "scroll",
+            "Scroll the focused page in the background (auth-signed Page/Home/End keys, reaches web). direction: down|up|top|bottom; pages: number of Page presses (down/up, default 3).",
+            schema(json!({ "direction": {"type":"string","enum":["down","up","top","bottom"]}, "pages": {"type":"integer"} }), &[]),
+        ),
+        tool(
+            "zoom",
+            "Zoom the focused page in the background (Cmd =/-/0, auth-signed, reaches web). direction: in|out|reset.",
+            schema(json!({ "direction": {"type":"string","enum":["in","out","reset"]} }), &[]),
+        ),
+        tool(
+            "hotkey",
+            "Send a keyboard shortcut in the background (auth-signed, reaches web): modifiers cmd|shift|opt|ctrl + a key, '+'-separated. E.g. \"cmd+l\" (focus omnibox — clean URL entry), \"cmd+t\", \"cmd+a\", \"cmd+w\".",
+            schema(json!({ "combo": {"type":"string"} }), &["combo"]),
         ),
         tool(
             "approve",
@@ -346,7 +361,10 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map_err(|e| e.to_string())
         }
         "focus_window" => Ok(json!({ "focused": engine.focus_window() })),
-        "list_windows" => Ok(serde_json::to_value(engine.list_windows()).unwrap_or(Value::Null)),
+        "list_windows" => Ok(serde_json::to_value(
+            engine.list_windows(arg_bool("all").unwrap_or(false)),
+        )
+        .unwrap_or(Value::Null)),
         "attach" => match args.get("window_id").and_then(Value::as_u64) {
             Some(wid) => match engine.attach_window(wid as u32) {
                 Ok(()) => {
@@ -374,6 +392,24 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'text'".into()),
+        },
+        "scroll" => engine
+            .scroll(
+                arg("direction").as_deref().unwrap_or("down"),
+                args.get("pages").and_then(Value::as_u64).unwrap_or(3) as usize,
+            )
+            .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+            .map_err(|e| e.to_string()),
+        "zoom" => engine
+            .zoom(arg("direction").as_deref().unwrap_or("in"))
+            .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+            .map_err(|e| e.to_string()),
+        "hotkey" => match arg("combo") {
+            Some(combo) => engine
+                .hotkey(&combo)
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string()),
+            None => Err("missing 'combo'".into()),
         },
         "approve" => match arg("id") {
             Some(eid) => engine
@@ -534,7 +570,7 @@ mod tests {
     fn tools_list_exposes_read_text_with_object_schema() {
         let tools = tools_list();
         // + read_at + read_series brought the set to 20.
-        assert_eq!(tools.len(), 25, "tool count");
+        assert_eq!(tools.len(), 28, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(

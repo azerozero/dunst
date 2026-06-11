@@ -95,6 +95,16 @@ pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> bool {
     macos::type_text_background(pid, window_id, text)
 }
 
+/// Post a named keycode (down+up) with optional modifier `flags` (CGEventFlags
+/// bits: Shift 0x20000, Control 0x40000, Alternate 0x80000, Command 0x100000) to
+/// a **backgrounded** window's (web) content via the SkyLight auth-signed keyboard
+/// path — for scrolling (Page/Home/End), zoom (Cmd =/-/0), and hotkeys (Cmd+L,
+/// Cmd+T, …). `false` if SkyLight is unavailable.
+#[cfg(target_os = "macos")]
+pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) -> bool {
+    macos::key_web_background(pid, window_id, keycode, flags)
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     //! macOS FFI ownership contract:
@@ -139,7 +149,8 @@ mod macos {
     use core_graphics::{
         display::CGDisplay,
         event::{
-            CGEvent, CGEventTapLocation, CGEventType, CGKeyCode, CGMouseButton, EventField, KeyCode,
+            CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGKeyCode, CGMouseButton,
+            EventField, KeyCode,
         },
         event_source::{CGEventSource, CGEventSourceStateID},
         geometry::{CGPoint, CGRect, CGSize},
@@ -1559,6 +1570,36 @@ mod macos {
                 skylight::post_event_to_pid(pid, event.as_ptr().cast());
             }
             thread::sleep(Duration::from_millis(8));
+        }
+        true
+    }
+
+    /// Post a single named keycode (down+up) to a backgrounded window's (web)
+    /// content via the SkyLight auth-signed keyboard path — used for scrolling
+    /// (Page Down/Up, Home, End) and other non-character keys. False if SkyLight
+    /// is absent.
+    pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) -> bool {
+        if !skylight::mouse_post_available() {
+            return false;
+        }
+        if window_id != 0 {
+            focus_without_raise(window_id);
+            thread::sleep(Duration::from_millis(40));
+        }
+        let mods = CGEventFlags::from_bits_truncate(flags);
+        for down in [true, false] {
+            let Ok(source) = event_source("skylight key CGEventSource") else {
+                continue;
+            };
+            let Ok(event) = CGEvent::new_keyboard_event(source, keycode, down) else {
+                continue;
+            };
+            if !mods.is_empty() {
+                event.set_flags(mods);
+            }
+            event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, pid as i64);
+            skylight::attach_auth_message(event.as_ptr().cast(), pid);
+            skylight::post_event_to_pid(pid, event.as_ptr().cast());
         }
         true
     }
