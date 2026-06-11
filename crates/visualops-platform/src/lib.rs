@@ -82,8 +82,9 @@ pub fn click_web_background(
     y: f64,
     origin_x: f64,
     origin_y: f64,
+    button: u8,
 ) -> bool {
-    macos::click_web_background(pid, window_id, x, y, origin_x, origin_y)
+    macos::click_web_background(pid, window_id, x, y, origin_x, origin_y, button)
 }
 
 /// Type `text` into the focused element of a **backgrounded** window's (web)
@@ -1433,6 +1434,8 @@ mod macos {
         let ns_type = match etype {
             CGEventType::LeftMouseDown => NSEventType::LeftMouseDown,
             CGEventType::LeftMouseUp => NSEventType::LeftMouseUp,
+            CGEventType::RightMouseDown => NSEventType::RightMouseDown,
+            CGEventType::RightMouseUp => NSEventType::RightMouseUp,
             CGEventType::MouseMoved => NSEventType::MouseMoved,
             _ => return None,
         };
@@ -1487,6 +1490,7 @@ mod macos {
         sy: f64,
         ox: f64,
         oy: f64,
+        button: u8,
     ) -> bool {
         if window_id == 0 || !skylight::mouse_post_available() {
             return false;
@@ -1503,7 +1507,7 @@ mod macos {
             let event = cg_event_via_nsevent(etype, 1, window_id)?;
             // SAFETY: `event` is a live CGEventRef; `point` is a valid CGPoint.
             unsafe { CGEventSetLocation(event.as_ptr().cast(), point) };
-            event.set_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER, 0);
+            event.set_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER, button as i64);
             event.set_integer_value_field(EventField::MOUSE_EVENT_SUB_TYPE, 3);
             event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, 1);
             event.set_integer_value_field(
@@ -1532,11 +1536,16 @@ mod macos {
             post(&u);
         }
         thread::sleep(Duration::from_millis(100));
-        if let Some(d) = make(CGEventType::LeftMouseDown, screen, local) {
+        let (down_t, up_t) = if button == 1 {
+            (CGEventType::RightMouseDown, CGEventType::RightMouseUp)
+        } else {
+            (CGEventType::LeftMouseDown, CGEventType::LeftMouseUp)
+        };
+        if let Some(d) = make(down_t, screen, local) {
             post(&d);
         }
         thread::sleep(Duration::from_millis(1));
-        if let Some(u) = make(CGEventType::LeftMouseUp, screen, local) {
+        if let Some(u) = make(up_t, screen, local) {
             post(&u);
         }
         true

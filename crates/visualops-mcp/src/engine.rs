@@ -109,6 +109,30 @@ fn parse_value(s: &str) -> Option<f64> {
     kept.replacen(',', ".", 1).replace(',', "").parse::<f64>().ok()
 }
 
+/// Standard base64 of `data` (for returning a screenshot PNG as MCP image data).
+fn base64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        out.push(T[(n >> 18 & 63) as usize] as char);
+        out.push(T[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 /// Parse a hotkey combo like `"cmd+l"` into `(modifier flags, keycode)`.
 fn parse_combo(combo: &str) -> Option<(u64, u16)> {
     let mut flags = 0u64;
@@ -754,9 +778,35 @@ impl Engine {
     /// "screen@x,y"`) and re-perceives afterwards like [`act`](Self::act).
     #[cfg(target_os = "macos")]
     pub fn click_at(&mut self, x: f64, y: f64) -> visualops_core::Result<AuditEntry> {
-        // Prefer the SkyLight background path: reaches a backgrounded/occluded web
-        // target (trusted, no cursor move); needs the window-local coordinate, so
-        // pass the window origin. Falls back to a cursor click if SkyLight is off.
+        self.click_at_button(x, y, 0, "click")
+    }
+
+    /// Right-click at a raw screen point (context menus). Background web via SkyLight.
+    #[cfg(target_os = "macos")]
+    pub fn right_click_at(&mut self, x: f64, y: f64) -> visualops_core::Result<AuditEntry> {
+        self.click_at_button(x, y, 1, "right-click")
+    }
+
+    /// Double-click at a raw screen point — two quick clicks.
+    #[cfg(target_os = "macos")]
+    pub fn double_click_at(&mut self, x: f64, y: f64) -> visualops_core::Result<AuditEntry> {
+        let _ = self.click_at_button(x, y, 0, "double-click 1/2");
+        std::thread::sleep(std::time::Duration::from_millis(90));
+        self.click_at_button(x, y, 0, "double-click 2/2")
+    }
+
+    /// Shared raw click at a screen point. Prefers the SkyLight background path
+    /// (reaches a backgrounded/occluded web target, trusted, no cursor move),
+    /// falling back to a cursor click. Audited LOW (no per-element gating — the
+    /// agent owns the OCR coordinate).
+    #[cfg(target_os = "macos")]
+    fn click_at_button(
+        &mut self,
+        x: f64,
+        y: f64,
+        button: u8,
+        label: &str,
+    ) -> visualops_core::Result<AuditEntry> {
         let (ox, oy) = visualops_vision::capture::window_bounds(self.target.window_id)
             .map(|(x, y, _, _)| (x, y))
             .unwrap_or((0.0, 0.0));
@@ -767,15 +817,20 @@ impl Engine {
             y,
             ox,
             oy,
+            button,
         ) {
             Ok(())
-        } else {
+        } else if button == 0 {
             visualops_platform::click_at_point(self.target.pid, x, y)
+        } else {
+            Err(VisualOpsError::Execution(
+                "right-click requires the SkyLight backend".into(),
+            ))
         };
         self.audit_raw_input(
             format!("screen@{x},{y}"),
             SemanticAction::Click,
-            Some(format!("{x},{y}")),
+            Some(format!("{label} {x},{y}")),
             Some("raw screen click — bypasses per-element risk gating (agent owns the OCR coordinate)"),
             outcome,
         )
@@ -785,6 +840,40 @@ impl Engine {
     #[cfg(not(target_os = "macos"))]
     pub fn click_at(&mut self, _x: f64, _y: f64) -> visualops_core::Result<AuditEntry> {
         Err(VisualOpsError::Execution("click_at requires a macOS backend".into()))
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn right_click_at(&mut self, _x: f64, _y: f64) -> visualops_core::Result<AuditEntry> {
+        Err(VisualOpsError::Execution("right_click_at requires a macOS backend".into()))
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn double_click_at(&mut self, _x: f64, _y: f64) -> visualops_core::Result<AuditEntry> {
+        Err(VisualOpsError::Execution("double_click_at requires a macOS backend".into()))
+    }
+
+    /// Open a menu-bar menu by name (e.g. "File"/"Fichier") — finds the menubar
+    /// item and presses it (AX). Native menus; the items then appear in the graph.
+    pub fn open_menu(&mut self, name: &str) -> visualops_core::Result<AuditEntry> {
+        let id = self
+            .scene_graph()
+            .nodes
+            .values()
+            .find(|n| {
+                n.ax_role.contains("Menu")
+                    && n.label
+                        .as_deref()
+                        .is_some_and(|l| l.eq_ignore_ascii_case(name.trim()))
+            })
+            .map(|n| n.id.clone());
+        match id {
+            Some(id) => self.click_element(&id, Some(&format!("open menu {name}"))),
+            None => Err(VisualOpsError::Execution(format!(
+                "no menu {name:?} found in the menubar"
+            ))),
+        }
     }
 
     /// Press a named key (e.g. `"Return"`/`"Enter"` to submit a typed URL). A raw,
@@ -1183,6 +1272,65 @@ impl Engine {
     #[cfg(not(target_os = "macos"))]
     pub fn list_windows(&self, _all: bool) -> Vec<WindowSummary> {
         Vec::new()
+    }
+
+    /// Launch an app **without bringing it to the foreground** (`open -g`),
+    /// optionally opening `url` in it. Closes the last external dependency — the
+    /// agent can now start a target itself, then list_windows + attach.
+    #[cfg(target_os = "macos")]
+    pub fn launch_app(&self, app: &str, url: Option<&str>) -> bool {
+        let mut cmd = std::process::Command::new("/usr/bin/open");
+        cmd.args(["-g", "-a", app]);
+        if let Some(u) = url {
+            cmd.arg(u);
+        }
+        cmd.status().map(|s| s.success()).unwrap_or(false)
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn launch_app(&self, _app: &str, _url: Option<&str>) -> bool {
+        false
+    }
+
+    /// Quit an app gracefully (no foreground) by name.
+    #[cfg(target_os = "macos")]
+    pub fn close_app(&self, app: &str) -> bool {
+        std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", &format!("tell application \"{app}\" to quit")])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn close_app(&self, _app: &str) -> bool {
+        false
+    }
+
+    /// Composited screenshot of the target window as base64 PNG — lets the agent
+    /// SEE the pixels directly (multimodal), alongside OCR/CV. Works backgrounded.
+    #[cfg(target_os = "macos")]
+    pub fn screenshot(&self) -> Option<String> {
+        let path = format!("/tmp/dunst_shot_{}.png", std::process::id());
+        let ok = std::process::Command::new("/usr/sbin/screencapture")
+            .args(["-x", "-o", &format!("-l{}", self.target.window_id), &path])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return None;
+        }
+        let bytes = std::fs::read(&path).ok();
+        let _ = std::fs::remove_file(&path);
+        bytes.map(|b| base64_encode(&b))
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn screenshot(&self) -> Option<String> {
+        None
     }
 
     /// Non-macOS stub.

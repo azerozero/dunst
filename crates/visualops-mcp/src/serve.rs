@@ -190,6 +190,36 @@ fn tools_list() -> Vec<Value> {
             schema(json!({ "window_id": { "type": "integer" } }), &["window_id"]),
         ),
         tool(
+            "launch_app",
+            "Launch an app WITHOUT bringing it to the foreground (open -g), optionally opening a url in it. Then list_windows + attach to drive it. Closes the last external dependency — full autonomy via the MCP alone.",
+            schema(json!({ "app": {"type":"string"}, "url": {"type":"string"} }), &["app"]),
+        ),
+        tool(
+            "close_app",
+            "Quit an app gracefully by name (no foreground).",
+            schema(json!({ "app": {"type":"string"} }), &["app"]),
+        ),
+        tool(
+            "screenshot",
+            "Composited PNG of the target window, returned as an image — lets you SEE the pixels directly (multimodal) alongside OCR/CV. Works backgrounded.",
+            json!({}),
+        ),
+        tool(
+            "right_click_at",
+            "Right-click at a raw screen point (x,y) — context menus. Background web via SkyLight (no cursor, no foreground).",
+            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
+        ),
+        tool(
+            "double_click_at",
+            "Double-click at a raw screen point (x,y). Background web via SkyLight.",
+            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
+        ),
+        tool(
+            "open_menu",
+            "Open an app menu-bar menu by name (e.g. \"File\"/\"Fichier\") via AX — its items then appear in the scene graph.",
+            schema(json!({ "name": {"type":"string"} }), &["name"]),
+        ),
+        tool(
             "press_key",
             "Press a named key on the target (e.g. \"Return\"/\"Enter\" to submit a typed URL, \"Tab\", \"Escape\"). Raw, ungated keyboard input.",
             schema(json!({ "key": {"type":"string"} }), &["key"]),
@@ -251,6 +281,20 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     let arg = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_owned);
     let arg_bool = |k: &str| args.get(k).and_then(Value::as_bool);
+
+    // screenshot returns an IMAGE content block, not text — handle it directly.
+    if name == "screenshot" {
+        return match engine.screenshot() {
+            Some(b64) => result_obj(
+                id,
+                json!({ "content": [{ "type": "image", "data": b64, "mimeType": "image/png" }] }),
+            ),
+            None => result_obj(
+                id,
+                json!({ "content": [{ "type": "text", "text": "screenshot failed" }], "isError": true }),
+            ),
+        };
+    }
 
     let outcome: Result<Value, String> = match name {
         "refresh" => engine.refresh().map(|_| json!("ok")).map_err(|e| e.to_string()),
@@ -378,6 +422,41 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 Err(e) => Err(e.to_string()),
             },
             None => Err("attach requires integer 'window_id'".into()),
+        },
+        "launch_app" => match arg("app") {
+            Some(app) => Ok(json!({ "launched": engine.launch_app(&app, arg("url").as_deref()) })),
+            None => Err("launch_app requires 'app'".into()),
+        },
+        "close_app" => match arg("app") {
+            Some(app) => Ok(json!({ "closed": engine.close_app(&app) })),
+            None => Err("close_app requires 'app'".into()),
+        },
+        "right_click_at" => match (
+            args.get("x").and_then(Value::as_f64),
+            args.get("y").and_then(Value::as_f64),
+        ) {
+            (Some(x), Some(y)) => engine
+                .right_click_at(x, y)
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string()),
+            _ => Err("right_click_at requires numeric 'x' and 'y'".into()),
+        },
+        "double_click_at" => match (
+            args.get("x").and_then(Value::as_f64),
+            args.get("y").and_then(Value::as_f64),
+        ) {
+            (Some(x), Some(y)) => engine
+                .double_click_at(x, y)
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string()),
+            _ => Err("double_click_at requires numeric 'x' and 'y'".into()),
+        },
+        "open_menu" => match arg("name") {
+            Some(name) => engine
+                .open_menu(&name)
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string()),
+            None => Err("open_menu requires 'name'".into()),
         },
         "press_key" => match arg("key") {
             Some(key) => engine
@@ -570,7 +649,7 @@ mod tests {
     fn tools_list_exposes_read_text_with_object_schema() {
         let tools = tools_list();
         // + read_at + read_series brought the set to 20.
-        assert_eq!(tools.len(), 28, "tool count");
+        assert_eq!(tools.len(), 34, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(
