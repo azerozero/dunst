@@ -86,6 +86,15 @@ pub fn click_web_background(
     macos::click_web_background(pid, window_id, x, y, origin_x, origin_y)
 }
 
+/// Type `text` into the focused element of a **backgrounded** window's (web)
+/// content via SkyLight — trusted (auth-signed), no cursor, no foreground. The
+/// caller should first focus the field (e.g. a [`click_web_background`] on it).
+/// Returns `false` if SkyLight is unavailable.
+#[cfg(target_os = "macos")]
+pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> bool {
+    macos::type_text_background(pid, window_id, text)
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     //! macOS FFI ownership contract:
@@ -1332,6 +1341,73 @@ mod macos {
                 unsafe { f(event, CgPoint { x, y }) };
             }
         }
+
+        type SetAuthMessage = unsafe extern "C" fn(*const c_void, *mut c_void);
+        static SET_AUTH: OnceLock<Option<SetAuthMessage>> = OnceLock::new();
+
+        fn set_auth_fn() -> Option<SetAuthMessage> {
+            *SET_AUTH.get_or_init(|| {
+                let p = rtld_default_sym(c"SLEventSetAuthenticationMessage");
+                if p.is_null() {
+                    None
+                } else {
+                    // SAFETY: non-null SkyLight symbol; documented C ABI.
+                    Some(unsafe { std::mem::transmute::<*mut c_void, SetAuthMessage>(p) })
+                }
+            })
+        }
+
+        extern "C" {
+            fn objc_getClass(name: *const c_char) -> *mut c_void;
+            fn sel_registerName(name: *const c_char) -> *mut c_void;
+            fn objc_msgSend();
+        }
+        type Factory =
+            unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, i32, u32) -> *mut c_void;
+
+        /// The SkyLight event record lives at a pointer slot inside the opaque
+        /// CGEvent struct (offset 24/32/16, per cua-driver); return the first
+        /// non-null. Needed to build the auth message.
+        fn extract_event_record(event: *const c_void) -> *mut c_void {
+            for off in [24usize, 32, 16] {
+                // SAFETY: reads a pointer-sized slot inside the live CGEvent struct,
+                // a documented (private) layout; non-null is checked by the caller.
+                let p = unsafe { *((event as *const u8).add(off) as *const *mut c_void) };
+                if !p.is_null() {
+                    return p;
+                }
+            }
+            std::ptr::null_mut()
+        }
+
+        /// Attach the `SLSEventAuthenticationMessage` envelope macOS 14+ requires
+        /// for a synthetic KEYBOARD event to be accepted as trusted by web content
+        /// (Chromium). No-op (unsigned post) if anything fails to resolve.
+        pub fn attach_auth_message(event: *const c_void, pid: i32) {
+            let Some(set_auth) = set_auth_fn() else {
+                return;
+            };
+            let record = extract_event_record(event);
+            if record.is_null() {
+                return;
+            }
+            // SAFETY: standard ObjC runtime lookups with valid C strings.
+            let class = unsafe { objc_getClass(c"SLSEventAuthenticationMessage".as_ptr()) };
+            if class.is_null() {
+                return;
+            }
+            // SAFETY: valid selector string.
+            let sel = unsafe { sel_registerName(c"messageWithEventRecord:pid:version:".as_ptr()) };
+            // SAFETY: objc_msgSend re-typed to the factory's concrete signature
+            // `(Class, SEL, SLSEventRecord*, int32, uint32) -> id`.
+            let factory: Factory = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+            // SAFETY: invokes the class factory; record/class/sel are valid.
+            let msg = unsafe { factory(class, sel, record, pid, 0) };
+            if !msg.is_null() {
+                // SAFETY: `set_auth` is SLEventSetAuthenticationMessage; args valid.
+                unsafe { set_auth(event, msg) };
+            }
+        }
     }
 
     extern "C" {
@@ -1451,6 +1527,38 @@ mod macos {
         thread::sleep(Duration::from_millis(1));
         if let Some(u) = make(CGEventType::LeftMouseUp, screen, local) {
             post(&u);
+        }
+        true
+    }
+
+    /// Type `text` into the focused element of a backgrounded window's (web)
+    /// content via SkyLight: focus-without-raise, then per character a key
+    /// down/up whose CGEvent carries the typed unicode + the
+    /// `SLSEventAuthenticationMessage` Chromium requires, posted via
+    /// `SLEventPostToPid`. No cursor, no foreground. False if SkyLight is absent.
+    pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> bool {
+        if !skylight::mouse_post_available() {
+            return false;
+        }
+        if window_id != 0 {
+            focus_without_raise(window_id);
+            thread::sleep(Duration::from_millis(50));
+        }
+        for ch in text.chars() {
+            let s = ch.to_string();
+            for down in [true, false] {
+                let Ok(source) = event_source("skylight key CGEventSource") else {
+                    continue;
+                };
+                let Ok(event) = CGEvent::new_keyboard_event(source, 0, down) else {
+                    continue;
+                };
+                event.set_string(&s);
+                event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, pid as i64);
+                skylight::attach_auth_message(event.as_ptr().cast(), pid);
+                skylight::post_event_to_pid(pid, event.as_ptr().cast());
+            }
+            thread::sleep(Duration::from_millis(8));
         }
         true
     }

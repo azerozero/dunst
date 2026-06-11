@@ -704,6 +704,38 @@ impl Engine {
         Err(VisualOpsError::Execution("press_key requires a macOS backend".into()))
     }
 
+    /// Type `text` into the focused element via the **SkyLight auth-signed**
+    /// keyboard path, so it reaches a backgrounded/occluded window's web content
+    /// (trusted, no cursor, no foreground). First focus the field (e.g. click_at
+    /// it). Raw, ungated input audited LOW.
+    #[cfg(target_os = "macos")]
+    pub fn type_keys(&mut self, text: &str) -> visualops_core::Result<AuditEntry> {
+        let outcome = if visualops_platform::type_text_background(
+            self.target.pid,
+            self.target.window_id,
+            text,
+        ) {
+            Ok(())
+        } else {
+            Err(VisualOpsError::Execution(
+                "type_keys requires the SkyLight backend".into(),
+            ))
+        };
+        self.audit_raw_input(
+            "keyboard".to_string(),
+            SemanticAction::Type,
+            Some(text.to_string()),
+            Some("raw keyboard text into focused element (background web via SkyLight auth)"),
+            outcome,
+        )
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn type_keys(&mut self, _text: &str) -> visualops_core::Result<AuditEntry> {
+        Err(VisualOpsError::Execution("type_keys requires a macOS backend".into()))
+    }
+
     /// Background hover at a screen point so the target shows a hover state (e.g.
     /// a chart crosshair tooltip / value-at-cursor) without moving the visible
     /// cursor. A pure probe — no risk-gating, no audit, **no refresh** — so a

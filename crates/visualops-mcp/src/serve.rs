@@ -190,6 +190,11 @@ fn tools_list() -> Vec<Value> {
             schema(json!({ "key": {"type":"string"} }), &["key"]),
         ),
         tool(
+            "type_keys",
+            "Type text into the FOCUSED element via the SkyLight auth-signed keyboard path — reaches a backgrounded/occluded window's web content (trusted, no cursor, no foreground). Focus the field first (e.g. click_at it). Raw, ungated.",
+            schema(json!({ "text": {"type":"string"} }), &["text"]),
+        ),
+        tool(
             "approve",
             "Whitelist a high-risk element so the next action on it proceeds.",
             schema(json!({ "id": {"type":"string"} }), &["id"]),
@@ -343,6 +348,13 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'key'".into()),
+        },
+        "type_keys" => match arg("text") {
+            Some(text) => engine
+                .type_keys(&text)
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string()),
+            None => Err("missing 'text'".into()),
         },
         "approve" => match arg("id") {
             Some(eid) => engine
@@ -503,7 +515,7 @@ mod tests {
     fn tools_list_exposes_read_text_with_object_schema() {
         let tools = tools_list();
         // + read_at + read_series brought the set to 20.
-        assert_eq!(tools.len(), 23, "tool count");
+        assert_eq!(tools.len(), 24, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(
