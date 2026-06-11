@@ -87,10 +87,15 @@ pub struct ScanResult {
     pub samples: Vec<ChartSample>,
 }
 
-/// Heuristic: looks like a numeric value (≥3 digits with a decimal comma/dot).
-fn looks_like_price(s: &str) -> bool {
-    let digits = s.chars().filter(char::is_ascii_digit).count();
-    (s.contains(',') || s.contains('.')) && digits >= 3 && s.len() <= 16
+/// Parse a (possibly French-formatted) numeric label like `"8 220,00"` or
+/// `"8161,84'"` into a value. Space = thousands, comma = decimal; trailing OCR
+/// junk is dropped.
+fn parse_value(s: &str) -> Option<f64> {
+    let kept: String = s.chars().filter(|c| c.is_ascii_digit() || *c == ',').collect();
+    if kept.is_empty() {
+        return None;
+    }
+    kept.replacen(',', ".", 1).replace(',', "").parse::<f64>().ok()
 }
 
 /// Heuristic: contains a clock time like `HH:MM`.
@@ -99,6 +104,115 @@ fn looks_like_clock(s: &str) -> bool {
     (1..b.len().saturating_sub(2)).any(|i| {
         b[i] == b':' && b[i - 1].is_ascii_digit() && b[i + 1].is_ascii_digit() && b[i + 2].is_ascii_digit()
     })
+}
+
+/// Linear map from a screen-y (pixels, down-positive) to a chart value, fit from
+/// two OCR'd Y-axis price labels.
+struct YCalibration {
+    y_ref: f64,
+    v_ref: f64,
+    slope: f64,
+}
+
+impl YCalibration {
+    fn value_at(&self, screen_y: f64) -> f64 {
+        self.v_ref + (screen_y - self.y_ref) * self.slope
+    }
+}
+
+/// Y-axis price labels `(screen_y, value)` right of `min_cx`, filtered to the
+/// **densest value cluster** — the gridlines cluster tightly (e.g. 8140..8220)
+/// while header values and performance percentages are spread out and dropped.
+fn yaxis_points(hits: &[TextHit], min_cx: f64) -> Vec<(f64, f64)> {
+    let cands: Vec<(f64, f64)> = hits
+        .iter()
+        .filter_map(|h| {
+            let cx = h.bbox.x + h.bbox.w / 2.0;
+            if cx < min_cx {
+                return None;
+            }
+            let v = parse_value(&h.text)?;
+            (v >= 1.0).then_some((h.bbox.y + h.bbox.h / 2.0, v))
+        })
+        .collect();
+    if cands.len() < 2 {
+        return cands;
+    }
+    let center = cands
+        .iter()
+        .map(|&(_, v)| v)
+        .max_by_key(|&v| cands.iter().filter(|&&(_, u)| (u - v).abs() <= v * 0.05).count());
+    match center {
+        Some(c) => cands
+            .into_iter()
+            .filter(|&(_, v)| (v - c).abs() <= c * 0.05)
+            .collect(),
+        None => cands,
+    }
+}
+
+/// Build a Y-axis calibration from the gridline price labels, using the two with
+/// the largest vertical separation.
+fn build_y_calibration(hits: &[TextHit], region: &Bbox) -> Option<YCalibration> {
+    let mut pts = yaxis_points(hits, region.x + region.w * 0.82);
+    if pts.len() < 2 {
+        return None;
+    }
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (y_a, v_a) = pts[0];
+    let (y_b, v_b) = pts[pts.len() - 1];
+    if (y_b - y_a).abs() < 1.0 {
+        return None;
+    }
+    Some(YCalibration {
+        y_ref: y_a,
+        v_ref: v_a,
+        slope: (v_b - v_a) / (y_b - y_a),
+    })
+}
+
+/// Derive the plot rectangle from the OCR'd axis labels: x-range from the time
+/// labels (`HH:MM`) along the bottom, y-range from the price labels down the
+/// right-hand Y axis. Robust where a thin-curve / pale-fill chart defeats blob
+/// detection.
+fn region_from_axis(hits: &[TextHit]) -> Option<Bbox> {
+    let time_xs: Vec<f64> = hits
+        .iter()
+        .filter(|h| looks_like_clock(&h.text))
+        .map(|h| h.bbox.x + h.bbox.w / 2.0)
+        .collect();
+    if time_xs.len() < 3 {
+        return None;
+    }
+    let x_min = time_xs.iter().copied().fold(f64::MAX, f64::min);
+    let x_max = time_xs.iter().copied().fold(f64::MIN, f64::max);
+    let price_pts = yaxis_points(hits, x_max - 40.0);
+    if price_pts.len() < 2 {
+        return None;
+    }
+    let y_top = price_pts.iter().map(|p| p.0).fold(f64::MAX, f64::min);
+    let y_bot = price_pts.iter().map(|p| p.0).fold(f64::MIN, f64::max);
+    if x_max - x_min < 50.0 || y_bot - y_top < 30.0 {
+        return None;
+    }
+    Some(Bbox {
+        x: x_min,
+        y: y_top,
+        w: x_max - x_min,
+        h: y_bot - y_top,
+    })
+}
+
+/// The X-axis time label (`HH:MM`) whose centre-x is nearest `x`.
+fn nearest_time_label(hits: &[TextHit], x: f64) -> Option<String> {
+    hits.iter()
+        .filter(|h| looks_like_clock(&h.text))
+        .min_by(|a, b| {
+            let da = (a.bbox.x + a.bbox.w / 2.0 - x).abs();
+            let db = (b.bbox.x + b.bbox.w / 2.0 - x).abs();
+            da.total_cmp(&db)
+        })
+        .map(|h| h.text.clone())
 }
 
 pub struct Engine {
@@ -682,49 +796,63 @@ impl Engine {
             // Give the just-activated web canvas time to paint before we look.
             std::thread::sleep(std::time::Duration::from_millis(900));
         }
-        let captured =
-            visualops_vision::capture::capture_window(self.target.window_id).map_err(|e| {
+        // Composited capture so the rendered curve (GPU canvas) is included —
+        // CGWindowListCreateImage misses it.
+        let captured = visualops_vision::capture::capture_window_composited(self.target.window_id)
+            .map_err(|e| {
                 VisualOpsError::Perception(format!("chart scan requires a live window: {e}"))
             })?;
-        let det = visualops_vision::detect::detect_chart_region(&captured.image, &captured.geometry);
-        let Some(region) = det.region.filter(|_| det.present) else {
+        // Read the chart by GEOMETRY — no hover, occlusion-proof: derive the plot
+        // from the OCR'd axis labels, calibrate the Y axis from its price labels,
+        // then map the curve's pixel height at each sampled x to a value. A chart
+        // is "present" only if a curve actually covers most columns.
+        let hits = self.read_text(None).unwrap_or_default();
+        let Some(region) = region_from_axis(&hits) else {
             return Ok(ScanResult {
                 present: false,
                 focused,
-                fill_ratio: det.fill_ratio,
-                region: det.region,
+                fill_ratio: 0.0,
+                region: None,
                 samples: Vec::new(),
             });
         };
-        let mid_y = region.y + region.h * 0.5;
+        let calib = build_y_calibration(&hits, &region);
         let n = samples.clamp(2, 12);
-        let pts: Vec<(f64, f64)> = (0..n)
+        let xs: Vec<f64> = (0..n)
             .map(|k| {
                 let f = if n > 1 { k as f64 / (n - 1) as f64 } else { 0.5 };
-                // inset from the plot edges (axes/labels live there)
-                (region.x + region.w * (0.06 + 0.88 * f), mid_y)
+                region.x + region.w * (0.03 + 0.94 * f)
             })
             .collect();
-        let rows = self.read_series(&pts)?;
-        let samples_out = pts
+        let ys = visualops_vision::detect::curve_screen_y(
+            &captured.image,
+            &captured.geometry,
+            &region,
+            &xs,
+        );
+        let found = ys.iter().filter(|y| y.is_some()).count();
+        let present = found * 2 >= n; // a real curve covers most columns
+        let samples_out: Vec<ChartSample> = xs
             .iter()
-            .zip(rows)
-            .map(|(&(x, _), hits)| {
-                let raw: Vec<String> = hits.iter().map(|h| h.text.clone()).collect();
-                let value = raw.iter().find(|t| looks_like_price(t)).cloned();
-                let time = raw
-                    .iter()
-                    .find(|t| t.contains("UTC") || looks_like_clock(t))
-                    .cloned();
-                ChartSample { x, value, time, raw }
+            .zip(ys)
+            .map(|(&x, screen_y)| {
+                let value = screen_y
+                    .zip(calib.as_ref())
+                    .map(|(sy, c)| format!("{:.2}", c.value_at(sy)));
+                ChartSample {
+                    x,
+                    value,
+                    time: nearest_time_label(&hits, x),
+                    raw: Vec::new(),
+                }
             })
             .collect();
         Ok(ScanResult {
-            present: true,
+            present,
             focused,
-            fill_ratio: det.fill_ratio,
+            fill_ratio: found as f32 / n as f32,
             region: Some(region),
-            samples: samples_out,
+            samples: if present { samples_out } else { Vec::new() },
         })
     }
 

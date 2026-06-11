@@ -149,6 +149,45 @@ fn largest_blob(w: usize, h: usize, data: &[u8]) -> Option<Blob> {
     best
 }
 
+/// For each screen-x in `xs`, the **curve's screen-y** inside `region`: the top
+/// edge of the plotted (non-background) content in that column — i.e. the data
+/// line of a line/area chart. `None` where the column has no content. The caller
+/// maps screen-y → value with an axis calibration. Reads a window/display capture
+/// of the **rendered** chart — no hover, no crosshair.
+pub fn curve_screen_y(
+    image: &CGImage,
+    geometry: &CaptureGeometry,
+    region: &Bbox,
+    xs: &[f64],
+) -> Vec<Option<f64>> {
+    let Some((w, h, d)) = luma_grid(image, FINE_W) else {
+        return xs.iter().map(|_| None).collect();
+    };
+    let (ox, oy) = geometry.window_origin_pt;
+    let (sw, sh) = geometry.window_size_pt;
+    if sw <= 0.0 || sh <= 0.0 {
+        return xs.iter().map(|_| None).collect();
+    }
+    // region's vertical band in grid rows (a little inset to avoid the plot's
+    // own top border).
+    let row = |y: f64| (((y - oy) / sh) * h as f64).round();
+    let gy0 = (row(region.y).max(0.0) as usize).min(h.saturating_sub(1));
+    let gy1 = ((row(region.y + region.h)).min(h as f64) as usize).max(gy0 + 1);
+    xs.iter()
+        .map(|&x| {
+            let gx = (((x - ox) / sw) * w as f64).round();
+            if gx < 0.0 || gx as usize >= w {
+                return None;
+            }
+            let gx = gx as usize;
+            // top-most content cell in the band = the curve's top edge.
+            (gy0..gy1)
+                .find(|&gy| d[gy * w + gx] < CONTENT_LUMA_MAX)
+                .map(|gy| oy + (gy as f64 + 0.5) / h as f64 * sh)
+        })
+        .collect()
+}
+
 /// Downsample the CGImage to a `target_w`-wide luminance grid. Mirrors the
 /// `shapes` sampler (BGRA/RGBA agnostic — averages the colour channels).
 fn luma_grid(image: &CGImage, target_w: usize) -> Option<(usize, usize, Vec<u8>)> {

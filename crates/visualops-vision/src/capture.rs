@@ -1,6 +1,6 @@
 //! Core Graphics one-shot window capture (owner: Codex, P1a).
 
-use std::{ffi::c_void, fmt};
+use std::{ffi::c_void, fmt, sync::Arc};
 
 use core_foundation::{
     base::TCFType,
@@ -8,7 +8,10 @@ use core_foundation::{
     number::{kCFNumberFloat64Type, kCFNumberSInt64Type, CFNumberGetValue, CFNumberRef},
     string::CFString,
 };
+use foreign_types::ForeignType;
+
 use core_graphics::{
+    data_provider::CGDataProvider,
     display::{CGDisplay, CGRectNull},
     geometry::{CGPoint, CGRect, CGSize},
     window::{
@@ -87,6 +90,63 @@ pub fn capture_screen_rect(x: f64, y: f64, w: f64, h: f64) -> Result<CapturedWin
         image,
         geometry: geometry_from_rect(global, image_size_px, backing_scale),
     })
+}
+
+/// Capture a window **composited** (via `screencapture -l<window_id>`), which —
+/// unlike `CGWindowListCreateImage` — includes the GPU/WebGL canvas (a rendered
+/// chart curve) and works even when the window is off-screen / occluded. Returns
+/// the same [`CapturedWindow`] shape (geometry from the window bounds).
+pub fn capture_window_composited(window_id: u32) -> Result<CapturedWindow, CaptureError> {
+    let bounds = cg_window_bounds(window_id)?;
+    let path = format!("/tmp/visualops_win_{window_id}_{}.png", std::process::id());
+    let ok = std::process::Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-o", &format!("-l{window_id}")])
+        .arg(&path)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        return Err(CaptureError::CoreGraphicsImage(window_id));
+    }
+    let image = load_png_cg(&path);
+    let _ = std::fs::remove_file(&path);
+    let image = image.ok_or(CaptureError::CoreGraphicsImage(window_id))?;
+    let image_size_px = (image.width() as f64, image.height() as f64);
+    let backing_scale = if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+        ((image_size_px.0 / bounds.size.width) + (image_size_px.1 / bounds.size.height)) / 2.0
+    } else {
+        1.0
+    };
+    Ok(CapturedWindow {
+        image,
+        geometry: geometry_from_rect(bounds, image_size_px, backing_scale),
+    })
+}
+
+/// Decode a PNG file into a [`CGImage`](core_graphics::image::CGImage).
+fn load_png_cg(path: &str) -> Option<core_graphics::image::CGImage> {
+    let bytes = std::fs::read(path).ok()?;
+    let provider = CGDataProvider::from_buffer(Arc::new(bytes));
+    // SAFETY: `provider` is a valid CGDataProviderRef; the function returns a +1
+    // owned CGImageRef or null (checked). Null decode array / default intent.
+    let raw = unsafe {
+        CGImageCreateWithPNGDataProvider(provider.as_ptr().cast(), std::ptr::null(), false, 0)
+    };
+    if raw.is_null() {
+        return None;
+    }
+    // SAFETY: `raw` is a +1 owned CGImageRef handed to CGImage's create-rule owner.
+    Some(unsafe { core_graphics::image::CGImage::from_ptr(raw.cast()) })
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGImageCreateWithPNGDataProvider(
+        source: *const c_void,
+        decode: *const f64,
+        should_interpolate: bool,
+        intent: u32,
+    ) -> *mut c_void;
 }
 
 /// The active display whose global bounds contain `(x, y)`, or the main display.
