@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "visualops": {
-      "command": "/Users/ludwig/workspace/viewcontrolermcp/scripts/mcp-notes.sh",
+      "command": "/Users/ludwig/workspace/viewcontrolermcp/scripts/mcp-chrome.sh",
       "args": []
     }
   }

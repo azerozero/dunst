@@ -123,8 +123,30 @@ fn run_demo() -> i32 {
 /// server is runnable and inspectable without a target.
 fn run_serve() -> i32 {
     let args: Vec<String> = std::env::args().collect();
-    let pid = flag(&args, "--pid").and_then(|s| s.parse::<i32>().ok());
-    let window = flag(&args, "--window").and_then(|s| s.parse::<u32>().ok());
+    let mut pid = flag(&args, "--pid").and_then(|s| s.parse::<i32>().ok());
+    let mut window = flag(&args, "--window").and_then(|s| s.parse::<u32>().ok());
+
+    // `--app "<Owner Name>"`: discover the largest on-screen window of that app
+    // (robust to window-id churn, e.g. Chrome recreating windows).
+    #[cfg(target_os = "macos")]
+    if pid.is_none() || window.is_none() {
+        if let Some(app) = flag(&args, "--app") {
+            if let Some(w) = visualops_vision::capture::list_windows()
+                .into_iter()
+                .filter(|w| w.on_screen && w.app == app && w.w > 200.0 && w.h > 200.0)
+                .max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)))
+            {
+                eprintln!(
+                    "visualops-mcp: --app {app:?} -> pid={} window={} {:?}",
+                    w.pid, w.window_id, w.title
+                );
+                pid = Some(w.pid);
+                window = Some(w.window_id);
+            } else {
+                eprintln!("visualops-mcp: --app {app:?} found no on-screen window");
+            }
+        }
+    }
 
     let engine = match (pid, window) {
         (Some(pid), Some(window_id)) => {
