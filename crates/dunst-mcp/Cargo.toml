@@ -1,0 +1,31 @@
+[package]
+name = "dunst-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "dunst-mcp"
+
+[[bin]]
+name = "dunst-mcp"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+dunst-core = { workspace = true }
+dunst-graph = { workspace = true }
+dunst-platform = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Apple Vision OCR is macOS-only. Pull the vision crate in ONLY under macOS so
+# `dunst-mcp` stays compilable on other targets (the `read_text` tool returns a
+# clear error off-macOS). Path dep — `dunst-vision` is not a
+# `[workspace.dependencies]` entry.
+[target.'cfg(target_os = "macos")'.dependencies]
+dunst-vision = { path = "../dunst-vision" }
+
+# Integration phase adds the MCP server runtime here:
+#   rmcp = { version = "0.x", features = ["server", "transport-io"] }
+#   tokio = { version = "1", features = ["full"] }

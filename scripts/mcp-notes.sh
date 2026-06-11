@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MCP stdio entrypoint for visualops-mcp, wired for Claude Code (.mcp.json).
+# MCP stdio entrypoint for dunst-mcp, wired for Claude Code (.mcp.json).
 #
 # Resolves the target app's pid at launch (it changes every run) and execs the
 # stdio MCP server against its live AX window. Falls back to the deterministic
@@ -12,11 +12,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 APP="${VO_APP:-Notes}"
-BIN="target/debug/visualops-mcp"
+BIN="target/debug/dunst-mcp"
 
 # Build once if needed. Send cargo's chatter to stderr so stdout stays a clean
 # JSON-RPC channel for the MCP client.
-[[ -x "$BIN" ]] || cargo build -q -p visualops-mcp >&2
+[[ -x "$BIN" ]] || cargo build -q -p dunst-mcp >&2
 
 PID="$(pgrep -x "$APP" | head -1 || true)"
 if [[ -n "$PID" ]]; then

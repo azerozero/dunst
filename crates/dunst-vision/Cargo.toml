@@ -1,0 +1,29 @@
+[package]
+name = "dunst-vision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# P1a spike: Core Graphics window capture + Apple Vision OCR + coord transform.
+# The latency GO/NO-GO for the non-AX vision pipeline (docs/P1-vision-surfaces.md §10).
+
+[dependencies]
+dunst-core = { workspace = true }
+
+# macOS capture + OCR deps. The PLATFORM/OCR owner (Codex) adjusts versions and
+# features as needed; coords.rs (Claude) needs none of these.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+core-foundation = "0.10"
+foreign-types = "0.5"
+objc2 = "0.6.4"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSDictionary", "NSError", "NSString"] }
+objc2-vision = { version = "0.3.2", features = ["VNObservation", "VNRecognizeTextRequest", "VNRequestHandler", "VNRequest", "VNTypes", "objc2-core-graphics"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

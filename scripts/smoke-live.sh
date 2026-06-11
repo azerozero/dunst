@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live end-to-end smoke test for visualops-mcp against the macOS Notes app.
+# Live end-to-end smoke test for dunst-mcp against the macOS Notes app.
 # Builds the server, ensures Notes is running, then runs scripts/smoke-live.py.
 # Safe & idempotent: it writes a throwaway test note and proves the risk gate
 # blocks destructive actions — it never approves or executes one.
@@ -11,10 +11,10 @@ cd "$(dirname "$0")/.."
 
 APP="${1:-Notes}"
 
-echo "==> building visualops-mcp"
-cargo build -q -p visualops-mcp
+echo "==> building dunst-mcp"
+cargo build -q -p dunst-mcp
 
-BIN="target/debug/visualops-mcp"
+BIN="target/debug/dunst-mcp"
 [[ -x "$BIN" ]] || { echo "error: $BIN not found after build" >&2; exit 1; }
 
 echo "==> ensuring $APP is running"

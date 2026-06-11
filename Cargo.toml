@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/visualops-core",
-    "crates/visualops-graph",
-    "crates/visualops-platform",
-    "crates/visualops-mcp",
-    "crates/visualops-vision",
+    "crates/dunst-core",
+    "crates/dunst-graph",
+    "crates/dunst-platform",
+    "crates/dunst-mcp",
+    "crates/dunst-vision",
 ]
 
 [workspace.package]
@@ -15,9 +15,9 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.80"
 
 [workspace.dependencies]
-visualops-core = { path = "crates/visualops-core" }
-visualops-graph = { path = "crates/visualops-graph" }
-visualops-platform = { path = "crates/visualops-platform" }
+dunst-core = { path = "crates/dunst-core" }
+dunst-graph = { path = "crates/dunst-graph" }
+dunst-platform = { path = "crates/dunst-platform" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
@@ -25,7 +25,7 @@ thiserror = "1"
 # Shared lints, opted into per-crate with `[lints] workspace = true`. We do NOT
 # enable `unwrap_used`/`expect_used` (they would flag the many justified `unwrap`s
 # outside tests). The goal is narrow: make every `unsafe` block carry a `// SAFETY:`
-# note. Crates with FFI (visualops-platform, visualops-vision) opt in and document
+# note. Crates with FFI (dunst-platform, dunst-vision) opt in and document
 # their blocks; pure crates inherit it for free.
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"

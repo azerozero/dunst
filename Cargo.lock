@@ -217,6 +217,69 @@ dependencies = [
 ]
 
 [[package]]
+name = "dunst-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "dunst-graph"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "dunst-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "dunst-mcp"
+version = "0.1.0"
+dependencies = [
+ "dunst-core",
+ "dunst-graph",
+ "dunst-platform",
+ "dunst-vision",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "dunst-platform"
+version = "0.1.0"
+dependencies = [
+ "accessibility-sys",
+ "core-foundation",
+ "core-foundation-sys",
+ "core-graphics",
+ "dunst-core",
+ "foreign-types",
+ "objc2 0.5.2",
+ "objc2-app-kit",
+ "objc2-foundation 0.2.2",
+ "serde_json",
+]
+
+[[package]]
+name = "dunst-vision"
+version = "0.1.0"
+dependencies = [
+ "core-foundation",
+ "core-graphics",
+ "dunst-core",
+ "foreign-types",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-vision",
+ "serde_json",
+]
+
+[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -752,69 +815,6 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
-
-[[package]]
-name = "visualops-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "visualops-graph"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "serde",
- "serde_json",
- "visualops-core",
-]
-
-[[package]]
-name = "visualops-mcp"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "visualops-core",
- "visualops-graph",
- "visualops-platform",
- "visualops-vision",
-]
-
-[[package]]
-name = "visualops-platform"
-version = "0.1.0"
-dependencies = [
- "accessibility-sys",
- "core-foundation",
- "core-foundation-sys",
- "core-graphics",
- "foreign-types",
- "objc2 0.5.2",
- "objc2-app-kit",
- "objc2-foundation 0.2.2",
- "serde_json",
- "visualops-core",
-]
-
-[[package]]
-name = "visualops-vision"
-version = "0.1.0"
-dependencies = [
- "core-foundation",
- "core-graphics",
- "foreign-types",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-foundation 0.3.2",
- "objc2-vision",
- "serde_json",
- "visualops-core",
-]
 
 [[package]]
 name = "walkdir"

@@ -1,4 +1,4 @@
-# VisualOps MCP — POC
+# Dunst — POC
 
 > From pixels to verified actions. **AX-first slice.**
 
@@ -44,27 +44,27 @@ macOS AX tree
 
 | Crate                | Role                                                     |
 |----------------------|----------------------------------------------------------|
-| `visualops-core`     | Frozen contract: types, traits, `MockPerceptor`, fixtures|
-| `visualops-graph`    | Pure logic: scene graph, affordances, risk, diff         |
-| `visualops-platform` | macOS AX backend: `Perceptor` + `ActionExecutor`         |
-| `visualops-vision`   | P1a spike: window capture + Apple Vision OCR + coord math |
-| `visualops-mcp`      | Engine (risk gating + audit) + demo + MCP server         |
+| `dunst-core`     | Frozen contract: types, traits, `MockPerceptor`, fixtures|
+| `dunst-graph`    | Pure logic: scene graph, affordances, risk, diff         |
+| `dunst-platform` | macOS AX backend: `Perceptor` + `ActionExecutor`         |
+| `dunst-vision`   | P1a spike: window capture + Apple Vision OCR + coord math |
+| `dunst-mcp`      | Engine (risk gating + audit) + demo + MCP server         |
 
 `graph` and `platform` depend only on `core`. See `docs/ARCHITECTURE.md`.
 
-**Cross-platform compilation:** only `visualops-vision::coords` (pure coordinate
-math) builds on any target; the rest of `visualops-vision` (capture, OCR) and all
-of `visualops-platform` are `#[cfg(target_os = "macos")]`. So `cargo test` runs the
+**Cross-platform compilation:** only `dunst-vision::coords` (pure coordinate
+math) builds on any target; the rest of `dunst-vision` (capture, OCR) and all
+of `dunst-platform` are `#[cfg(target_os = "macos")]`. So `cargo test` runs the
 full logic/coords suite everywhere, and the macOS-only backends compile on macOS.
 
 ## Run
 
 ```bash
 # Device-free demo on the Notes fixture: scene -> affordance -> risk gating -> audit
-cargo run -p visualops-mcp -- demo
+cargo run -p dunst-mcp -- demo
 
 # Dump a live window's AX tree as JSON (find the pid/window via the MCP host)
-cargo run -p visualops-platform --example dump -- <pid> <window_id>
+cargo run -p dunst-platform --example dump -- <pid> <window_id>
 ```
 
 The `demo` narrates: resolve "Nouvelle note" by **label** → click → a destructive

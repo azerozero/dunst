@@ -1,0 +1,25 @@
+[package]
+name = "dunst-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dunst-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Optional, only pulled in with `--features bench`; never compiled by `cargo test`.
+criterion = { version = "0.5", optional = true, default-features = false, features = ["cargo_bench_support"] }
+
+[features]
+# `cargo bench -p dunst-graph --features bench`
+bench = ["dep:criterion"]
+
+# WP-D4: pure-pipeline baseline (build_scene_graph -> derive_affordances -> risk).
+[[bench]]
+name = "pipeline"
+harness = false
+required-features = ["bench"]
+
+[lints]
+workspace = true
