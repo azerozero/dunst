@@ -650,7 +650,24 @@ impl Engine {
     /// "screen@x,y"`) and re-perceives afterwards like [`act`](Self::act).
     #[cfg(target_os = "macos")]
     pub fn click_at(&mut self, x: f64, y: f64) -> visualops_core::Result<AuditEntry> {
-        let outcome = visualops_platform::click_at_point(self.target.pid, x, y);
+        // Prefer the SkyLight background path: reaches a backgrounded/occluded web
+        // target (trusted, no cursor move); needs the window-local coordinate, so
+        // pass the window origin. Falls back to a cursor click if SkyLight is off.
+        let (ox, oy) = visualops_vision::capture::window_bounds(self.target.window_id)
+            .map(|(x, y, _, _)| (x, y))
+            .unwrap_or((0.0, 0.0));
+        let outcome = if visualops_platform::click_web_background(
+            self.target.pid,
+            self.target.window_id,
+            x,
+            y,
+            ox,
+            oy,
+        ) {
+            Ok(())
+        } else {
+            visualops_platform::click_at_point(self.target.pid, x, y)
+        };
         self.audit_raw_input(
             format!("screen@{x},{y}"),
             SemanticAction::Click,

@@ -690,6 +690,7 @@ dependencies = [
  "core-foundation",
  "core-foundation-sys",
  "core-graphics",
+ "foreign-types",
  "serde_json",
  "visualops-core",
 ]

@@ -69,6 +69,23 @@ pub fn focus_without_raise(window_id: u32) -> bool {
     macos::focus_without_raise(window_id)
 }
 
+/// Click a **backgrounded / occluded** window's (web) content at a screen point
+/// via SkyLight — trusted, no cursor move, no foreground. `window_origin` is the
+/// window's top-left in screen points (for the window-local coordinate the gate
+/// needs). Returns `false` if SkyLight is unavailable so the caller can fall back
+/// to a cursor click.
+#[cfg(target_os = "macos")]
+pub fn click_web_background(
+    pid: i32,
+    window_id: u32,
+    x: f64,
+    y: f64,
+    origin_x: f64,
+    origin_y: f64,
+) -> bool {
+    macos::click_web_background(pid, window_id, x, y, origin_x, origin_y)
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     //! macOS FFI ownership contract:
@@ -112,10 +129,13 @@ mod macos {
     use core_foundation_sys::base::CFNullGetTypeID;
     use core_graphics::{
         display::CGDisplay,
-        event::{CGEvent, CGEventTapLocation, CGEventType, CGKeyCode, CGMouseButton, KeyCode},
+        event::{
+            CGEvent, CGEventTapLocation, CGEventType, CGKeyCode, CGMouseButton, EventField, KeyCode,
+        },
         event_source::{CGEventSource, CGEventSourceStateID},
         geometry::{CGPoint, CGRect, CGSize},
     };
+    use foreign_types::ForeignType;
     use visualops_core::{
         Bbox, RawAxNode, Result, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
     };
@@ -1234,6 +1254,147 @@ mod macos {
                 defocus == 0 && focus == 0
             }
         }
+
+        type EventPostToPid = unsafe extern "C" fn(c_int, *const c_void) -> c_int;
+        static POST: OnceLock<Option<EventPostToPid>> = OnceLock::new();
+
+        /// RTLD_DEFAULT on macOS = `(void*)-2`: dlsym then searches ALL loaded
+        /// images (so a CoreGraphics private symbol resolves too, not just
+        /// SkyLight's). We dlopen SkyLight first to make sure it is loaded.
+        fn rtld_default_sym(name: &CStr) -> *mut c_void {
+            let path = c"/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight";
+            // SAFETY: valid C string; result intentionally ignored (just loads it).
+            unsafe { dlopen(path.as_ptr(), 2) };
+            let rtld_default = (-2_isize) as *mut c_void;
+            // SAFETY: RTLD_DEFAULT is the documented global search handle; `name`
+            // is a valid C string.
+            unsafe { dlsym(rtld_default, name.as_ptr()) }
+        }
+
+        fn post_fn() -> Option<EventPostToPid> {
+            *POST.get_or_init(|| {
+                let p = rtld_default_sym(c"SLEventPostToPid");
+                if p.is_null() {
+                    None
+                } else {
+                    // SAFETY: non-null SkyLight symbol with the documented C ABI.
+                    Some(unsafe { std::mem::transmute::<*mut c_void, EventPostToPid>(p) })
+                }
+            })
+        }
+
+        /// Whether `SLEventPostToPid` resolved (the background mouse path is live).
+        pub fn mouse_post_available() -> bool {
+            post_fn().is_some()
+        }
+
+        /// Post a CGEvent (raw `CGEventRef`) to `pid` via SkyLight, reaching a
+        /// backgrounded window's (web) content. Mouse events carry NO auth message
+        /// (per cua-driver: it diverts them off the IOHID pipeline Chromium reads).
+        pub fn post_event_to_pid(pid: i32, event: *const c_void) {
+            if let Some(f) = post_fn() {
+                // SAFETY: `f` is SLEventPostToPid; `event` is a live CGEventRef.
+                unsafe { f(pid, event) };
+            }
+        }
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct CgPoint {
+            x: f64,
+            y: f64,
+        }
+        type SetWindowLocation = unsafe extern "C" fn(*const c_void, CgPoint);
+        static SET_WIN_LOC: OnceLock<Option<SetWindowLocation>> = OnceLock::new();
+
+        fn set_win_loc_fn() -> Option<SetWindowLocation> {
+            *SET_WIN_LOC.get_or_init(|| {
+                // CGEventSetWindowLocation lives in CoreGraphics, not SkyLight — so
+                // resolve it via the global RTLD_DEFAULT search.
+                let p = rtld_default_sym(c"CGEventSetWindowLocation");
+                if p.is_null() {
+                    None
+                } else {
+                    // SAFETY: non-null symbol; documented ABI (CGEventRef, CGPoint).
+                    Some(unsafe { std::mem::transmute::<*mut c_void, SetWindowLocation>(p) })
+                }
+            })
+        }
+
+        /// Stamp the window-LOCAL coordinate onto a CGEvent (private SPI). No-op if
+        /// the symbol is unavailable.
+        pub fn set_window_location(event: *const c_void, x: f64, y: f64) {
+            if let Some(f) = set_win_loc_fn() {
+                // SAFETY: `f` is CGEventSetWindowLocation; `event` is a live ref.
+                unsafe { f(event, CgPoint { x, y }) };
+            }
+        }
+    }
+
+    /// Full background web click via SkyLight (cua-driver's `clickViaAuthSignedPost`
+    /// recipe): focus-without-raise, then move → off-screen primer click → real
+    /// click, each CGEvent stamped with the fields Chromium's synthetic-event gate
+    /// requires (button/subtype/clickState, window-under-pointer = window_id,
+    /// target pid, window-local coord), posted via `SLEventPostToPid`. Reaches a
+    /// backgrounded / occluded window's web content WITHOUT moving the cursor.
+    /// Returns false if SkyLight is unavailable (caller falls back to the cursor).
+    pub fn click_web_background(
+        pid: i32,
+        window_id: u32,
+        sx: f64,
+        sy: f64,
+        ox: f64,
+        oy: f64,
+    ) -> bool {
+        if window_id == 0 || !skylight::mouse_post_available() {
+            return false;
+        }
+        focus_without_raise(window_id);
+        thread::sleep(Duration::from_millis(50));
+
+        let screen = CGPoint::new(sx, sy);
+        let local = CGPoint::new(sx - ox, sy - oy);
+        let off = CGPoint::new(-1.0, -1.0);
+        let make = |etype: CGEventType, point: CGPoint, win_local: CGPoint| -> Option<CGEvent> {
+            let source = event_source("skylight click CGEventSource").ok()?;
+            let event = CGEvent::new_mouse_event(source, etype, point, CGMouseButton::Left).ok()?;
+            event.set_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER, 0);
+            event.set_integer_value_field(EventField::MOUSE_EVENT_SUB_TYPE, 3);
+            event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, 1);
+            event.set_integer_value_field(
+                EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER,
+                window_id as i64,
+            );
+            event.set_integer_value_field(
+                EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER_THAT_CAN_HANDLE_THIS_EVENT,
+                window_id as i64,
+            );
+            event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, pid as i64);
+            skylight::set_window_location(event.as_ptr().cast(), win_local.x, win_local.y);
+            Some(event)
+        };
+        let post = |ev: &CGEvent| skylight::post_event_to_pid(pid, ev.as_ptr().cast());
+
+        if let Some(m) = make(CGEventType::MouseMoved, screen, local) {
+            post(&m);
+        }
+        thread::sleep(Duration::from_millis(15));
+        if let Some(d) = make(CGEventType::LeftMouseDown, off, off) {
+            post(&d);
+        }
+        thread::sleep(Duration::from_millis(1));
+        if let Some(u) = make(CGEventType::LeftMouseUp, off, off) {
+            post(&u);
+        }
+        thread::sleep(Duration::from_millis(100));
+        if let Some(d) = make(CGEventType::LeftMouseDown, screen, local) {
+            post(&d);
+        }
+        thread::sleep(Duration::from_millis(1));
+        if let Some(u) = make(CGEventType::LeftMouseUp, screen, local) {
+            post(&u);
+        }
+        true
     }
 
     pub fn press_key(pid: i32, key: &str) -> Result<()> {

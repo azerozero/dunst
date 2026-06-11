@@ -165,6 +165,14 @@ pub struct WindowInfo {
     pub on_screen: bool,
 }
 
+/// The screen bounds `(x, y, w, h)` of a window by id — for mapping a screen
+/// point to the window-local coordinate a background click needs.
+pub fn window_bounds(window_id: u32) -> Option<(f64, f64, f64, f64)> {
+    cg_window_bounds(window_id)
+        .ok()
+        .map(|r| (r.origin.x, r.origin.y, r.size.width, r.size.height))
+}
+
 /// List every top-level (layer-0) window — including off-screen / other-Space
 /// ones — for picking a `window_id` to drive. Fills the MCP's target-discovery
 /// gap (previously external to the daemon).
