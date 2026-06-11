@@ -136,6 +136,9 @@ mod macos {
         geometry::{CGPoint, CGRect, CGSize},
     };
     use foreign_types::ForeignType;
+    use objc2::msg_send;
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+    use objc2_foundation::NSPoint;
     use visualops_core::{
         Bbox, RawAxNode, Result, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
     };
@@ -1331,6 +1334,58 @@ mod macos {
         }
     }
 
+    extern "C" {
+        /// Public CoreGraphics: set a CGEvent's screen location.
+        fn CGEventSetLocation(event: *const c_void, location: CGPoint);
+    }
+
+    /// Build a CGEvent through the **NSEvent bridge** so it carries the
+    /// `windowNumber` routing Chromium's user-activation gate latches onto (the
+    /// plain CGEvent path is dropped). Returns a +1-owned CGEvent.
+    fn cg_event_via_nsevent(etype: CGEventType, click_count: isize, window_id: u32) -> Option<CGEvent> {
+        let ns_type = match etype {
+            CGEventType::LeftMouseDown => NSEventType::LeftMouseDown,
+            CGEventType::LeftMouseUp => NSEventType::LeftMouseUp,
+            CGEventType::MouseMoved => NSEventType::MouseMoved,
+            _ => return None,
+        };
+        // SAFETY: standard AppKit class-method; a nil graphics context is allowed
+        // and all scalar arguments are valid.
+        let ns = unsafe {
+            NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                ns_type,
+                NSPoint { x: 0.0, y: 0.0 },
+                NSEventModifierFlags(0),
+                0.0,
+                window_id as isize,
+                None,
+                0,
+                click_count,
+                1.0,
+            )
+        }?;
+        // `-[NSEvent CGEvent]` returns a `CGEventRef` (`^{__CGEvent=}`); objc2
+        // checks the return encoding, so name it via an opaque struct rather than
+        // a bare `void*`.
+        struct CgEventOpaque {
+            _p: [u8; 0],
+        }
+        // SAFETY: the encoding mirrors CoreGraphics' opaque `__CGEvent` struct.
+        unsafe impl objc2::RefEncode for CgEventOpaque {
+            const ENCODING_REF: objc2::Encoding =
+                objc2::Encoding::Pointer(&objc2::Encoding::Struct("__CGEvent", &[]));
+        }
+        // SAFETY: `-[NSEvent CGEvent]` returns a CGEventRef owned by `ns`.
+        let raw: *mut CgEventOpaque = unsafe { msg_send![&*ns, CGEvent] };
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: retain the borrowed CGEventRef so the owned wrapper outlives `ns`.
+        unsafe { core_foundation_sys::base::CFRetain(raw.cast()) };
+        // SAFETY: `raw` is now a +1-owned CGEventRef handed to CGEvent's owner.
+        Some(unsafe { CGEvent::from_ptr(raw.cast()) })
+    }
+
     /// Full background web click via SkyLight (cua-driver's `clickViaAuthSignedPost`
     /// recipe): focus-without-raise, then move → off-screen primer click → real
     /// click, each CGEvent stamped with the fields Chromium's synthetic-event gate
@@ -1356,8 +1411,11 @@ mod macos {
         let local = CGPoint::new(sx - ox, sy - oy);
         let off = CGPoint::new(-1.0, -1.0);
         let make = |etype: CGEventType, point: CGPoint, win_local: CGPoint| -> Option<CGEvent> {
-            let source = event_source("skylight click CGEventSource").ok()?;
-            let event = CGEvent::new_mouse_event(source, etype, point, CGMouseButton::Left).ok()?;
+            // Bridge through NSEvent so the event carries the windowNumber routing
+            // Chromium's gate requires; then re-stamp the real screen location.
+            let event = cg_event_via_nsevent(etype, 1, window_id)?;
+            // SAFETY: `event` is a live CGEventRef; `point` is a valid CGPoint.
+            unsafe { CGEventSetLocation(event.as_ptr().cast(), point) };
             event.set_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER, 0);
             event.set_integer_value_field(EventField::MOUSE_EVENT_SUB_TYPE, 3);
             event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, 1);
