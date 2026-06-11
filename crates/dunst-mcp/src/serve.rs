@@ -89,7 +89,7 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "read_text",
-            "OCR the target window (or an optional screen-point region x,y,w,h) via Apple Vision; returns recognised text lines with screen bbox + confidence.",
+            "OCR the target window (or an optional screen-point region x,y,w,h) via Apple Vision; returns recognised text lines with screen bbox + confidence. accurate:true uses the slower, more precise recognition (default fast).",
             schema(
                 json!({
                     "region": {
@@ -102,7 +102,8 @@ fn tools_list() -> Vec<Value> {
                             "h": { "type": "number" }
                         },
                         "required": ["x", "y", "w", "h"]
-                    }
+                    },
+                    "accurate": { "type": "boolean", "description": "slower, higher-accuracy OCR (default false)" }
                 }),
                 &[],
             ),
@@ -216,7 +217,7 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "open_menu",
-            "Open an app menu-bar menu by name (e.g. \"File\"/\"Fichier\") via AX — its items then appear in the scene graph.",
+            "Open an app menu-bar menu by name (e.g. \"File\"/\"Fichier\") via AX — its items then appear in the scene graph. NOTE: the macOS menu bar belongs to the FRONTMOST app, so this only works when the target is the active app — a backgrounded target has no menu bar to open (use the target's own in-window controls instead).",
             schema(json!({ "name": {"type":"string"} }), &["name"]),
         ),
         tool(
@@ -310,7 +311,7 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
         },
         "read_text" => match parse_region(&args) {
             Ok(region) => engine
-                .read_text(region)
+                .read_text(region, arg_bool("accurate").unwrap_or(false))
                 .map(|hits| serde_json::to_value(hits).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string()),
             Err(e) => Err(e),
@@ -673,7 +674,7 @@ mod tests {
         let mut e = engine_with_window(u32::MAX);
 
         // Direct engine call carries the "live macOS window" message.
-        let err = e.read_text(None).unwrap_err();
+        let err = e.read_text(None, false).unwrap_err();
         assert!(err.to_string().contains("live macOS window"), "unexpected error: {err}");
 
         // Through the dispatcher: a well-formed isError result, not a crash.

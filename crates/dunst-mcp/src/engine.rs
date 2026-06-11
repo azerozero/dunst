@@ -457,16 +457,30 @@ impl Engine {
     /// whole window. Each hit's bbox is mapped from Vision's normalised space to
     /// screen points. macOS-only — see the non-macOS stub below.
     #[cfg(target_os = "macos")]
-    pub fn read_text(&self, region_screen_pt: Option<Bbox>) -> dunst_core::Result<Vec<TextHit>> {
+    pub fn read_text(
+        &self,
+        region_screen_pt: Option<Bbox>,
+        accurate: bool,
+    ) -> dunst_core::Result<Vec<TextHit>> {
+        use dunst_vision::ocr::RecognitionMode;
         let captured =
             dunst_vision::capture::capture_window(self.target.window_id).map_err(|e| {
                 VisualOpsError::Perception(format!(
                     "OCR requires a live macOS window (capture failed: {e})"
                 ))
             })?;
-        let boxes =
-            dunst_vision::ocr::ocr_region(&captured.image, &captured.geometry, region_screen_pt)
-                .map_err(|e| VisualOpsError::Perception(format!("OCR failed: {e}")))?;
+        let mode = if accurate {
+            RecognitionMode::Accurate
+        } else {
+            RecognitionMode::Fast
+        };
+        let boxes = dunst_vision::ocr::ocr_region_with_mode(
+            &captured.image,
+            &captured.geometry,
+            region_screen_pt,
+            mode,
+        )
+        .map_err(|e| VisualOpsError::Perception(format!("OCR failed: {e}")))?;
         Ok(boxes
             .into_iter()
             .map(|b| TextHit {
@@ -480,7 +494,11 @@ impl Engine {
     /// Non-macOS stub: Apple Vision OCR needs a live macOS window. Keeps
     /// `dunst-mcp` compilable (and the `read_text` tool present) on other targets.
     #[cfg(not(target_os = "macos"))]
-    pub fn read_text(&self, _region_screen_pt: Option<Bbox>) -> dunst_core::Result<Vec<TextHit>> {
+    pub fn read_text(
+        &self,
+        _region_screen_pt: Option<Bbox>,
+        _accurate: bool,
+    ) -> dunst_core::Result<Vec<TextHit>> {
         Err(VisualOpsError::Perception(
             "OCR requires a live macOS window".into(),
         ))
@@ -1179,7 +1197,7 @@ impl Engine {
         // from the OCR'd axis labels, calibrate the Y axis from its price labels,
         // then map the curve's pixel height at each sampled x to a value. A chart
         // is "present" only if a curve actually covers most columns.
-        let hits = self.read_text(None).unwrap_or_default();
+        let hits = self.read_text(None, false).unwrap_or_default();
         let Some(region) = region_from_axis(&hits) else {
             return Ok(ScanResult {
                 present: false,
@@ -1658,6 +1676,43 @@ fn merge_risk(base: &RiskAssessment, extra: &RiskAssessment, label: &str) -> Ris
             .cloned()
             .chain(extra.reasons.iter().map(|r| format!("{label}: {r}")))
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::{base64_encode, char_keycode, is_axis_token, looks_like_clock, parse_combo, parse_value};
+
+    #[test]
+    fn base64_matches_known_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn parse_combo_reads_modifiers_and_key() {
+        assert_eq!(parse_combo("cmd+l"), Some((0x0010_0000, 0x25)));
+        assert_eq!(parse_combo("cmd+shift+t"), Some((0x0012_0000, 0x11)));
+        assert_eq!(parse_combo("ctrl+a"), Some((0x0004_0000, 0x00)));
+        assert_eq!(parse_combo("enter"), Some((0, 0x24)));
+        assert_eq!(parse_combo("cmd+ "), None); // no key
+    }
+
+    #[test]
+    fn char_and_axis_helpers() {
+        assert_eq!(char_keycode('a'), Some(0x00));
+        assert_eq!(char_keycode('Z'), Some(0x06));
+        assert_eq!(char_keycode('='), Some(0x18));
+        assert!(looks_like_clock("13:00 UTC+2"));
+        assert!(!looks_like_clock("clôture"));
+        assert!(is_axis_token("09:30"));
+        assert!(is_axis_token("11"));
+        assert!(!is_axis_token("À la clôture de 17:35"));
+        assert_eq!(parse_value("8 220,00"), Some(8220.0));
+        assert_eq!(parse_value("8161,84'"), Some(8161.84));
     }
 }
 
