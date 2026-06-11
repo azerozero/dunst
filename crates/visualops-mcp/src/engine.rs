@@ -87,6 +87,17 @@ pub struct ScanResult {
     pub samples: Vec<ChartSample>,
 }
 
+/// One top-level window, for [`Engine::list_windows`] — target discovery.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WindowSummary {
+    pub window_id: u32,
+    pub pid: i32,
+    pub app: String,
+    pub title: String,
+    pub bounds: Bbox,
+    pub on_screen: bool,
+}
+
 /// Parse a (possibly French-formatted) numeric label like `"8 220,00"` or
 /// `"8161,84'"` into a value. Space = thousands, comma = decimal; trailing OCR
 /// junk is dropped.
@@ -867,6 +878,34 @@ impl Engine {
     #[cfg(target_os = "macos")]
     pub fn focus_window(&self) -> bool {
         visualops_platform::focus_without_raise(self.target.window_id)
+    }
+
+    /// Enumerate top-level windows (incl. off-screen / other-Space) for picking a
+    /// `window_id` to drive — the MCP's own target discovery (no external tool).
+    #[cfg(target_os = "macos")]
+    pub fn list_windows(&self) -> Vec<WindowSummary> {
+        visualops_vision::capture::list_windows()
+            .into_iter()
+            .map(|w| WindowSummary {
+                window_id: w.window_id,
+                pid: w.pid,
+                app: w.app,
+                title: w.title,
+                bounds: Bbox {
+                    x: w.x,
+                    y: w.y,
+                    w: w.w,
+                    h: w.h,
+                },
+                on_screen: w.on_screen,
+            })
+            .collect()
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn list_windows(&self) -> Vec<WindowSummary> {
+        Vec::new()
     }
 
     /// Non-macOS stub.

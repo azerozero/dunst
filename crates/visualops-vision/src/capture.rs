@@ -1,6 +1,6 @@
 //! Core Graphics one-shot window capture (owner: Codex, P1a).
 
-use std::{ffi::c_void, fmt, sync::Arc};
+use std::{collections::HashSet, ffi::c_void, fmt, sync::Arc};
 
 use core_foundation::{
     base::TCFType,
@@ -15,9 +15,11 @@ use core_graphics::{
     display::{CGDisplay, CGRectNull},
     geometry::{CGPoint, CGRect, CGSize},
     window::{
-        copy_window_info, create_image, kCGWindowBounds, kCGWindowImageBestResolution,
-        kCGWindowImageBoundsIgnoreFraming, kCGWindowListExcludeDesktopElements,
-        kCGWindowListOptionIncludingWindow, kCGWindowListOptionOnScreenOnly, kCGWindowNumber,
+        copy_window_info, create_image, kCGNullWindowID, kCGWindowBounds,
+        kCGWindowImageBestResolution, kCGWindowImageBoundsIgnoreFraming, kCGWindowLayer,
+        kCGWindowListExcludeDesktopElements, kCGWindowListOptionAll,
+        kCGWindowListOptionIncludingWindow, kCGWindowListOptionOnScreenOnly, kCGWindowName,
+        kCGWindowNumber, kCGWindowOwnerName, kCGWindowOwnerPID,
     },
 };
 
@@ -147,6 +149,99 @@ extern "C" {
         should_interpolate: bool,
         intent: u32,
     ) -> *mut c_void;
+}
+
+/// One top-level (layer-0) window, for target discovery.
+#[derive(Debug, Clone)]
+pub struct WindowInfo {
+    pub window_id: u32,
+    pub pid: i32,
+    pub app: String,
+    pub title: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub on_screen: bool,
+}
+
+/// List every top-level (layer-0) window — including off-screen / other-Space
+/// ones — for picking a `window_id` to drive. Fills the MCP's target-discovery
+/// gap (previously external to the daemon).
+pub fn list_windows() -> Vec<WindowInfo> {
+    let on_screen: HashSet<u32> = copy_window_info(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID,
+    )
+    .map(|arr| {
+        arr.get_all_values()
+            .into_iter()
+            .filter_map(|r| window_number(r as CFDictionaryRef))
+            .collect()
+    })
+    .unwrap_or_default();
+
+    let Some(all) = copy_window_info(kCGWindowListOptionAll, kCGNullWindowID) else {
+        return Vec::new();
+    };
+    // SAFETY: reading the immutable CoreGraphics CFString key statics.
+    let (k_layer, k_pid, k_owner, k_name) = unsafe {
+        (
+            kCGWindowLayer.cast::<c_void>(),
+            kCGWindowOwnerPID.cast::<c_void>(),
+            kCGWindowOwnerName.cast::<c_void>(),
+            kCGWindowName.cast::<c_void>(),
+        )
+    };
+    all.get_all_values()
+        .into_iter()
+        .filter_map(|r| {
+            let info = r as CFDictionaryRef;
+            // top-level app windows only (layer 0); skip menubar/dock/shadows.
+            if dict_number_key(info, k_layer)? != 0.0 {
+                return None;
+            }
+            let window_id = window_number(info)?;
+            let (x, y, w, h) = bounds_from_window_info(info)
+                .map(|r| (r.origin.x, r.origin.y, r.size.width, r.size.height))
+                .unwrap_or((0.0, 0.0, 0.0, 0.0));
+            Some(WindowInfo {
+                window_id,
+                pid: dict_number_key(info, k_pid).map(|n| n as i32).unwrap_or(0),
+                app: dict_string_key(info, k_owner).unwrap_or_default(),
+                title: dict_string_key(info, k_name).unwrap_or_default(),
+                x,
+                y,
+                w,
+                h,
+                on_screen: on_screen.contains(&window_id),
+            })
+        })
+        .collect()
+}
+
+/// Read a CFNumber value from a CGWindow dict by a static key pointer.
+fn dict_number_key(info: CFDictionaryRef, key: *const c_void) -> Option<f64> {
+    let mut p: *const c_void = std::ptr::null();
+    // SAFETY: `info`/`key` are valid CF objects; `p` is a checked out-parameter.
+    let found = unsafe { CFDictionaryGetValueIfPresent(info, key, &mut p) };
+    if found == 0 || p.is_null() {
+        return None;
+    }
+    cf_number_f64(p as CFNumberRef)
+}
+
+/// Read a CFString value from a CGWindow dict by a static key pointer.
+fn dict_string_key(info: CFDictionaryRef, key: *const c_void) -> Option<String> {
+    let mut p: *const c_void = std::ptr::null();
+    // SAFETY: `info`/`key` are valid CF objects; `p` is a checked out-parameter.
+    let found = unsafe { CFDictionaryGetValueIfPresent(info, key, &mut p) };
+    if found == 0 || p.is_null() {
+        return None;
+    }
+    // SAFETY: `p` is a borrowed CFString from the dictionary; get-rule wraps it.
+    let s = unsafe { CFString::wrap_under_get_rule(p.cast()) };
+    Some(s.to_string())
 }
 
 /// The active display whose global bounds contain `(x, y)`, or the main display.

@@ -173,17 +173,30 @@ pub fn curve_screen_y(
     let row = |y: f64| (((y - oy) / sh) * h as f64).round();
     let gy0 = (row(region.y).max(0.0) as usize).min(h.saturating_sub(1));
     let gy1 = ((row(region.y + region.h)).min(h as f64) as usize).max(gy0 + 1);
+    // Topmost content cell in the column = the curve's top edge. (The line is
+    // ~1px over a pale, non-content area fill, so we don't require thickness; the
+    // neighbourhood median below rejects the odd gridline/outlier instead.)
+    let column_y = |gx: usize| -> Option<usize> {
+        (gy0..gy1).find(|&gy| d[gy * w + gx] < CONTENT_LUMA_MAX)
+    };
     xs.iter()
         .map(|&x| {
-            let gx = (((x - ox) / sw) * w as f64).round();
-            if gx < 0.0 || gx as usize >= w {
+            let gxc = (((x - ox) / sw) * w as f64).round() as isize;
+            // Sample a small column neighbourhood and take the MEDIAN curve row:
+            // robust to a 1-column gap (a vertical gridline clears that exact x)
+            // and to a single noisy column.
+            let mut rows: Vec<usize> = (-2..=2)
+                .filter_map(|dgx| {
+                    let gx = gxc + dgx;
+                    (gx >= 0 && (gx as usize) < w).then(|| column_y(gx as usize)).flatten()
+                })
+                .collect();
+            if rows.is_empty() {
                 return None;
             }
-            let gx = gx as usize;
-            // top-most content cell in the band = the curve's top edge.
-            (gy0..gy1)
-                .find(|&gy| d[gy * w + gx] < CONTENT_LUMA_MAX)
-                .map(|gy| oy + (gy as f64 + 0.5) / h as f64 * sh)
+            rows.sort_unstable();
+            let gy = rows[rows.len() / 2];
+            Some(oy + (gy as f64 + 0.5) / h as f64 * sh)
         })
         .collect()
 }
