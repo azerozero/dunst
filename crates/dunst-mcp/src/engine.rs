@@ -516,8 +516,11 @@ impl Engine {
     /// no risk-gating, no audit entry. macOS-only.
     #[cfg(target_os = "macos")]
     pub fn read_shapes(&self) -> dunst_core::Result<Vec<ShapeHit>> {
-        let captured =
-            dunst_vision::capture::capture_window(self.target.window_id).map_err(|e| {
+        // Composited capture (see read_text): CGWindowListCreateImage is blank for
+        // GPU/WebGL-rendered windows — chart canvases are exactly what the CV shape
+        // detector exists to read — so grab what is actually on screen instead.
+        let captured = dunst_vision::capture::capture_window_composited(self.target.window_id)
+            .map_err(|e| {
                 VisualOpsError::Perception(format!(
                     "shape detection requires a live macOS window (capture failed: {e})"
                 ))
