@@ -217,7 +217,7 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "open_menu",
-            "Open an app menu-bar menu by name (e.g. \"File\"/\"Fichier\") via AX — its items then appear in the scene graph. NOTE: the macOS menu bar belongs to the FRONTMOST app, so this only works when the target is the active app — a backgrounded target has no menu bar to open (use the target's own in-window controls instead).",
+            "Open an app menu-bar menu by name (e.g. \"File\"/\"Fichier\") via AX (AXPress on the target app's own AXMenuBarItem); its items then appear in the scene graph. Works even when the target is NOT the frontmost app — the menu bar is exposed per-application via AX, so a backgrounded target's menu opens without raising it. Caveat: apps with very large AX trees (Chromium) can have their menu bar truncated by the node cap (it is walked after the window), so a menu title may be missing — refresh and retry rather than assuming foreground is required.",
             schema(json!({ "name": {"type":"string"} }), &["name"]),
         ),
         tool(
