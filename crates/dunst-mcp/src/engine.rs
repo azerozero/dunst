@@ -98,6 +98,18 @@ pub struct WindowSummary {
     pub on_screen: bool,
 }
 
+/// One running GUI app, for [`Engine::list_apps`] — coarser-than-windows
+/// discovery (which app to `launch_app`/`attach`, and is it already running).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AppSummary {
+    pub app: String,
+    pub pid: i32,
+    /// number of top-level windows this app owns
+    pub windows: usize,
+    /// at least one of its windows is currently on-screen
+    pub on_screen: bool,
+}
+
 /// Parse a (possibly French-formatted) numeric label like `"8 220,00"` or
 /// `"8161,84'"` into a value. Space = thousands, comma = decimal; trailing OCR
 /// junk is dropped.
@@ -1298,6 +1310,50 @@ impl Engine {
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
     pub fn list_windows(&self, _all: bool) -> Vec<WindowSummary> {
+        Vec::new()
+    }
+
+    /// List running GUI apps (those owning at least one top-level window),
+    /// aggregated from the window list — coarser discovery than `list_windows`:
+    /// which app to `launch_app`/`attach`, and whether it is already running.
+    /// `query` filters by case-insensitive substring of the app name (doubles as
+    /// "search app"). Sorted by window count desc, then name. The `pid` is the
+    /// owner of its first window — pass any of an app's windows to `attach`.
+    #[cfg(target_os = "macos")]
+    pub fn list_apps(&self, query: Option<&str>) -> Vec<AppSummary> {
+        use std::collections::BTreeMap;
+        let needle = query.map(|q| q.trim().to_lowercase());
+        // app name -> (pid, window_count, any_on_screen)
+        let mut by_app: BTreeMap<String, (i32, usize, bool)> = BTreeMap::new();
+        for w in dunst_vision::capture::list_windows() {
+            if w.app.trim().is_empty() {
+                continue;
+            }
+            if let Some(n) = &needle {
+                if !w.app.to_lowercase().contains(n.as_str()) {
+                    continue;
+                }
+            }
+            let e = by_app.entry(w.app).or_insert((w.pid, 0, false));
+            e.1 += 1;
+            e.2 |= w.on_screen;
+        }
+        let mut apps: Vec<AppSummary> = by_app
+            .into_iter()
+            .map(|(app, (pid, windows, on_screen))| AppSummary {
+                app,
+                pid,
+                windows,
+                on_screen,
+            })
+            .collect();
+        apps.sort_by(|a, b| b.windows.cmp(&a.windows).then_with(|| a.app.cmp(&b.app)));
+        apps
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn list_apps(&self, _query: Option<&str>) -> Vec<AppSummary> {
         Vec::new()
     }
 

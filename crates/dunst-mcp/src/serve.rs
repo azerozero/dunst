@@ -186,6 +186,11 @@ fn tools_list() -> Vec<Value> {
             schema(json!({ "all": { "type": "boolean", "description": "include every layer-0 window incl. fragments (default false)" } }), &[]),
         ),
         tool(
+            "list_apps",
+            "List running GUI apps (those owning a window) — app, pid, windows (count), on_screen — coarser discovery than list_windows: which app to launch_app/attach, and whether it is already running. Optional query filters by case-insensitive name substring (doubles as \"search app\"). Sorted by window count.",
+            schema(json!({ "query": { "type": "string", "description": "case-insensitive app-name substring filter (optional)" } }), &[]),
+        ),
+        tool(
             "attach",
             "Re-target the daemon to a window_id (from list_windows) at runtime — dynamic targeting, no fixed/hardcoded target. Re-perceives and returns the new target + scene summary.",
             schema(json!({ "window_id": { "type": "integer" } }), &["window_id"]),
@@ -410,6 +415,8 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
             engine.list_windows(arg_bool("all").unwrap_or(false)),
         )
         .unwrap_or(Value::Null)),
+        "list_apps" => Ok(serde_json::to_value(engine.list_apps(arg("query").as_deref()))
+            .unwrap_or(Value::Null)),
         "attach" => match args.get("window_id").and_then(Value::as_u64) {
             Some(wid) => match engine.attach_window(wid as u32) {
                 Ok(()) => {
@@ -650,7 +657,7 @@ mod tests {
     fn tools_list_exposes_read_text_with_object_schema() {
         let tools = tools_list();
         // + read_at + read_series brought the set to 20.
-        assert_eq!(tools.len(), 34, "tool count");
+        assert_eq!(tools.len(), 35, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(
