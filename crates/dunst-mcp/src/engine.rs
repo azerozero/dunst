@@ -463,8 +463,14 @@ impl Engine {
         accurate: bool,
     ) -> dunst_core::Result<Vec<TextHit>> {
         use dunst_vision::ocr::RecognitionMode;
-        let captured =
-            dunst_vision::capture::capture_window(self.target.window_id).map_err(|e| {
+        // Composited capture (screencapture -l), not CGWindowListCreateImage: the
+        // latter reads a window's backing store and so returns BLANK for
+        // GPU/Metal/WebGL-rendered windows — terminals (iTerm), browsers, chart
+        // canvases — which are exactly the targets this project exists to read.
+        // Composited grabs what is actually on screen and works off-screen/occluded
+        // too. Same `CapturedWindow` shape, so the OCR + coord path is unchanged.
+        let captured = dunst_vision::capture::capture_window_composited(self.target.window_id)
+            .map_err(|e| {
                 VisualOpsError::Perception(format!(
                     "OCR requires a live macOS window (capture failed: {e})"
                 ))
