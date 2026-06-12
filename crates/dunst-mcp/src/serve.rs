@@ -197,8 +197,8 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "launch_app",
-            "Launch an app WITHOUT bringing it to the foreground (open -g), optionally opening a url in it. Then list_windows + attach to drive it. Closes the last external dependency — full autonomy via the MCP alone.",
-            schema(json!({ "app": {"type":"string"}, "url": {"type":"string"} }), &["app"]),
+            "Launch an app WITHOUT bringing it to the foreground (open -g), optionally opening a url in it. Then list_windows + attach to drive it. Closes the last external dependency — full autonomy via the MCP alone. args: extra argv passed to the app (only applies when this call actually launches it). To read a Chromium chart in pure background, launch with args [\"--disable-features=CalculateNativeWinOcclusion\",\"--disable-renderer-backgrounding\",\"--disable-background-timer-throttling\",\"--disable-backgrounding-occluded-windows\"] so the <canvas> keeps painting while backgrounded (otherwise scan_chart sees a blank plot).",
+            schema(json!({ "app": {"type":"string"}, "url": {"type":"string"}, "args": {"type":"array","items":{"type":"string"},"description":"extra argv for the app (e.g. Chromium background-paint flags)"} }), &["app"]),
         ),
         tool(
             "close_app",
@@ -432,7 +432,14 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
             None => Err("attach requires integer 'window_id'".into()),
         },
         "launch_app" => match arg("app") {
-            Some(app) => Ok(json!({ "launched": engine.launch_app(&app, arg("url").as_deref()) })),
+            Some(app) => {
+                let extra: Vec<String> = args
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default();
+                Ok(json!({ "launched": engine.launch_app(&app, arg("url").as_deref(), &extra) }))
+            }
             None => Err("launch_app requires 'app'".into()),
         },
         "close_app" => match arg("app") {

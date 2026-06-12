@@ -1360,11 +1360,29 @@ impl Engine {
     /// Launch an app **without bringing it to the foreground** (`open -g`),
     /// optionally opening `url` in it. Closes the last external dependency — the
     /// agent can now start a target itself, then list_windows + attach.
+    ///
+    /// `extra_args` are passed straight to the app's argv (`open … --args …`),
+    /// which only takes effect when this call actually *launches* the app (not if
+    /// it is already running). The motivating case: a backgrounded Chromium paints
+    /// nothing because the OS marks its never-foregrounded window occluded and the
+    /// Page-Visibility API pauses the `<canvas>` — so `scan_chart` reads a blank
+    /// plot. Launching with `--disable-features=CalculateNativeWinOcclusion`
+    /// `--disable-renderer-backgrounding` `--disable-background-timer-throttling`
+    /// `--disable-backgrounding-occluded-windows` keeps it painting while it stays
+    /// in the background (verified: TradingView curve renders, frontmost ≠ Chrome).
     #[cfg(target_os = "macos")]
-    pub fn launch_app(&self, app: &str, url: Option<&str>) -> bool {
+    pub fn launch_app(&self, app: &str, url: Option<&str>, extra_args: &[String]) -> bool {
         let mut cmd = std::process::Command::new("/usr/bin/open");
         cmd.args(["-g", "-a", app]);
-        if let Some(u) = url {
+        // `--args` makes `open` forward the rest to the app's argv; once present it
+        // swallows everything after it, so the url (a Chromium argv url) goes last.
+        if !extra_args.is_empty() {
+            cmd.arg("--args");
+            cmd.args(extra_args);
+            if let Some(u) = url {
+                cmd.arg(u);
+            }
+        } else if let Some(u) = url {
             cmd.arg(u);
         }
         cmd.status().map(|s| s.success()).unwrap_or(false)
@@ -1372,7 +1390,7 @@ impl Engine {
 
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
-    pub fn launch_app(&self, _app: &str, _url: Option<&str>) -> bool {
+    pub fn launch_app(&self, _app: &str, _url: Option<&str>, _extra_args: &[String]) -> bool {
         false
     }
 
