@@ -1,3 +1,5 @@
+> **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
+
 # FIX round 2 — `visualops-graph` (owner: Claude / tmux 9)
 
 Triaged from `docs/review-graph.md` (Codex), `cli-forge-perf`, `cli-audit-code`.

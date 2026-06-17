@@ -47,6 +47,16 @@ pub fn derive_affordances(graph: &SceneGraph, risk: &RiskEngine) -> AffordanceGr
             push_unique(&mut actions, SemanticAction::Focus);
         }
 
+        // 2b. Scrollable roles / native AX scroll areas can be scrolled directly
+        // through the platform backend when the app exposes an AX scrollbar.
+        if matches!(
+            node.role,
+            Role::List | Role::Table | Role::Outline | Role::TextArea
+        ) || node.ax_role == "AXScrollArea"
+        {
+            push_unique(&mut actions, SemanticAction::Scroll);
+        }
+
         // 3. Drag targets (rows/cells only); a non-empty list exposes `Drag`.
         let drag_targets = drag_targets_for(graph, node);
         if !drag_targets.is_empty() {

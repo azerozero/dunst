@@ -1,26 +1,31 @@
 #!/usr/bin/env bash
-# MCP stdio entrypoint for dunst-mcp, wired for Claude Code (.mcp.json).
+# Compatibility wrapper for the historical Notes-focused MCP entrypoint.
 #
-# Resolves the target app's pid at launch (it changes every run) and execs the
-# stdio MCP server against its live AX window. Falls back to the deterministic
-# Notes fixture when the app isn't running, so the server always comes up and
-# its tool surface is introspectable.
-#
-# Override the target app with VO_APP (default: Notes).
+# Prefer scripts/mcp-dunst.sh for new config. This shim maps VO_APP to the
+# canonical DUNST_MCP_APP contract and delegates.
 set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/mcp-notes.sh
+
+Compatibility wrapper for Notes-oriented local sessions.
+
+Environment:
+  VO_APP=Notes                  legacy target app name
+  DUNST_MCP_APP="Google Chrome" canonical target app name
+  DUNST_MCP_BIN=/path/to/dunst-mcp
+USAGE
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
 
 cd "$(dirname "$0")/.."
 
-APP="${VO_APP:-Notes}"
-BIN="target/debug/dunst-mcp"
+export DUNST_MCP_MODE="${DUNST_MCP_MODE:-live}"
+export DUNST_MCP_APP="${DUNST_MCP_APP:-${VO_APP:-Notes}}"
 
-# Build once if needed. Send cargo's chatter to stderr so stdout stays a clean
-# JSON-RPC channel for the MCP client.
-[[ -x "$BIN" ]] || cargo build -q -p dunst-mcp >&2
-
-PID="$(pgrep -x "$APP" | head -1 || true)"
-if [[ -n "$PID" ]]; then
-  exec "$BIN" serve --pid "$PID" --window 0   # live: window 0 -> AXMainWindow
-else
-  exec "$BIN" serve                           # fixture fallback
-fi
+exec scripts/mcp-dunst.sh

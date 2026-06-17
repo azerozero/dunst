@@ -45,7 +45,7 @@ pub fn map_role(ax_role: &str) -> Role {
 /// Synthesise a stable, human-readable, unique-within-graph ID for a node.
 ///
 /// Priority of the id *source* (D1):
-/// 1. A **developer-assigned** `ax_identifier` ([`is_stable_identifier`]) →
+/// 1. A **developer-assigned** `ax_identifier` (`is_stable_identifier`) →
 ///    `"{role_prefix}_{slug(ax_identifier)}"`. This makes the id stable *by
 ///    construction*: it survives a label/value change, so a rename surfaces as a
 ///    single `Changed{label}` instead of Remove+Add (see [`crate::audit`] G3).
@@ -137,7 +137,11 @@ fn slug(label: &str) -> String {
             pending_sep = true;
         }
     }
-    out.chars().take(40).collect::<String>().trim_matches('_').to_string()
+    out.chars()
+        .take(40)
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
 }
 
 /// Short, stable hex of a structural path (child-index chain from the root).
@@ -188,7 +192,13 @@ fn flatten(
     nodes: &mut BTreeMap<String, SceneNode>,
 ) -> String {
     let role = map_role(&node.ax_role);
-    let id = synth_id(role, node.label.as_deref(), node.ax_identifier.as_deref(), path, used);
+    let id = synth_id(
+        role,
+        node.label.as_deref(),
+        node.ax_identifier.as_deref(),
+        path,
+        used,
+    );
     // Reserve the ID before recursing so children see it for collision checks.
     used.insert(id.clone());
 

@@ -3,11 +3,11 @@
 use dunst_core::{Bbox, GraphDiff, NodeChange, SceneGraph, SceneNode};
 
 /// Structural diff `before -> after`, keyed by stable node ID:
-/// - IDs only in `after`  -> [`NodeChange::Added`](dunst_core::NodeChange::Added)
-/// - IDs only in `before` -> [`NodeChange::Removed`](dunst_core::NodeChange::Removed)
+/// - IDs only in `after`  -> [`NodeChange::Added`]
+/// - IDs only in `before` -> [`NodeChange::Removed`]
 /// - IDs in both with differing `label` / `value` / `enabled` / `bbox` /
 ///   `parent` / `children` -> one
-///   [`NodeChange::Changed`](dunst_core::NodeChange::Changed) per field (G2).
+///   [`NodeChange::Changed`] per field (G2).
 /// - a change to [`SceneGraph::roots`] -> one `Changed { id: "<graph>", field:
 ///   "roots" }` (G2).
 ///
@@ -69,7 +69,7 @@ pub fn diff(before: &SceneGraph, after: &SceneGraph) -> GraphDiff {
                 debug_assert!(
                     a.ax_identifier
                         .as_deref()
-                        .is_none_or(|id| !crate::scene::is_stable_identifier(id)),
+                        .map_or(true, |id| !crate::scene::is_stable_identifier(id)),
                     "identifier-backed node {} kept a label-unstable id; reconciliation should be unreachable",
                     a.id
                 );
@@ -116,17 +116,32 @@ fn collect_field_changes(id: &str, b: &SceneNode, a: &SceneNode, out: &mut Vec<N
         out.push(changed(id, "value", opt(&b.value), opt(&a.value)));
     }
     if b.enabled != a.enabled {
-        out.push(changed(id, "enabled", b.enabled.to_string(), a.enabled.to_string()));
+        out.push(changed(
+            id,
+            "enabled",
+            b.enabled.to_string(),
+            a.enabled.to_string(),
+        ));
     }
     if b.bbox != a.bbox {
-        out.push(changed(id, "bbox", format!("{:?}", b.bbox), format!("{:?}", a.bbox)));
+        out.push(changed(
+            id,
+            "bbox",
+            format!("{:?}", b.bbox),
+            format!("{:?}", a.bbox),
+        ));
     }
     if b.parent != a.parent {
         out.push(changed(id, "parent", opt(&b.parent), opt(&a.parent)));
     }
     if b.children != a.children {
         // Children IDs are already in document order -> deterministic encoding.
-        out.push(changed(id, "children", b.children.join(","), a.children.join(",")));
+        out.push(changed(
+            id,
+            "children",
+            b.children.join(","),
+            a.children.join(","),
+        ));
     }
 }
 

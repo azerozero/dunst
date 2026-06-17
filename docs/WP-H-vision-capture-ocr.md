@@ -1,3 +1,5 @@
+> **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
+
 # WP-H — P1a capture + OCR latency truth (owner: Codex / tmux %2)
 
 Work **only** in `crates/visualops-vision` — files `src/capture.rs`, `src/ocr.rs`,

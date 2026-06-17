@@ -23,7 +23,10 @@ fn pipeline(c: &mut Criterion) {
     // Capture once, outside the timed loop: replaying the fixture is not part of
     // the pure pipeline cost (and stands in for WP-C's AX capture).
     let perceptor = MockPerceptor::notes_fixture().expect("fixture loads");
-    let target = Target { pid: 1363, window_id: 105 };
+    let target = Target {
+        pid: 1363,
+        window_id: 105,
+    };
     let roots = perceptor.capture(&target).expect("capture");
     let window = perceptor.window_ref(&target).expect("window_ref");
     let engine = RiskEngine::new();

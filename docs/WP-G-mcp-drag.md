@@ -1,3 +1,5 @@
+> **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
+
 # WP-G — `visualops-mcp`: drag_element tool + fixes (owner: Claude / tmux %3)
 
 Work **only** in `crates/visualops-mcp`. Do **not** touch `visualops-core` /

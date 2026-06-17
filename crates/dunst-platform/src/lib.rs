@@ -58,6 +58,12 @@ pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
     macos::cursor_restore(x, y)
 }
 
+/// Whether the current process has macOS Accessibility permission.
+#[cfg(target_os = "macos")]
+pub fn accessibility_trusted() -> bool {
+    macos::accessibility_trusted()
+}
+
 /// Make `window_id`'s app **AppKit-active without raising it or switching Spaces**
 /// (SkyLight focus-without-raise, the recipe cua-driver ports from yabai). A
 /// backgrounded web canvas (e.g. a chart) only paints when its window is active,
@@ -67,6 +73,36 @@ pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
 #[cfg(target_os = "macos")]
 pub fn focus_without_raise(window_id: u32) -> bool {
     macos::focus_without_raise(window_id)
+}
+
+/// Move/resize a target window by writing its AXPosition/AXSize attributes.
+/// Coordinates are global macOS screen points. Passing `None` for width/height
+/// preserves that dimension.
+#[cfg(target_os = "macos")]
+pub fn set_window_frame(
+    pid: i32,
+    window_id: u32,
+    x: f64,
+    y: f64,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<()> {
+    macos::set_window_frame(pid, window_id, x, y, width, height)
+}
+
+/// Non-macOS stub.
+#[cfg(not(target_os = "macos"))]
+pub fn set_window_frame(
+    _pid: i32,
+    _window_id: u32,
+    _x: f64,
+    _y: f64,
+    _width: Option<f64>,
+    _height: Option<f64>,
+) -> Result<()> {
+    Err(dunst_core::VisualOpsError::Execution(
+        "set_window_frame requires a macOS backend".into(),
+    ))
 }
 
 /// Click a **backgrounded / occluded** window's (web) content at a screen point
@@ -90,9 +126,10 @@ pub fn click_web_background(
 /// Type `text` into the focused element of a **backgrounded** window's (web)
 /// content via SkyLight — trusted (auth-signed), no cursor, no foreground. The
 /// caller should first focus the field (e.g. a [`click_web_background`] on it).
-/// Returns `false` if SkyLight is unavailable.
+/// Fails if SkyLight is unavailable or any expected key event cannot be created
+/// and posted.
 #[cfg(target_os = "macos")]
-pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> bool {
+pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> Result<()> {
     macos::type_text_background(pid, window_id, text)
 }
 
@@ -100,10 +137,28 @@ pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> bool {
 /// bits: Shift 0x20000, Control 0x40000, Alternate 0x80000, Command 0x100000) to
 /// a **backgrounded** window's (web) content via the SkyLight auth-signed keyboard
 /// path — for scrolling (Page/Home/End), zoom (Cmd =/-/0), and hotkeys (Cmd+L,
-/// Cmd+T, …). `false` if SkyLight is unavailable.
+/// Cmd+T, …). Fails if SkyLight is unavailable or any expected key event cannot
+/// be created and posted.
 #[cfg(target_os = "macos")]
-pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) -> bool {
+pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) -> Result<()> {
     macos::key_web_background(pid, window_id, keycode, flags)
+}
+
+/// Hit-test the AX element under a global screen point and return a shallow raw
+/// snapshot. This is the AX-side primitive for region analysis by sampling a
+/// spaced grid of points; macOS does not expose a direct "subtree by rectangle"
+/// API.
+#[cfg(target_os = "macos")]
+pub fn element_at_point(pid: i32, x: f64, y: f64) -> Result<RawAxNode> {
+    macos::element_at_point(pid, x, y)
+}
+
+/// Non-macOS stub.
+#[cfg(not(target_os = "macos"))]
+pub fn element_at_point(_pid: i32, _x: f64, _y: f64) -> Result<RawAxNode> {
+    Err(dunst_core::VisualOpsError::Perception(
+        "element_at_point requires a macOS backend".into(),
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -128,21 +183,23 @@ mod macos {
 
     use accessibility_sys::{
         error_string, kAXChildrenAttribute, kAXDescriptionAttribute, kAXEnabledAttribute,
-        kAXErrorCannotComplete, kAXErrorInvalidUIElement, kAXErrorNoValue, kAXErrorSuccess,
-        kAXFocusedAttribute, kAXHelpAttribute, kAXIdentifierAttribute, kAXMainWindowAttribute,
-        kAXMenuBarAttribute, kAXPositionAttribute, kAXPressAction, kAXRaiseAction,
-        kAXRoleAttribute, kAXShowMenuAction, kAXSizeAttribute, kAXTitleAttribute,
-        kAXValueAttribute, kAXValueTypeAXError, kAXValueTypeCGPoint, kAXValueTypeCGRect,
-        kAXValueTypeCGSize, kAXWindowsAttribute, AXError, AXIsProcessTrusted,
-        AXUIElementCopyActionNames, AXUIElementCopyAttributeValue,
-        AXUIElementCopyMultipleAttributeValues, AXUIElementCreateApplication,
-        AXUIElementIsAttributeSettable, AXUIElementPerformAction, AXUIElementRef,
-        AXUIElementSetAttributeValue, AXValueGetType, AXValueGetValue, AXValueRef,
+        kAXErrorCannotComplete, kAXErrorIllegalArgument, kAXErrorInvalidUIElement, kAXErrorNoValue,
+        kAXErrorSuccess, kAXFocusedAttribute, kAXHelpAttribute, kAXIdentifierAttribute,
+        kAXMainWindowAttribute, kAXMaxValueAttribute, kAXMenuBarAttribute, kAXMinValueAttribute,
+        kAXParentAttribute, kAXPositionAttribute, kAXPressAction, kAXRaiseAction, kAXRoleAttribute,
+        kAXShowMenuAction, kAXSizeAttribute, kAXTitleAttribute, kAXValueAttribute,
+        kAXValueIncrementAttribute, kAXValueTypeAXError, kAXValueTypeCGPoint, kAXValueTypeCGRect,
+        kAXValueTypeCGSize, kAXVerticalScrollBarAttribute, kAXWindowsAttribute, AXError,
+        AXIsProcessTrusted, AXUIElementCopyActionNames, AXUIElementCopyAttributeValue,
+        AXUIElementCopyElementAtPosition, AXUIElementCopyMultipleAttributeValues,
+        AXUIElementCreateApplication, AXUIElementIsAttributeSettable, AXUIElementPerformAction,
+        AXUIElementRef, AXUIElementSetAttributeValue, AXValueGetType, AXValueGetValue, AXValueRef,
     };
     use core_foundation::{
         array::CFArray,
         base::{CFGetTypeID, CFRelease, CFType, CFTypeRef, TCFType},
         boolean::CFBoolean,
+        number::CFNumber,
         string::CFString,
     };
     use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
@@ -156,16 +213,16 @@ mod macos {
         event_source::{CGEventSource, CGEventSourceStateID},
         geometry::{CGPoint, CGRect, CGSize},
     };
+    use dunst_core::{
+        Bbox, RawAxNode, Result, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
+    };
     use foreign_types::ForeignType;
     use objc2::msg_send;
     use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
     use objc2_foundation::NSPoint;
-    use dunst_core::{
-        Bbox, RawAxNode, Result, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
-    };
 
-    const MAX_NODES: usize = 5_000;
-    const MAX_DEPTH: usize = 40;
+    const DEFAULT_MAX_NODES: usize = 5_000;
+    const DEFAULT_MAX_DEPTH: usize = 40;
     const AX_FRAME_ATTRIBUTE: &str = "AXFrame";
     const BATCH_ATTR_COUNT: usize = 12;
     const IDX_ROLE: usize = 0;
@@ -183,6 +240,7 @@ mod macos {
     const DRAG_STEPS: usize = 8;
     const DRAG_STEP_DELAY: Duration = Duration::from_millis(8);
     const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.0;
+    const DEFAULT_USER_IDLE_GUARD_MS: u64 = 300;
 
     thread_local! {
         static AX_CACHE: RefCell<HashMap<CacheKey, AxElement>> = RefCell::new(HashMap::new());
@@ -283,6 +341,14 @@ mod macos {
         fn _AXUIElementGetWindow(element: AXUIElementRef, window_id: *mut u32) -> AXError;
     }
 
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(
+            state_id: CGEventSourceStateID,
+            event_type: CGEventType,
+        ) -> f64;
+    }
+
     fn set_ax_timeout(element: AXUIElementRef) {
         if !element.is_null() {
             // SAFETY: `element` is a valid AXUIElementRef supplied by AX APIs
@@ -294,6 +360,79 @@ mod macos {
                 );
             }
         }
+    }
+
+    fn max_nodes() -> usize {
+        env_usize("DUNST_AX_MAX_NODES", DEFAULT_MAX_NODES).max(100)
+    }
+
+    fn max_depth() -> usize {
+        env_usize("DUNST_AX_MAX_DEPTH", DEFAULT_MAX_DEPTH).max(4)
+    }
+
+    fn env_usize(name: &str, default: usize) -> usize {
+        env::var(name)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(default)
+    }
+
+    fn env_u64(name: &str, default: u64) -> u64 {
+        env::var(name)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(default)
+    }
+
+    fn user_idle_guard_ms() -> u64 {
+        env_u64("DUNST_MCP_USER_IDLE_GUARD_MS", DEFAULT_USER_IDLE_GUARD_MS)
+    }
+
+    fn last_input_age_ms() -> Option<u64> {
+        // SAFETY: u32::MAX is the documented kCGAnyInputEventType pseudo-value.
+        // CGEventType is repr(u32), so the bit pattern matches CoreGraphics.
+        let any_input = unsafe { mem::transmute::<u32, CGEventType>(u32::MAX) };
+        // SAFETY: this CoreGraphics query has no pointer arguments or retained
+        // ownership; both enum values use documented constants.
+        let seconds = unsafe {
+            CGEventSourceSecondsSinceLastEventType(
+                CGEventSourceStateID::CombinedSessionState,
+                any_input,
+            )
+        };
+        if seconds.is_finite() && seconds >= 0.0 {
+            Some((seconds * 1_000.0).round() as u64)
+        } else {
+            None
+        }
+    }
+
+    fn user_idle_block_message(operation: &str) -> Option<String> {
+        let guard_ms = user_idle_guard_ms();
+        if guard_ms == 0 {
+            return None;
+        }
+        let age_ms = last_input_age_ms()?;
+        if age_ms >= guard_ms {
+            return None;
+        }
+        Some(format!(
+            "user-active guard blocked {operation}: last keyboard/mouse input was {age_ms} ms ago (< {guard_ms} ms). Retry after the operator is idle, or set DUNST_MCP_USER_IDLE_GUARD_MS=0 to disable this guard."
+        ))
+    }
+
+    fn ensure_user_idle(operation: &str) -> Result<()> {
+        if let Some(message) = user_idle_block_message(operation) {
+            return Err(VisualOpsError::Execution(message));
+        }
+        Ok(())
+    }
+
+    fn ensure_user_idle_action(operation: &str) -> std::result::Result<(), ActionFailure> {
+        if let Some(message) = user_idle_block_message(operation) {
+            return Err(ActionFailure::Execution(message));
+        }
+        Ok(())
     }
 
     pub fn capture(target: &Target) -> Result<Vec<RawAxNode>> {
@@ -322,7 +461,9 @@ mod macos {
         }
         if state.capped {
             eprintln!(
-                "dunst-platform: AX tree capped at {MAX_NODES} nodes / depth {MAX_DEPTH}"
+                "dunst-platform: AX tree capped at {} nodes / depth {}",
+                max_nodes(),
+                max_depth()
             );
         }
         Ok(roots)
@@ -338,6 +479,23 @@ mod macos {
             app_name: attr_string(&app, kAXTitleAttribute).unwrap_or_default(),
             title: attr_string(&window, kAXTitleAttribute).unwrap_or_default(),
         })
+    }
+
+    pub fn element_at_point(pid: i32, x: f64, y: f64) -> Result<RawAxNode> {
+        ensure_trusted()?;
+        let app = app_element(pid)?;
+        let mut raw: AXUIElementRef = ptr::null_mut();
+        // SAFETY: `app` is a valid AX application element; `raw` is a checked
+        // out-parameter that follows the copy rule on success.
+        let err =
+            unsafe { AXUIElementCopyElementAtPosition(app.as_ptr(), x as f32, y as f32, &mut raw) };
+        if err != kAXErrorSuccess || raw.is_null() {
+            return Err(VisualOpsError::Perception(format!(
+                "AX hit-test failed at ({x:.1},{y:.1}): {} ({err})",
+                error_string(err)
+            )));
+        }
+        Ok(shallow_raw_node(&AxElement::from_owned(raw)))
     }
 
     pub fn perform(
@@ -437,6 +595,10 @@ mod macos {
             }
             SemanticAction::Hover => hover(pid, node),
             SemanticAction::Drag => drag(pid, node, argument),
+            SemanticAction::Scroll => {
+                let element = require_ax_element(element)?;
+                scroll_element(element, argument)
+            }
             other => Err(ActionFailure::Execution(format!(
                 "semantic action {other:?} is not supported by macOS AX backend"
             ))),
@@ -450,11 +612,42 @@ mod macos {
             .ok_or_else(|| ActionFailure::Execution("action requires a resolved AX element".into()))
     }
 
-    fn ensure_trusted() -> Result<()> {
+    pub fn accessibility_trusted() -> bool {
         // SAFETY: AXIsProcessTrusted takes no pointers and returns a Boolean
         // process trust status.
-        let trusted = unsafe { AXIsProcessTrusted() };
-        if trusted {
+        unsafe { AXIsProcessTrusted() }
+    }
+
+    pub fn set_window_frame(
+        pid: i32,
+        window_id: u32,
+        x: f64,
+        y: f64,
+        width: Option<f64>,
+        height: Option<f64>,
+    ) -> Result<()> {
+        ensure_trusted()?;
+        let app = app_element(pid)?;
+        let window = resolve_window(&app, window_id)?;
+        let mut size = attr_cgsize(&window, kAXSizeAttribute).unwrap_or_else(|| {
+            CGSize::new(
+                width.unwrap_or(0.0).max(1.0),
+                height.unwrap_or(0.0).max(1.0),
+            )
+        });
+        if let Some(w) = width {
+            size.width = w.max(1.0);
+        }
+        if let Some(h) = height {
+            size.height = h.max(1.0);
+        }
+        set_cgsize_attr(&window, kAXSizeAttribute, size).map_err(VisualOpsError::from)?;
+        set_cgpoint_attr(&window, kAXPositionAttribute, CGPoint::new(x, y))
+            .map_err(VisualOpsError::from)
+    }
+
+    fn ensure_trusted() -> Result<()> {
+        if accessibility_trusted() {
             Ok(())
         } else {
             Err(VisualOpsError::Perception(
@@ -646,6 +839,22 @@ mod macos {
         }
     }
 
+    fn shallow_raw_node(element: &AxElement) -> RawAxNode {
+        let ax_role = attr_string(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
+        assemble_node(NodeFields {
+            ax_role,
+            value: attr_string(element, kAXValueAttribute),
+            title: attr_label_string(element, kAXTitleAttribute),
+            description: attr_label_string(element, kAXDescriptionAttribute),
+            help: attr_string(element, kAXHelpAttribute),
+            ax_identifier: attr_string(element, kAXIdentifierAttribute),
+            ax_actions: read_node_actions(element),
+            frame: frame(element),
+            enabled: attr_bool(element, kAXEnabledAttribute).unwrap_or(true),
+            focused: attr_bool(element, kAXFocusedAttribute).unwrap_or(false),
+        })
+    }
+
     fn static_text_value_label(ax_role: &str, value: &Option<String>) -> Option<String> {
         if ax_role == "AXStaticText" {
             value.clone().filter(|s| !s.is_empty())
@@ -737,14 +946,14 @@ mod macos {
         let mut node = assemble_node(fields);
         cache_element(target_key, &node, element);
 
-        if depth >= MAX_DEPTH || state.count >= MAX_NODES {
+        if depth >= max_depth() || state.count >= max_nodes() {
             state.capped = true;
             return Ok(node);
         }
 
         if let Some(children) = children {
             for child in ax_elements(&children) {
-                if state.count >= MAX_NODES {
+                if state.count >= max_nodes() {
                     state.capped = true;
                     break;
                 }
@@ -762,7 +971,7 @@ mod macos {
 
         while let Some((element, depth)) = stack.pop() {
             seen += 1;
-            if seen > MAX_NODES || depth > MAX_DEPTH {
+            if seen > max_nodes() || depth > max_depth() {
                 eprintln!("dunst-platform: live element search capped");
                 break;
             }
@@ -881,6 +1090,82 @@ mod macos {
         ax_action_result(err, "perform AX action")
     }
 
+    fn scroll_element(
+        element: &AxElement,
+        argument: Option<&str>,
+    ) -> std::result::Result<(), ActionFailure> {
+        let (direction, pages) = parse_scroll_argument(argument);
+        let scrollbar = find_vertical_scrollbar(element).ok_or_else(|| {
+            ActionFailure::Execution("element and ancestors expose no AXVerticalScrollBar".into())
+        })?;
+
+        let min = attr_number(&scrollbar, kAXMinValueAttribute).unwrap_or(0.0);
+        let max = attr_number(&scrollbar, kAXMaxValueAttribute).unwrap_or(1.0);
+        if max <= min {
+            return Err(ActionFailure::Execution(format!(
+                "invalid AX scrollbar range: min={min} max={max}"
+            )));
+        }
+
+        let current = attr_number(&scrollbar, kAXValueAttribute).unwrap_or(min);
+        let increment = attr_number(&scrollbar, kAXValueIncrementAttribute)
+            .filter(|v| *v > 0.0)
+            .unwrap_or((max - min) * 0.85);
+        let delta = increment * pages.clamp(1, 20) as f64;
+        let next = match direction {
+            "up" => current - delta,
+            "top" => min,
+            "bottom" => max,
+            _ => current + delta,
+        }
+        .clamp(min, max);
+
+        set_number_attr(&scrollbar, kAXValueAttribute, next)
+    }
+
+    fn parse_scroll_argument(argument: Option<&str>) -> (&str, usize) {
+        let Some(argument) = argument else {
+            return ("down", 1);
+        };
+        let mut parts = argument.splitn(2, ':');
+        let direction = match parts.next().unwrap_or("down") {
+            "up" => "up",
+            "top" => "top",
+            "bottom" => "bottom",
+            _ => "down",
+        };
+        let pages = parts
+            .next()
+            .and_then(|p| p.parse::<usize>().ok())
+            .unwrap_or(1);
+        (direction, pages)
+    }
+
+    fn find_vertical_scrollbar(element: &AxElement) -> Option<AxElement> {
+        if attr_string(element, kAXRoleAttribute).as_deref() == Some("AXScrollBar") {
+            return retain_ax_element(element);
+        }
+        if let Some(scrollbar) = attr_ax_element(element, kAXVerticalScrollBarAttribute) {
+            return Some(scrollbar);
+        }
+        let mut current = attr_ax_element(element, kAXParentAttribute);
+        for _ in 0..16 {
+            let element = current?;
+            if attr_string(&element, kAXRoleAttribute).as_deref() == Some("AXScrollBar") {
+                return Some(element);
+            }
+            if let Some(scrollbar) = attr_ax_element(&element, kAXVerticalScrollBarAttribute) {
+                return Some(scrollbar);
+            }
+            current = attr_ax_element(&element, kAXParentAttribute);
+        }
+        None
+    }
+
+    fn retain_ax_element(element: &AxElement) -> Option<AxElement> {
+        Some(element.retain_clone())
+    }
+
     fn set_bool_attr(
         element: &AxElement,
         attr: &str,
@@ -889,6 +1174,17 @@ mod macos {
         ax_action_result(
             set_bool_attr_raw(element, attr, value),
             "set AX bool attribute",
+        )
+    }
+
+    fn set_number_attr(
+        element: &AxElement,
+        attr: &str,
+        value: f64,
+    ) -> std::result::Result<(), ActionFailure> {
+        ax_action_result(
+            set_number_attr_raw(element, attr, value),
+            "set AX number attribute",
         )
     }
 
@@ -903,6 +1199,78 @@ mod macos {
                 attr.as_concrete_TypeRef(),
                 value.as_CFTypeRef(),
             )
+        }
+    }
+
+    fn set_number_attr_raw(element: &AxElement, attr: &str, value: f64) -> AXError {
+        let attr = CFString::new(attr);
+        let value = CFNumber::from(value);
+        // SAFETY: `element`, `attr`, and `value` are valid CF/AX objects for
+        // the duration of the call; AXError is returned to the caller.
+        unsafe {
+            AXUIElementSetAttributeValue(
+                element.as_ptr(),
+                attr.as_concrete_TypeRef(),
+                value.as_CFTypeRef(),
+            )
+        }
+    }
+
+    fn set_cgpoint_attr(
+        element: &AxElement,
+        attr: &str,
+        value: CGPoint,
+    ) -> std::result::Result<(), ActionFailure> {
+        ax_action_result(
+            set_axvalue_attr_raw(
+                element,
+                attr,
+                kAXValueTypeCGPoint,
+                (&value as *const CGPoint).cast(),
+            ),
+            "set AX point attribute",
+        )
+    }
+
+    fn set_cgsize_attr(
+        element: &AxElement,
+        attr: &str,
+        value: CGSize,
+    ) -> std::result::Result<(), ActionFailure> {
+        ax_action_result(
+            set_axvalue_attr_raw(
+                element,
+                attr,
+                kAXValueTypeCGSize,
+                (&value as *const CGSize).cast(),
+            ),
+            "set AX size attribute",
+        )
+    }
+
+    fn set_axvalue_attr_raw(
+        element: &AxElement,
+        attr: &str,
+        value_type: u32,
+        value: *const c_void,
+    ) -> AXError {
+        let attr = CFString::new(attr);
+        // SAFETY: `value` points to a stack CGPoint/CGSize that lives through
+        // AXValueCreate; the returned AXValueRef is null-checked and released.
+        let ax_value = unsafe { accessibility_sys::AXValueCreate(value_type, value) };
+        if ax_value.is_null() {
+            return kAXErrorIllegalArgument;
+        }
+        // SAFETY: `element`, `attr`, and `ax_value` are valid CF/AX objects for
+        // the duration of the call; the AXValue create-rule retain is balanced.
+        unsafe {
+            let err = AXUIElementSetAttributeValue(
+                element.as_ptr(),
+                attr.as_concrete_TypeRef(),
+                ax_value.cast(),
+            );
+            CFRelease(ax_value.cast());
+            err
         }
     }
 
@@ -937,12 +1305,29 @@ mod macos {
         text: &str,
     ) -> std::result::Result<(), ActionFailure> {
         if attr_settable(element, kAXValueAttribute) {
+            let before = attr_string(element, kAXValueAttribute);
             let err = set_string_attr_raw(element, kAXValueAttribute, text);
             if err == kAXErrorSuccess {
-                match attr_string(element, kAXValueAttribute) {
-                    Some(value) if value != text => {}
-                    _ => return Ok(()),
+                for attempt in 0..5 {
+                    match attr_string(element, kAXValueAttribute) {
+                        Some(value) if value == text => return Ok(()),
+                        Some(value) if before.as_deref() != Some(value.as_str()) => {
+                            // Some web controls clamp, normalise, or async-commit values
+                            // after AX reports success. Treat any observed mutation as the
+                            // completed replacement: the keyboard fallback appends text and
+                            // corrupts max-length fields.
+                            return Ok(());
+                        }
+                        Some(_) => {}
+                        None => return Ok(()),
+                    }
+                    if attempt < 4 {
+                        std::thread::sleep(std::time::Duration::from_millis(40));
+                    }
                 }
+                return Err(ActionFailure::Execution(
+                    "AX set-value reported success but the field did not change; keyboard fallback suppressed to avoid appending text".into(),
+                ));
             } else if is_stale_ax_error(err) {
                 return Err(ActionFailure::Ax {
                     operation: "set AX string attribute",
@@ -972,6 +1357,7 @@ mod macos {
     }
 
     fn post_unicode_text(pid: i32, text: &str) -> std::result::Result<(), ActionFailure> {
+        ensure_user_idle_action("type_into key fallback")?;
         let source = event_source("create keyboard CGEventSource")?;
         for ch in text.chars() {
             let s = ch.to_string();
@@ -991,6 +1377,7 @@ mod macos {
     }
 
     fn hover(pid: i32, node: &SceneNode) -> std::result::Result<(), ActionFailure> {
+        ensure_user_idle_action("hover")?;
         let Some(bbox) = node.bbox else {
             return Ok(());
         };
@@ -1017,6 +1404,7 @@ mod macos {
         node: &SceneNode,
         argument: Option<&str>,
     ) -> std::result::Result<(), ActionFailure> {
+        ensure_user_idle_action("drag")?;
         let start_bbox = node
             .bbox
             .ok_or_else(|| ActionFailure::Execution("Drag requires a source bbox".into()))?;
@@ -1079,6 +1467,7 @@ mod macos {
     }
 
     fn click_at_point_impl(pid: i32, x: f64, y: f64) -> std::result::Result<(), ActionFailure> {
+        ensure_user_idle_action("click_at")?;
         let point = clamp_point_to_bounds(CGPoint::new(x, y), all_displays_bounds());
         let source = event_source("create click CGEventSource")?;
         let saved_cursor = current_cursor_position(&source)?;
@@ -1103,6 +1492,7 @@ mod macos {
     }
 
     fn hover_at_point_impl(_pid: i32, x: f64, y: f64) -> std::result::Result<(), ActionFailure> {
+        ensure_user_idle_action("hover_at")?;
         // A web/canvas hover (a chart crosshair, value-at-cursor) reads the REAL
         // cursor position, so a background `post_to_pid` move never triggers it.
         // Warp the cursor to the point and post a GLOBAL (HID) MouseMoved so the
@@ -1114,8 +1504,9 @@ mod macos {
         CGDisplay::warp_mouse_cursor_position(point)
             .map_err(|err| ActionFailure::Execution(format!("warp cursor for hover: {err:?}")))?;
         let source = event_source("create hover CGEventSource")?;
-        let event = CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
-            .map_err(|err| ActionFailure::Execution(format!("create hover CGEvent: {err:?}")))?;
+        let event =
+            CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
+                .map_err(|err| ActionFailure::Execution(format!("create hover CGEvent: {err:?}")))?;
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -1125,6 +1516,7 @@ mod macos {
     }
 
     fn cursor_borrow_to_impl(x: f64, y: f64) -> std::result::Result<(f64, f64), ActionFailure> {
+        ensure_user_idle_action("read_at cursor borrow")?;
         let source = event_source("create borrow CGEventSource")?;
         let saved = current_cursor_position(&source)?;
         let point = clamp_point_to_bounds(CGPoint::new(x, y), all_displays_bounds());
@@ -1315,11 +1707,13 @@ mod macos {
         /// Post a CGEvent (raw `CGEventRef`) to `pid` via SkyLight, reaching a
         /// backgrounded window's (web) content. Mouse events carry NO auth message
         /// (per cua-driver: it diverts them off the IOHID pipeline Chromium reads).
-        pub fn post_event_to_pid(pid: i32, event: *const c_void) {
-            if let Some(f) = post_fn() {
-                // SAFETY: `f` is SLEventPostToPid; `event` is a live CGEventRef.
-                unsafe { f(pid, event) };
-            }
+        pub fn post_event_to_pid(pid: i32, event: *const c_void) -> bool {
+            let Some(f) = post_fn() else {
+                return false;
+            };
+            // SAFETY: `f` is SLEventPostToPid; `event` is a live CGEventRef.
+            unsafe { f(pid, event) };
+            true
         }
 
         #[repr(C)]
@@ -1430,7 +1824,11 @@ mod macos {
     /// Build a CGEvent through the **NSEvent bridge** so it carries the
     /// `windowNumber` routing Chromium's user-activation gate latches onto (the
     /// plain CGEvent path is dropped). Returns a +1-owned CGEvent.
-    fn cg_event_via_nsevent(etype: CGEventType, click_count: isize, window_id: u32) -> Option<CGEvent> {
+    fn cg_event_via_nsevent(
+        etype: CGEventType,
+        click_count: isize,
+        window_id: u32,
+    ) -> Option<CGEvent> {
         let ns_type = match etype {
             CGEventType::LeftMouseDown => NSEventType::LeftMouseDown,
             CGEventType::LeftMouseUp => NSEventType::LeftMouseUp,
@@ -1495,6 +1893,9 @@ mod macos {
         if window_id == 0 || !skylight::mouse_post_available() {
             return false;
         }
+        if user_idle_block_message("background click").is_some() {
+            return false;
+        }
         focus_without_raise(window_id);
         thread::sleep(Duration::from_millis(50));
 
@@ -1524,42 +1925,62 @@ mod macos {
         };
         let post = |ev: &CGEvent| skylight::post_event_to_pid(pid, ev.as_ptr().cast());
 
-        if let Some(m) = make(CGEventType::MouseMoved, screen, local) {
-            post(&m);
+        let Some(m) = make(CGEventType::MouseMoved, screen, local) else {
+            return false;
+        };
+        if !post(&m) {
+            return false;
         }
         thread::sleep(Duration::from_millis(15));
-        if let Some(d) = make(CGEventType::LeftMouseDown, off, off) {
-            post(&d);
+
+        let Some(d) = make(CGEventType::LeftMouseDown, off, off) else {
+            return false;
+        };
+        if !post(&d) {
+            return false;
         }
         thread::sleep(Duration::from_millis(1));
-        if let Some(u) = make(CGEventType::LeftMouseUp, off, off) {
-            post(&u);
+
+        let Some(u) = make(CGEventType::LeftMouseUp, off, off) else {
+            return false;
+        };
+        if !post(&u) {
+            return false;
         }
         thread::sleep(Duration::from_millis(100));
+
         let (down_t, up_t) = if button == 1 {
             (CGEventType::RightMouseDown, CGEventType::RightMouseUp)
         } else {
             (CGEventType::LeftMouseDown, CGEventType::LeftMouseUp)
         };
-        if let Some(d) = make(down_t, screen, local) {
-            post(&d);
+        let Some(d) = make(down_t, screen, local) else {
+            return false;
+        };
+        if !post(&d) {
+            return false;
         }
         thread::sleep(Duration::from_millis(1));
-        if let Some(u) = make(up_t, screen, local) {
-            post(&u);
-        }
-        true
+
+        let Some(u) = make(up_t, screen, local) else {
+            return false;
+        };
+        post(&u)
     }
 
     /// Type `text` into the focused element of a backgrounded window's (web)
     /// content via SkyLight: focus-without-raise, then per character a key
     /// down/up whose CGEvent carries the typed unicode + the
     /// `SLSEventAuthenticationMessage` Chromium requires, posted via
-    /// `SLEventPostToPid`. No cursor, no foreground. False if SkyLight is absent.
-    pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> bool {
+    /// `SLEventPostToPid`. No cursor, no foreground. Fails if SkyLight is absent
+    /// or if any expected key event cannot be created and posted.
+    pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> Result<()> {
         if !skylight::mouse_post_available() {
-            return false;
+            return Err(VisualOpsError::Execution(
+                "type_keys requires the SkyLight backend".into(),
+            ));
         }
+        ensure_user_idle("type_keys")?;
         if window_id != 0 {
             focus_without_raise(window_id);
             thread::sleep(Duration::from_millis(50));
@@ -1567,50 +1988,57 @@ mod macos {
         for ch in text.chars() {
             let s = ch.to_string();
             for down in [true, false] {
-                let Ok(source) = event_source("skylight key CGEventSource") else {
-                    continue;
-                };
-                let Ok(event) = CGEvent::new_keyboard_event(source, 0, down) else {
-                    continue;
-                };
+                let source = event_source("skylight key CGEventSource")?;
+                let event = CGEvent::new_keyboard_event(source, 0, down).map_err(|err| {
+                    VisualOpsError::Execution(format!("create background key CGEvent: {err:?}"))
+                })?;
                 event.set_string(&s);
                 event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, pid as i64);
                 skylight::attach_auth_message(event.as_ptr().cast(), pid);
-                skylight::post_event_to_pid(pid, event.as_ptr().cast());
+                if !skylight::post_event_to_pid(pid, event.as_ptr().cast()) {
+                    return Err(VisualOpsError::Execution(
+                        "post background key CGEvent via SkyLight".into(),
+                    ));
+                }
             }
             thread::sleep(Duration::from_millis(8));
         }
-        true
+        Ok(())
     }
 
     /// Post a single named keycode (down+up) to a backgrounded window's (web)
     /// content via the SkyLight auth-signed keyboard path — used for scrolling
-    /// (Page Down/Up, Home, End) and other non-character keys. False if SkyLight
-    /// is absent.
-    pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) -> bool {
+    /// (Page Down/Up, Home, End) and other non-character keys. Fails if SkyLight
+    /// is absent or if either key event cannot be created and posted.
+    pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) -> Result<()> {
         if !skylight::mouse_post_available() {
-            return false;
+            return Err(VisualOpsError::Execution(
+                "key_web_background requires the SkyLight backend".into(),
+            ));
         }
+        ensure_user_idle("background key")?;
         if window_id != 0 {
             focus_without_raise(window_id);
             thread::sleep(Duration::from_millis(40));
         }
         let mods = CGEventFlags::from_bits_truncate(flags);
         for down in [true, false] {
-            let Ok(source) = event_source("skylight key CGEventSource") else {
-                continue;
-            };
-            let Ok(event) = CGEvent::new_keyboard_event(source, keycode, down) else {
-                continue;
-            };
+            let source = event_source("skylight key CGEventSource")?;
+            let event = CGEvent::new_keyboard_event(source, keycode, down).map_err(|err| {
+                VisualOpsError::Execution(format!("create background key CGEvent: {err:?}"))
+            })?;
             if !mods.is_empty() {
                 event.set_flags(mods);
             }
             event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, pid as i64);
             skylight::attach_auth_message(event.as_ptr().cast(), pid);
-            skylight::post_event_to_pid(pid, event.as_ptr().cast());
+            if !skylight::post_event_to_pid(pid, event.as_ptr().cast()) {
+                return Err(VisualOpsError::Execution(
+                    "post background key CGEvent via SkyLight".into(),
+                ));
+            }
         }
-        true
+        Ok(())
     }
 
     pub fn press_key(pid: i32, key: &str) -> Result<()> {
@@ -1618,6 +2046,7 @@ mod macos {
     }
 
     fn press_key_impl(pid: i32, key: &str) -> std::result::Result<(), ActionFailure> {
+        ensure_user_idle_action("press_key")?;
         let keycode = named_keycode(key)?;
         let source = event_source("create keyboard CGEventSource")?;
         post_keycode(source, pid, keycode)
@@ -1761,6 +2190,18 @@ mod macos {
     fn attr_bool(element: &AxElement, attr: &str) -> Option<bool> {
         let value = attr_value(element, attr)?;
         cf_bool(value.as_CFTypeRef())
+    }
+
+    fn attr_number(element: &AxElement, attr: &str) -> Option<f64> {
+        let value = attr_value(element, attr)?;
+        // SAFETY: `value` is a valid CF object owned by `attr_value`.
+        let value_type = unsafe { CFGetTypeID(value.as_CFTypeRef()) };
+        if value_type != CFNumber::type_id() {
+            return None;
+        }
+        // SAFETY: the CFTypeID check above proves this object is a CFNumber.
+        let number = unsafe { CFNumber::wrap_under_get_rule(value.as_CFTypeRef() as _) };
+        number.to_f64()
     }
 
     fn attr_array(element: &AxElement, attr: &str) -> Option<CFArray> {

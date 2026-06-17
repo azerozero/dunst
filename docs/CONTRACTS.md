@@ -2,19 +2,22 @@
 
 Factual list of the behavioural guarantees the POC must keep. Each is locked by a
 named test; if you change the behaviour, update the contract **and** the test in
-the same change. Crates: `visualops-core`, `-graph`, `-mcp`, `-vision`.
+the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
 
 ## Risk gate
 
-- **The gate is never bypassed.** A high-risk action returns `PendingApproval` and
-  the executor is **never** invoked on that path.
+- **The gate is never bypassed for mutating actions.** A high-risk mutating action
+  returns `PendingApproval` and the executor/platform write path is **never**
+  invoked on that path.
   — `engine::tests::high_risk_click_is_gated_then_approved`,
-  `find_element_and_gating_still_reach_latent_nodes`.
+  `find_element_and_gating_still_reach_latent_nodes`,
+  `engine::tests::raw_input_gate_requires_pending_synthetic_approval`.
 - **Approvals are validated, not blindly stored.** `approve(id)` errors unless `id`
-  exists in the scene **and** is genuinely gated — either its own risk
-  `requires_approval`, or it is the subject of a pending contextual gate. A phantom
-  id or a plain low-risk id is rejected.
-  — `engine::tests::approve_rejects_unknown_and_non_gated_ids`.
+  is genuinely gated: either it exists in the scene and its own risk requires
+  approval, or it is the subject of a pending contextual/raw gate. A phantom id or
+  a plain low-risk id is rejected.
+  — `engine::tests::approve_rejects_unknown_and_non_gated_ids`,
+  `engine::tests::raw_input_gate_requires_pending_synthetic_approval`.
 - **Approvals are one-shot.** A grant authorises exactly one successful action; a
   second high-risk action on the same id re-gates.
   — `engine::tests::approval_is_one_shot_consumed_by_act`.
@@ -27,6 +30,16 @@ the same change. Crates: `visualops-core`, `-graph`, `-mcp`, `-vision`.
 - **Composite type risk.** `type_into` gates on `max(risk(field), risk(typed
   text))`: a destructive payload gates an otherwise low-risk field.
   — `engine::tests::destructive_typed_text_gates_low_risk_field_and_is_approvable`.
+- **Raw mutating input risk.** Raw coordinate/key tools that can mutate UI state
+  are high-risk because they are not bound to a scene element. The first call
+  records `PendingApproval` and does not execute the platform input path; approval
+  is one-shot for the synthetic raw target id.
+  — `engine::tests::raw_input_gate_requires_pending_synthetic_approval`.
+- **Approval transport boundary.** `approve` is an operator-side interlock, not a
+  default agent affordance. The MCP server does not advertise or execute the
+  `approve` tool unless `DUNST_MCP_ENABLE_APPROVE_TOOL=1` is set for a controlled
+  local session.
+  — `serve::tests::approve_tool_is_disabled_by_default`.
 - **Every attempt is audited.** Exactly one `AuditEntry` is appended per attempted
   action (gated or executed).
   — `engine::tests::every_attempt_is_audited`.
@@ -49,7 +62,7 @@ the same change. Crates: `visualops-core`, `-graph`, `-mcp`, `-vision`.
   keys / compact `role` never drift from the JSON encoding).
   — `core::types::role_tests::as_str_matches_serde_rename`.
 
-## Coordinate transforms (`visualops-vision::coords`, pure / cross-platform)
+## Coordinate transforms (`dunst-vision::coords`, pure / cross-platform)
 
 - **Round-trip identity.** `vision_norm_to_screen_pt` and `screen_pt_to_vision_norm`
   are exact inverses (modulo f64 epsilon), both directions.
@@ -66,6 +79,6 @@ the same change. Crates: `visualops-core`, `-graph`, `-mcp`, `-vision`.
 
 - **Risk monotone in uncertainty (§10.7) is documented intent, not a guarantee.**
   The POC is AX-only (`OcrBox.confidence ≈ 1.0`) and `RiskEngine` does not read
-  `confidence`. See the `TODO P1` on `visualops-vision::OcrBox`.
+  `confidence`. See the `TODO P1` on `dunst-vision::OcrBox`.
 - **`_NS:` stable-id policy is a deliberate WP-D deviation** (`scene::is_appkit_auto`
   excludes AppKit auto identifiers from synth ids) — not a bug; do not "fix".

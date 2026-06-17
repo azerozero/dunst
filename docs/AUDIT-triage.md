@@ -1,3 +1,5 @@
+> **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
+
 # Audit cycle — triage & decisions (2026-06-09)
 
 Distributed `cli-cycle`: Claude audited the 4 pure crates (`docs/AUDIT-cycle.md`),

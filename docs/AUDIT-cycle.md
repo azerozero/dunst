@@ -1,3 +1,5 @@
+> **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
+
 # Cycle — VisualOps MCP / audit des 4 crates pures
 
 > Audit STRICT (lecture seule). Aucune correction, aucun `git`.

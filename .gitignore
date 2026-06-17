@@ -1,5 +1,10 @@
 /target
 **/*.rs.bk
 .DS_Store
+.obsidian/
+.claude/
+.codex/
+AGENTS.md
+/100
 *.trace
 /traces

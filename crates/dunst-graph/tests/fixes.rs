@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 
 use dunst_core::mock::MockPerceptor;
 use dunst_core::{
-    NodeChange, Perceptor, RawAxNode, RiskLevel, Role, SceneGraph, SemanticAction, Target, WindowRef,
+    NodeChange, Perceptor, RawAxNode, RiskLevel, Role, SceneGraph, SemanticAction, Target,
+    WindowRef,
 };
 use dunst_graph::scene::synth_id;
 use dunst_graph::{build_scene_graph, derive_affordances, diff, RiskEngine};
@@ -29,7 +30,10 @@ fn raw(role: &str, label: Option<&str>, children: Vec<RawAxNode>) -> RawAxNode {
 
 fn fixture_graph() -> SceneGraph {
     let perceptor = MockPerceptor::notes_fixture().expect("fixture loads");
-    let target = Target { pid: 1363, window_id: 105 };
+    let target = Target {
+        pid: 1363,
+        window_id: 105,
+    };
     let roots = perceptor.capture(&target).expect("capture");
     let window = perceptor.window_ref(&target).expect("window_ref");
     build_scene_graph(roots, window, 1_000)
@@ -109,8 +113,16 @@ fn risk_high_on_decomposed_accents() {
     }
 
     // NFC and NFD inputs assess identically.
-    let nfc = build_scene_graph(vec![raw("AXMenuItem", Some("Éteindre"), vec![])], WindowRef::default(), 0);
-    let nfd = build_scene_graph(vec![raw("AXMenuItem", Some("E\u{301}teindre"), vec![])], WindowRef::default(), 0);
+    let nfc = build_scene_graph(
+        vec![raw("AXMenuItem", Some("Éteindre"), vec![])],
+        WindowRef::default(),
+        0,
+    );
+    let nfd = build_scene_graph(
+        vec![raw("AXMenuItem", Some("E\u{301}teindre"), vec![])],
+        WindowRef::default(),
+        0,
+    );
     let nfc_level = engine.assess(nfc.nodes.values().next().unwrap()).level;
     let nfd_level = engine.assess(nfd.nodes.values().next().unwrap()).level;
     assert_eq!(nfc_level, nfd_level);
@@ -150,13 +162,30 @@ fn cell_drag_targets_include_sibling_rows() {
     let tb = affordances.affordances.get(&cell_b.id).unwrap();
 
     // Each cell targets the *other* row (its sibling), never its own row.
-    assert!(ta.drag_targets.contains(&row_b), "Alpha -> sibling row B: {:?}", ta.drag_targets);
-    assert!(!ta.drag_targets.contains(&row_a), "Alpha must not target its own row");
-    assert!(ta.drag_targets.contains(&table_id), "Alpha -> ancestor table");
+    assert!(
+        ta.drag_targets.contains(&row_b),
+        "Alpha -> sibling row B: {:?}",
+        ta.drag_targets
+    );
+    assert!(
+        !ta.drag_targets.contains(&row_a),
+        "Alpha must not target its own row"
+    );
+    assert!(
+        ta.drag_targets.contains(&table_id),
+        "Alpha -> ancestor table"
+    );
     assert!(ta.actions.contains(&SemanticAction::Drag));
 
-    assert!(tb.drag_targets.contains(&row_a), "Beta -> sibling row A: {:?}", tb.drag_targets);
-    assert!(!tb.drag_targets.contains(&row_b), "Beta must not target its own row");
+    assert!(
+        tb.drag_targets.contains(&row_a),
+        "Beta -> sibling row A: {:?}",
+        tb.drag_targets
+    );
+    assert!(
+        !tb.drag_targets.contains(&row_b),
+        "Beta must not target its own row"
+    );
     assert!(tb.actions.contains(&SemanticAction::Drag));
 
     // No duplicate targets (G6 dedup).
@@ -194,7 +223,11 @@ fn diff_reports_children_change() {
         .clone();
 
     let mut g2 = g1.clone();
-    g2.nodes.get_mut(&toolbar_id).unwrap().children.push("phantom".into());
+    g2.nodes
+        .get_mut(&toolbar_id)
+        .unwrap()
+        .children
+        .push("phantom".into());
 
     let d = diff(&g1, &g2);
     assert_eq!(d.changes.len(), 1, "{:?}", d.changes);
@@ -262,7 +295,9 @@ fn diff_reconciles_label_rename_as_changed() {
         .collect();
     assert_eq!(label_changes.len(), 1, "{:?}", d.changes);
     match label_changes[0] {
-        NodeChange::Changed { id, before, after, .. } => {
+        NodeChange::Changed {
+            id, before, after, ..
+        } => {
             assert_eq!(id, new_id);
             assert_eq!(before, "Nouvelle note");
             assert_eq!(after, "Note renommée");

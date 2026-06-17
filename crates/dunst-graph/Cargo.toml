@@ -3,6 +3,12 @@ name = "dunst-graph"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Scene graph, affordance graph, and risk derivation for dunst-mcp"
+publish = false
 
 [dependencies]
 dunst-core = { workspace = true }

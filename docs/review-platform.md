@@ -1,3 +1,5 @@
+> **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
+
 # Review — `crates/visualops-platform` (backend macOS AX)
 
 Revue **lecture seule** du backend FFI macOS (`src/lib.rs` module `macos`,

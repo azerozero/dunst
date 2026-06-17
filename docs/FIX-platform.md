@@ -1,3 +1,5 @@
+> **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
+
 # FIX round 2 — `visualops-platform` (owner: Codex / tmux 8)
 
 Triaged from `docs/review-platform.md` (Claude), `cli-audit-code`, `cli-forge-perf`.

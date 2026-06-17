@@ -1,6 +1,15 @@
 //! Core Graphics one-shot window capture (owner: Codex, P1a).
 
-use std::{collections::HashSet, ffi::c_void, fmt, sync::Arc};
+use std::{
+    collections::HashSet,
+    ffi::c_void,
+    fmt,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use core_foundation::{
     base::TCFType,
@@ -24,6 +33,22 @@ use core_graphics::{
 };
 
 use crate::CaptureGeometry;
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_png_path(prefix: &str) -> PathBuf {
+    let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "{prefix}_{}_{}_{}.png",
+        std::process::id(),
+        nanos,
+        n
+    ))
+}
 
 #[derive(Debug)]
 pub enum CaptureError {
@@ -69,18 +94,30 @@ pub fn capture_window(window_id: u32) -> Result<CapturedWindow, CaptureError> {
 pub fn capture_screen_rect(x: f64, y: f64, w: f64, h: f64) -> Result<CapturedWindow, CaptureError> {
     let display = display_containing(x + w / 2.0, y + h / 2.0);
     let db = display.bounds();
-    // CGDisplayCreateImageForRect takes the rect in the display's LOCAL space
-    // (origin at that display's top-left), so a global point on a secondary
-    // monitor must be shifted by the display origin — otherwise it lands
-    // off-screen and the capture is empty. The geometry stays in GLOBAL points
-    // so OCR boxes map straight back to screen coordinates.
+    // CGDisplayCreateImageForRect is inconsistent across display/backing setups:
+    // some paths want display-local coordinates, others global desktop coordinates.
+    // Try both first because it is cheap, then fall back to screencapture -R which
+    // is slower but matches the visible composited screen and works on secondary displays.
     let local = CGRect::new(
         &CGPoint::new(x - db.origin.x, y - db.origin.y),
         &CGSize::new(w, h),
     );
-    let image = display
-        .image_for_rect(local)
-        .ok_or(CaptureError::CoreGraphicsImage(0))?;
+    let image = display.image_for_rect(local).or_else(|| {
+        display.image_for_rect(CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)))
+    });
+    if let Some(image) = image {
+        return Ok(captured_from_rect_image(image, x, y, w, h));
+    }
+    capture_screen_rect_via_screencapture(x, y, w, h)
+}
+
+fn captured_from_rect_image(
+    image: core_graphics::image::CGImage,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> CapturedWindow {
     let image_size_px = (image.width() as f64, image.height() as f64);
     let backing_scale = if w > 0.0 && h > 0.0 {
         ((image_size_px.0 / w) + (image_size_px.1 / h)) / 2.0
@@ -88,10 +125,72 @@ pub fn capture_screen_rect(x: f64, y: f64, w: f64, h: f64) -> Result<CapturedWin
         1.0
     };
     let global = CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h));
-    Ok(CapturedWindow {
+    CapturedWindow {
         image,
         geometry: geometry_from_rect(global, image_size_px, backing_scale),
-    })
+    }
+}
+
+fn capture_screen_rect_via_screencapture(
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> Result<CapturedWindow, CaptureError> {
+    let path = unique_png_path("dunst_rect");
+    let rect = format!(
+        "{},{},{},{}",
+        x.round() as i64,
+        y.round() as i64,
+        w.ceil().max(1.0) as i64,
+        h.ceil().max(1.0) as i64
+    );
+    let ok = std::process::Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-R", &rect])
+        .arg(&path)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        return Err(CaptureError::CoreGraphicsImage(0));
+    }
+    let image = load_png_cg(&path.to_string_lossy());
+    let _ = std::fs::remove_file(&path);
+    let image = image.ok_or(CaptureError::CoreGraphicsImage(0))?;
+    Ok(captured_from_rect_image(image, x, y, w, h))
+}
+
+/// Sample a spaced luminance grid from a captured image. This is intended for
+/// cheap visual-change detection: it avoids retaining all colour channels and
+/// compares only `columns * rows` cells.
+pub fn sample_luma_signature(
+    captured: &CapturedWindow,
+    columns: usize,
+    rows: usize,
+) -> Option<Vec<u8>> {
+    let image = &captured.image;
+    let src_w = image.width();
+    let src_h = image.height();
+    if src_w == 0 || src_h == 0 || columns == 0 || rows == 0 {
+        return None;
+    }
+    let bpp = (image.bits_per_pixel() / 8).max(1);
+    let bpr = image.bytes_per_row();
+    let bytes = image.data();
+    let raw = bytes.bytes();
+    if raw.is_empty() || bpr == 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(columns * rows);
+    for row in 0..rows {
+        let y = (((row as f64 + 0.5) * src_h as f64 / rows as f64).floor() as usize).min(src_h - 1);
+        for col in 0..columns {
+            let x = (((col as f64 + 0.5) * src_w as f64 / columns as f64).floor() as usize)
+                .min(src_w - 1);
+            out.push(sample_luma(raw, bpr, bpp, x, y));
+        }
+    }
+    Some(out)
 }
 
 /// Capture a window **composited** (via `screencapture -l<window_id>`), which —
@@ -100,7 +199,7 @@ pub fn capture_screen_rect(x: f64, y: f64, w: f64, h: f64) -> Result<CapturedWin
 /// the same [`CapturedWindow`] shape (geometry from the window bounds).
 pub fn capture_window_composited(window_id: u32) -> Result<CapturedWindow, CaptureError> {
     let bounds = cg_window_bounds(window_id)?;
-    let path = format!("/tmp/dunst_win_{window_id}_{}.png", std::process::id());
+    let path = unique_png_path(&format!("dunst_win_{window_id}"));
     let ok = std::process::Command::new("/usr/sbin/screencapture")
         .args(["-x", "-o", &format!("-l{window_id}")])
         .arg(&path)
@@ -110,7 +209,7 @@ pub fn capture_window_composited(window_id: u32) -> Result<CapturedWindow, Captu
     if !ok {
         return Err(CaptureError::CoreGraphicsImage(window_id));
     }
-    let image = load_png_cg(&path);
+    let image = load_png_cg(&path.to_string_lossy());
     let _ = std::fs::remove_file(&path);
     let image = image.ok_or(CaptureError::CoreGraphicsImage(window_id))?;
     let image_size_px = (image.width() as f64, image.height() as f64);
@@ -163,6 +262,24 @@ pub struct WindowInfo {
     pub w: f64,
     pub h: f64,
     pub on_screen: bool,
+}
+
+/// One active display in macOS global screen-point coordinates.
+///
+/// `index` is Dunst's stable 1-based display number for operators: the main
+/// display first, then the remaining displays sorted by their global origin.
+#[derive(Debug, Clone)]
+pub struct DisplayInfo {
+    pub index: usize,
+    pub display_id: u32,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub pixels_wide: u64,
+    pub pixels_high: u64,
+    pub scale: f64,
+    pub is_main: bool,
 }
 
 /// The screen bounds `(x, y, w, h)` of a window by id — for mapping a screen
@@ -228,6 +345,66 @@ pub fn list_windows() -> Vec<WindowInfo> {
         .collect()
 }
 
+/// List active displays with bounds in global screen points and native pixels.
+pub fn list_displays() -> Vec<DisplayInfo> {
+    let mut ids = CGDisplay::active_displays().unwrap_or_else(|_| vec![CGDisplay::main().id]);
+    if ids.is_empty() {
+        ids.push(CGDisplay::main().id);
+    }
+    let main_id = CGDisplay::main().id;
+    let mut displays: Vec<(u32, CGDisplay)> =
+        ids.into_iter().map(|id| (id, CGDisplay::new(id))).collect();
+    displays.sort_by(|(a_id, a), (b_id, b)| {
+        let a_main = *a_id == main_id;
+        let b_main = *b_id == main_id;
+        b_main
+            .cmp(&a_main)
+            .then_with(|| a.bounds().origin.x.total_cmp(&b.bounds().origin.x))
+            .then_with(|| a.bounds().origin.y.total_cmp(&b.bounds().origin.y))
+            .then_with(|| a_id.cmp(b_id))
+    });
+    displays
+        .into_iter()
+        .enumerate()
+        .map(|(offset, (display_id, display))| display_info(offset + 1, display_id, display))
+        .filter(valid_display_info)
+        .enumerate()
+        .map(|(offset, mut display)| {
+            display.index = offset + 1;
+            display
+        })
+        .collect()
+}
+
+/// Pick the display that owns the largest area of `rect`. If a window straddles
+/// displays, this reflects where most of the window is visible.
+pub fn display_for_rect(x: f64, y: f64, w: f64, h: f64) -> Option<DisplayInfo> {
+    let displays = list_displays();
+    let mut best = displays
+        .iter()
+        .enumerate()
+        .map(|(idx, d)| {
+            (
+                idx,
+                rect_intersection_area((x, y, w, h), (d.x, d.y, d.w, d.h)),
+            )
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+
+    if let Some((idx, area)) = best.take() {
+        if area > 0.0 {
+            return displays.get(idx).cloned();
+        }
+    }
+
+    let cx = x + w / 2.0;
+    let cy = y + h / 2.0;
+    displays
+        .iter()
+        .find(|d| cx >= d.x && cx < d.x + d.w && cy >= d.y && cy < d.y + d.h)
+        .cloned()
+}
+
 /// Read a CFNumber value from a CGWindow dict by a static key pointer.
 fn dict_number_key(info: CFDictionaryRef, key: *const c_void) -> Option<f64> {
     let mut p: *const c_void = std::ptr::null();
@@ -268,6 +445,61 @@ fn display_containing(x: f64, y: f64) -> CGDisplay {
         }
     }
     CGDisplay::main()
+}
+
+fn display_info(index: usize, display_id: u32, display: CGDisplay) -> DisplayInfo {
+    let bounds = display.bounds();
+    let pixels_wide = display.pixels_wide();
+    let pixels_high = display.pixels_high();
+    let scale = if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+        ((pixels_wide as f64 / bounds.size.width) + (pixels_high as f64 / bounds.size.height)) / 2.0
+    } else {
+        1.0
+    };
+    DisplayInfo {
+        index,
+        display_id,
+        x: bounds.origin.x,
+        y: bounds.origin.y,
+        w: bounds.size.width,
+        h: bounds.size.height,
+        pixels_wide,
+        pixels_high,
+        scale,
+        is_main: display_id == CGDisplay::main().id,
+    }
+}
+
+fn valid_display_info(display: &DisplayInfo) -> bool {
+    display.w > 0.0
+        && display.h > 0.0
+        && display.pixels_wide > 0
+        && display.pixels_high > 0
+        && display.display_id != 0
+}
+
+fn sample_luma(raw: &[u8], bytes_per_row: usize, bytes_per_pixel: usize, x: usize, y: usize) -> u8 {
+    let offset = y
+        .saturating_mul(bytes_per_row)
+        .saturating_add(x.saturating_mul(bytes_per_pixel));
+    if offset >= raw.len() {
+        return 0;
+    }
+    if bytes_per_pixel >= 3 && offset + 2 < raw.len() {
+        ((raw[offset] as u16 + raw[offset + 1] as u16 + raw[offset + 2] as u16) / 3) as u8
+    } else {
+        raw[offset]
+    }
+}
+
+fn rect_intersection_area(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> f64 {
+    let ax2 = a.0 + a.2;
+    let ay2 = a.1 + a.3;
+    let bx2 = b.0 + b.2;
+    let by2 = b.1 + b.3;
+    let w = ax2.min(bx2) - a.0.max(b.0);
+    let h = ay2.min(by2) - a.1.max(b.1);
+    w.max(0.0) * h.max(0.0)
 }
 
 fn capture_cg_window_with_bounds(

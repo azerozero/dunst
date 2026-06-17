@@ -303,8 +303,14 @@ pub struct AffordanceGraph {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NodeChange {
-    Added { id: String, label: Option<String> },
-    Removed { id: String, label: Option<String> },
+    Added {
+        id: String,
+        label: Option<String>,
+    },
+    Removed {
+        id: String,
+        label: Option<String>,
+    },
     /// `field` such as `"label"`, `"value"`, `"bbox"`, `"enabled"`.
     Changed {
         id: String,

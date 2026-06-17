@@ -18,11 +18,11 @@ pub mod coords;
 #[cfg(target_os = "macos")]
 pub mod capture;
 #[cfg(target_os = "macos")]
+pub mod detect;
+#[cfg(target_os = "macos")]
 pub mod ocr;
 #[cfg(target_os = "macos")]
 pub mod shapes;
-#[cfg(target_os = "macos")]
-pub mod detect;
 
 /// Everything needed to map Vision's normalised, **bottom-left** coordinates into
 /// our top-left **screen-point** space. Produced by [`capture`], consumed by
@@ -41,7 +41,8 @@ pub struct CaptureGeometry {
 }
 
 /// A Vision-space normalised rectangle: `x/y/w/h` in `[0,1]`, origin **bottom-left**
-/// (Vision's convention). `coords` converts this to a top-left screen-point [`Bbox`].
+/// (Vision's convention). `coords` converts this to a top-left screen-point
+/// [`dunst_core::Bbox`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NormRect {
     pub x: f64,

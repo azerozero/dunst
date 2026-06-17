@@ -9,20 +9,37 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-APP="${1:-Notes}"
+usage() {
+  cat <<'USAGE'
+Usage: scripts/smoke-live.sh [app_name]
+
+Build dunst-mcp, ensure the target app is running, then execute the live
+stdio smoke test. Default app: Notes.
+USAGE
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+app="${1:-Notes}"
 
 echo "==> building dunst-mcp"
 cargo build -q -p dunst-mcp
 
-BIN="target/debug/dunst-mcp"
-[[ -x "$BIN" ]] || { echo "error: $BIN not found after build" >&2; exit 1; }
+bin="target/debug/dunst-mcp"
+[[ -x "$bin" ]] || { echo "error: $bin not found after build" >&2; exit 1; }
 
-echo "==> ensuring $APP is running"
-open -a "$APP" || true
+echo "==> ensuring $app is running"
+if ! open -a "$app"; then
+  echo "error: failed to launch app: $app" >&2
+  exit 1
+fi
 sleep 1
-PID="$(pgrep -x "$APP" | head -1 || true)"
-[[ -n "$PID" ]] || { echo "error: could not find pid for $APP" >&2; exit 1; }
-echo "    $APP pid=$PID"
+pid="$(pgrep -x "$app" | head -1 || true)"
+[[ -n "$pid" ]] || { echo "error: could not find pid for $app" >&2; exit 1; }
+echo "    $app pid=$pid"
 
 echo "==> driving live MCP smoke (window 0 -> AXMainWindow)"
-exec python3 scripts/smoke-live.py "$BIN" "$PID" 0
+exec python3 scripts/smoke-live.py "$bin" "$pid" 0

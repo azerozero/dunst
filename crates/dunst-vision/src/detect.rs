@@ -63,9 +63,9 @@ pub fn detect_chart_region(image: &CGImage, geometry: &CaptureGeometry) -> Chart
     let r1 = overall_fill(w, h, &d);
     let min_w = (w as f32 * PLOT_MIN_W_FRAC) as usize;
     let min_h = (h as f32 * PLOT_MIN_H_FRAC) as usize;
-    let Some(plot) = largest_blob(w, h, &d).filter(|b| {
-        (b.maxx - b.minx + 1) >= min_w && (b.maxy - b.miny + 1) >= min_h
-    }) else {
+    let Some(plot) = largest_blob(w, h, &d)
+        .filter(|b| (b.maxx - b.minx + 1) >= min_w && (b.maxy - b.miny + 1) >= min_h)
+    else {
         return absent(r1);
     };
 
@@ -135,7 +135,7 @@ fn largest_blob(w: usize, h: usize, data: &[u8]) -> Option<Blob> {
                     push(x, y + 1, &mut stack);
                 }
             }
-            if best.is_none_or(|b| pixels > b.pixels) {
+            if best.map_or(true, |b| pixels > b.pixels) {
                 best = Some(Blob {
                     minx,
                     miny,
@@ -176,9 +176,8 @@ pub fn curve_screen_y(
     // Topmost content cell in the column = the curve's top edge. (The line is
     // ~1px over a pale, non-content area fill, so we don't require thickness; the
     // neighbourhood median below rejects the odd gridline/outlier instead.)
-    let column_y = |gx: usize| -> Option<usize> {
-        (gy0..gy1).find(|&gy| d[gy * w + gx] < CONTENT_LUMA_MAX)
-    };
+    let column_y =
+        |gx: usize| -> Option<usize> { (gy0..gy1).find(|&gy| d[gy * w + gx] < CONTENT_LUMA_MAX) };
     xs.iter()
         .map(|&x| {
             let gxc = (((x - ox) / sw) * w as f64).round() as isize;
@@ -188,7 +187,9 @@ pub fn curve_screen_y(
             let mut rows: Vec<usize> = (-2..=2)
                 .filter_map(|dgx| {
                     let gx = gxc + dgx;
-                    (gx >= 0 && (gx as usize) < w).then(|| column_y(gx as usize)).flatten()
+                    (gx >= 0 && (gx as usize) < w)
+                        .then(|| column_y(gx as usize))
+                        .flatten()
                 })
                 .collect();
             if rows.is_empty() {
@@ -223,7 +224,9 @@ fn luma_grid(image: &CGImage, target_w: usize) -> Option<(usize, usize, Vec<u8>)
         for x in 0..dst_w {
             let sx =
                 (((x as f64 + 0.5) * src_w as f64 / dst_w as f64).floor() as usize).min(src_w - 1);
-            let off = sy.saturating_mul(bpr).saturating_add(sx.saturating_mul(bpp));
+            let off = sy
+                .saturating_mul(bpr)
+                .saturating_add(sx.saturating_mul(bpp));
             data[y * dst_w + x] = if bpp >= 3 && off + 2 < raw.len() {
                 ((raw[off] as u16 + raw[off + 1] as u16 + raw[off + 2] as u16) / 3) as u8
             } else if off < raw.len() {

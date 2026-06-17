@@ -1,3 +1,5 @@
+> **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
+
 # WP-K — actions without moving the cursor or fronting the window (owner: Codex / tmux %2)
 
 Work **only** in `crates/visualops-platform`. Do **not** touch core / graph / mcp

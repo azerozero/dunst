@@ -1,10 +1,10 @@
-//! Shared contracts for VisualOps MCP.
+//! Shared contracts for Dunst MCP.
 //!
 //! This crate is the *frozen interface* every other crate builds against:
 //!
 //! - [`types`] — the data model (raw AX nodes, scene graph, affordances, risk, audit).
-//! - [`traits`] — the boundaries: [`Perceptor`](traits::Perceptor) (pixels/AX -> raw nodes)
-//!   and [`ActionExecutor`](traits::ActionExecutor) (semantic action -> OS event).
+//! - [`traits`] — the boundaries: [`Perceptor`] (pixels/AX -> raw nodes)
+//!   and [`ActionExecutor`] (semantic action -> OS event).
 //! - [`mock`] — a [`MockPerceptor`](mock::MockPerceptor) that replays a captured AX tree
 //!   from JSON, so the pure-logic crate (`dunst-graph`) can be built and tested with
 //!   **zero macOS dependency**.

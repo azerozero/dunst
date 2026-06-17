@@ -186,7 +186,7 @@ GO/NO-GO.
 1. **§1 plumbing-true, intelligence-false (A1).** Affordances/risk are AX-driven;
    vision nodes need **P1c: a role→`SemanticAction` table** (Button→[Click],
    TextField→[Type,Focus]) + parent/child by **geometric containment**. Emit
-   canonical AX role strings (`"AXButton"`) so `visualops-graph` stays untouched.
+   canonical AX role strings (`"AXButton"`) so `dunst-graph` stays untouched.
 2. **Tiles are a dirty-detector, never an OCR unit (A2).** OCR the **single union
    bbox of dirty tiles + a ½-line halo, in ONE request** — avoids straddle
    double-counting and the per-request fixed cost (why Codex's 9 *separate* tiles
@@ -195,7 +195,7 @@ GO/NO-GO.
    (phase-correlation / row probes); shift cached boxes by Δy, re-OCR only the
    newly-revealed band.
 4. **Video/spinner/caret = no-OCR zones (A2).** Per-tile dirty-rate counter;
-   permanently-dirty tiles get blacklisted (confidence≈0), not endlessly debounced.
+   permanently-dirty tiles get excluded (confidence≈0), not endlessly debounced.
 5. **Fovea must NOT follow the OS cursor (A3).** Vision actions are CGEvent and
    **move the real cursor** (`platform/lib.rs:748`) → cursor-anchored fovea is a
    feedback loop + a no-foreground violation. Anchor the fovea to **last-action
@@ -226,7 +226,7 @@ fall back to `ort`/RapidOCR or rescope. Whole-chain-in-Rust existence proof:
 `andelf/picc`. Full feasibility + crate maturity: `docs/P1-vision-rust-feasibility.md`.
 
 ## 11. P1a result — measured in Rust (2026-06-08)
-Spike crate `visualops-vision` (capture via Core Graphics after ScreenCaptureKit
+Spike crate `dunst-vision` (capture via Core Graphics after ScreenCaptureKit
 was dropped — see the SCK lesson below). Real run on Notes (window 93), 10 runs:
 
 | Stage | p50 | p95 |
@@ -236,7 +236,7 @@ was dropped — see the SCK lesson below). Real run on Notes (window 93), 10 run
 | capture (`CGWindowListCreateImage`) | 13.2 ms | 19.7 ms |
 
 Geometry resolved correctly (origin 728,236; 1000×660 pt; 2000×1320 px; scale 2.0);
-`coords` transform `cargo test -p visualops-vision` = **14 passed**.
+`coords` transform `cargo test -p dunst-vision` = **14 passed**.
 
 **Verdict: GO on the < 100 ms thesis.** The OCR — the contested crux — is ~15 ms;
 the public 131 ms `ocrmac` figure was pyobjc per-call overhead, Codex's in-process

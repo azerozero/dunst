@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Live end-to-end smoke test for the visualops-mcp stdio server (WP-E).
+"""Live end-to-end smoke test for the dunst stdio MCP server (WP-E).
 
-Drives `visualops-mcp serve --pid <pid> --window <win>` against a real macOS
+Drives `dunst-mcp serve --pid <pid> --window <win>` against a real macOS
 window and proves the full risk-gated loop **without** ever executing a
 destructive action:
 
@@ -24,10 +24,10 @@ import sys
 import time
 
 if len(sys.argv) != 4:
-    sys.exit("usage: smoke-live.py <visualops-mcp-bin> <pid> <window_id>")
+    sys.exit("usage: smoke-live.py <dunst-mcp-bin> <pid> <window_id>")
 BIN, PID, WIN = sys.argv[1], sys.argv[2], sys.argv[3]
 
-NOTE_TEXT = "VisualOps MCP — note de test live (WP-E), ecrite via type_into du serveur MCP."
+NOTE_TEXT = "Dunst MCP — note de test live (WP-E), ecrite via type_into du serveur MCP."
 
 proc = subprocess.Popen(
     [BIN, "serve", "--pid", PID, "--window", WIN],
@@ -67,7 +67,7 @@ def check(cond, label):
 
 print("=== initialize ===")
 info = call("initialize").get("result", {}).get("serverInfo", {})
-check(info.get("name") == "visualops-mcp", f"server is visualops-mcp ({info})")
+check(info.get("name") == "dunst", f"server is dunst ({info})")
 tool("refresh")
 
 print("\n=== low-risk: create a note ===")

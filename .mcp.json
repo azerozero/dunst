@@ -1,11 +1,8 @@
 {
   "mcpServers": {
     "dunst": {
-      "command": "/Users/ludwig/workspace/viewcontrolermcp/target/debug/dunst-mcp",
-      "args": [
-        "serve",
-        "--live"
-      ]
+      "command": "scripts/mcp-dunst.sh",
+      "args": []
     }
   }
 }

@@ -6,7 +6,9 @@
 use std::collections::BTreeSet;
 
 use dunst_core::mock::MockPerceptor;
-use dunst_core::{NodeChange, Perceptor, Role, RiskLevel, SceneGraph, SceneNode, SemanticAction, Target};
+use dunst_core::{
+    NodeChange, Perceptor, RiskLevel, Role, SceneGraph, SceneNode, SemanticAction, Target,
+};
 use dunst_graph::{build_scene_graph, derive_affordances, diff, RiskEngine};
 
 /// Number of `RawAxNode`s in `fixtures/notes.json` (window subtree: 11,
@@ -15,7 +17,10 @@ const FIXTURE_NODE_COUNT: usize = 22;
 
 fn build(now_ms: u64) -> SceneGraph {
     let perceptor = MockPerceptor::notes_fixture().expect("fixture loads");
-    let target = Target { pid: 1363, window_id: 105 };
+    let target = Target {
+        pid: 1363,
+        window_id: 105,
+    };
     let roots = perceptor.capture(&target).expect("capture");
     let window = perceptor.window_ref(&target).expect("window_ref");
     build_scene_graph(roots, window, now_ms)
@@ -41,7 +46,9 @@ fn node_by_role(graph: &SceneGraph, role: Role) -> &SceneNode {
 #[test]
 fn builds_nouvelle_note_button() {
     let graph = build(1_000);
-    let node = graph.get("btn_nouvelle_note").expect("btn_nouvelle_note exists");
+    let node = graph
+        .get("btn_nouvelle_note")
+        .expect("btn_nouvelle_note exists");
     assert_eq!(node.role, Role::Button);
     assert_eq!(node.label.as_deref(), Some("Nouvelle note"));
     assert_eq!(node.confidence, 1.0);
@@ -79,9 +86,13 @@ fn text_area_exposes_type() {
     let graph = build(1_000);
     let affordances = derive_affordances(&graph, &RiskEngine::new());
     let text_area = node_by_role(&graph, Role::TextArea);
-    let affordance = affordances.affordances.get(&text_area.id).expect("text area affordance");
+    let affordance = affordances
+        .affordances
+        .get(&text_area.id)
+        .expect("text area affordance");
     assert!(affordance.actions.contains(&SemanticAction::Type));
     assert!(affordance.actions.contains(&SemanticAction::Focus));
+    assert!(affordance.actions.contains(&SemanticAction::Scroll));
 }
 
 // 4. Risk tiers: destructive items are High + require approval; benign are Low.
@@ -90,17 +101,31 @@ fn risk_tiers() {
     let graph = build(1_000);
     let engine = RiskEngine::new();
 
-    for label in ["Supprimer", "Éteindre", "Forcer à quitter Notes", "Redémarrer…"] {
+    for label in [
+        "Supprimer",
+        "Éteindre",
+        "Forcer à quitter Notes",
+        "Redémarrer…",
+    ] {
         let assessment = engine.assess(node_by_label(&graph, label));
         assert_eq!(assessment.level, RiskLevel::High, "{label} should be High");
-        assert!(assessment.requires_approval, "{label} should require approval");
-        assert!(!assessment.reasons.is_empty(), "{label} should record a reason");
+        assert!(
+            assessment.requires_approval,
+            "{label} should require approval"
+        );
+        assert!(
+            !assessment.reasons.is_empty(),
+            "{label} should record a reason"
+        );
     }
 
     for label in ["Copier", "Nouvelle note"] {
         let assessment = engine.assess(node_by_label(&graph, label));
         assert_eq!(assessment.level, RiskLevel::Low, "{label} should be Low");
-        assert!(!assessment.requires_approval, "{label} must not require approval");
+        assert!(
+            !assessment.requires_approval,
+            "{label} must not require approval"
+        );
     }
 }
 
@@ -113,7 +138,10 @@ fn rows_and_cells_are_draggable() {
     for role in [Role::Cell, Role::Row] {
         let node = node_by_role(&graph, role);
         let affordance = affordances.affordances.get(&node.id).unwrap();
-        assert!(!affordance.drag_targets.is_empty(), "{role:?} should have drag targets");
+        assert!(
+            !affordance.drag_targets.is_empty(),
+            "{role:?} should have drag targets"
+        );
         assert!(
             affordance.actions.contains(&SemanticAction::Drag),
             "{role:?} should expose Drag"
@@ -145,7 +173,9 @@ fn diff_detects_field_add_remove_and_ignores_timestamps() {
     let result = diff(&graph, &changed_value);
     assert_eq!(result.changes.len(), 1);
     match &result.changes[0] {
-        NodeChange::Changed { id, field, after, .. } => {
+        NodeChange::Changed {
+            id, field, after, ..
+        } => {
             assert_eq!(id, &target_id);
             assert_eq!(field, "value");
             assert_eq!(after, "hello");

@@ -1,3 +1,5 @@
+> **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
+
 # WP-A — `visualops-platform` (macOS AX backend)
 
 **Owner:** Codex (tmux 8). **Crate:** `crates/visualops-platform` only.

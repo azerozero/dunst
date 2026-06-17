@@ -38,7 +38,7 @@ vision equivalent — so "reused unchanged" hides where the real work moves:
 are **AX-keyword/AX-action driven** and will emit near-empty graphs for vision
 input until P1c lands a *role→SemanticAction* inference table (e.g. inferred
 `Button` → `[Click]`, inferred `TextField` → `[Type, Focus]`). Check
-`crates/visualops-graph/src/affordance.rs`: `derive_affordances` only produces
+`crates/dunst-graph/src/affordance.rs`: `derive_affordances` only produces
 actions from (1) `map_action(ax_action)`, (2) `Role::TextField|TextArea`, (3)
 `drag_targets_for` rows/cells. A synthesised vision node whose `ax_actions` is
 empty and whose role lands as `Unknown` gets an **empty affordance set** — the
@@ -48,7 +48,7 @@ structures; the **intelligence has to be rebuilt** on the vision side.
 Also add to §1: the synthesised role must round-trip through the existing
 `ax_role`→`Role` mapping. Either emit canonical AX strings (`"AXButton"`) the
 existing mapper already knows, or extend the mapper. Emitting AX-look-alike
-strings is the lower-touch choice and keeps `visualops-graph` untouched.
+strings is the lower-touch choice and keeps `dunst-graph` untouched.
 
 ### A2. §6 tiling — three pitfalls under-weighted; one mis-designed
 
@@ -73,14 +73,14 @@ strings is the lower-touch choice and keeps `visualops-graph` untouched.
    blink).** §6 says "coalesce / debounce → OCR on settle". A playing video tile
    *never settles* — debounce alone loops forever or starves. **Correction:** add
    a per-tile **dirty-rate** counter; a tile dirty for N consecutive settle
-   windows is **blacklisted** (marked `source = Vision, confidence ≈ 0`, no OCR)
+   windows is **excluded** (marked `source = Vision, confidence ≈ 0`, no OCR)
    until its rate drops. Video ≠ pending OCR; it is a no-OCR zone.
 
 ### A3. §6 foveal + §1 actions — the foveal-around-cursor idea fights our own action path
 
 §6 puts the fovea "around the cursor / last action". But §1's vision action path
 is **CGEvent**, and the platform code is explicit that CGEvent mouse input
-**moves the real cursor** (`crates/visualops-platform/src/lib.rs:748`: *"Synthetic
+**moves the real cursor** (`crates/dunst-platform/src/lib.rs:748`: *"Synthetic
 drag moves the real cursor; this is inherent to CGEvent mouse input."*). So:
 
 - Acting on a vision surface **warps the user's cursor**, which then **defines the
@@ -127,7 +127,7 @@ carry_ids(prev_nodes, curr_nodes):
 ```
 
 - `norm(text)` = lowercase, accent-fold, collapse whitespace, strip a small edit
-  budget (the "±1 char" jitter). Reuse the same normalisation `visualops-graph`
+  budget (the "±1 char" jitter). Reuse the same normalisation `dunst-graph`
   already does for risk keywords.
 - `IoU` tolerates ±px jitter far better than grid membership.
 - Role is a **tiebreaker weight**, never part of the key.
@@ -307,7 +307,7 @@ VisionPerceptor::capture():            # synchronous: pulls latest cached frame
                  dirty[tile] = (h != tile_hash[tile]); tile_hash[tile] = h
   # 2. scroll guard (A2.2): if delta ≈ pure translation Δ, shift cached boxes by Δ,
   #    mark only the newly-revealed band dirty
-  # 3. permanently-dirty guard (A2.3): tiles dirty K windows running → blacklist
+  # 3. permanently-dirty guard (A2.3): tiles dirty K windows running → exclusion list
   # 4. fovea = bbox(last_action) ∪ centroid(dirty)      # NOT the OS cursor (A3)
   # 5. region = snap_out( union(dirty_tiles ∩ fovea), halo=½ line-height )   # A2.1
   # 6. crop CVPixelBuffer → region ; ONE VNRecognizeTextRequest (.accurate on
@@ -323,7 +323,7 @@ VisionPerceptor::capture():            # synchronous: pulls latest cached frame
 1. **OCR area → tiny**: union-of-dirty ∩ fovea, one request (not N tiles, not the
    window). Static chrome is hashed (µs) and skipped.
 2. **OCR frequency → low**: coalesce on settle; scroll shifts cached boxes instead
-   of re-OCRing; video tiles blacklisted. The worst case (everything dirty) is the
+   of re-OCRing; video tiles excluded. The worst case (everything dirty) is the
    *cold frame* §2 already concedes will exceed 100 ms.
 
 If P1a's measured per-request floor + region slope can't fit a typical fovea under
@@ -360,7 +360,7 @@ per fovea) → fits §2.
 | OCR | `objc2-vision` | **High** — objc2 family | `VNRecognizeTextRequest`; in-process; **no IPC** |
 | Hashing (tiles) | `xxhash-rust` or `ahash` | High | per-tile dirty detect; ahash is already idiomatic |
 | objc2 base / blocks | `objc2`, `objc2-foundation`, `block2` | **High** — the ecosystem standard | needed to bridge SCStream delegate + Vision completion handler into Rust (channel/semaphore) |
-| Actions | **none new** | — | reuse WP-F CGEvent path (`visualops-platform/src/lib.rs`) for `source != Accessibility` |
+| Actions | **none new** | — | reuse WP-F CGEvent path (`dunst-platform/src/lib.rs`) for `source != Accessibility` |
 
 Pin all objc2-family crates to one compatible release set (they version together).
 Verify exact current versions at build time — the family moves fast.
@@ -368,6 +368,7 @@ Verify exact current versions at build time — the family moves fast.
 ### B6. Pipeline sequence (steady-state dirty refresh)
 
 ```mermaid
+%% Source: P1 vision design note, planned Vision path. Current AX path stays in dunst-platform/dunst-graph.
 sequenceDiagram
     autonumber
     participant Eng as Engine (sync)
@@ -375,26 +376,26 @@ sequenceDiagram
     participant SCK as SCStream (objc2-sck)
     participant Cache as LatestFrame (Mutex)
     participant V as Vision (objc2-vision, ANE)
-    participant G as scene/affordance (visualops-graph, unchanged)
+    participant G as scene/affordance (dunst-graph)
 
-    Note over SCK,Cache: persistent stream, set up once; callback caches frames
-    SCK-->>Cache: CVPixelBuffer (IOSurface, zero-copy)  ~single-digit ms
+    Note over SCK,Cache: planned persistent stream caches frames
+    SCK-->>Cache: CVPixelBuffer  ~single-digit ms
     Eng->>VP: capture()
     VP->>Cache: lock latest frame
-    VP->>VP: tile hash + dirty diff (ahash)            1–5 ms
-    VP->>VP: scroll guard / blacklist / fovea select   <1 ms
+    VP->>VP: dirty diff 1–5 ms
+    VP->>VP: guard + fovea select <1 ms
     alt dirty region non-empty
-        VP->>V: ONE VNRecognizeTextRequest(region, .fast/.accurate)
-        V-->>VP: [text, bbox(norm), conf]              region-dependent (PoC gate)
-        VP->>VP: coord transform norm→global points    <1 ms
-        VP->>VP: role infer + containment children      5–15 ms
-        VP->>VP: carry_ids (IoU+text match, hysteresis) µs
+        VP->>V: one text request for region
+        V-->>VP: text boxes + confidence
+        VP->>VP: norm to screen coords <1 ms
+        VP->>VP: role + containment 5–15 ms
+        VP->>VP: carry ids
     else nothing changed
-        VP-->>Eng: cached RawAxNodes (no OCR)           ~0 ms
+        VP-->>Eng: cached RawAxNodes
     end
     VP-->>Eng: Vec<RawAxNode> (source=Vision, conf<1)
-    Eng->>G: build_scene_graph → affordances → diff     <5 ms (measured ~21µs core)
-    Note over Eng,G: downstream identical to AX path (§1)
+    Eng->>G: scene + affordances + diff
+    Note over Eng,G: same downstream path as AX
 ```
 
 ### B7. Latency estimate per stage (plan vs reality)
@@ -404,7 +405,7 @@ sequenceDiagram
 | Window capture (steady) | 5–15 ms | SCK zero-copy IOSurface; no clean public ms | **3–12 ms** | Med |
 | Window capture (cold/warm-up) | (one-time) | stream warm-up is the known cost | **tens of ms, once** | Med |
 | Tile hash + dirty diff | 1–5 ms | ahash/xxhash on luma/downscale | **1–5 ms** | High |
-| Scroll guard / blacklist / fovea | — (absent) | new, cheap | **< 2 ms** | Med |
+| Scroll guard / exclusion list / fovea | — (absent) | new, cheap | **< 2 ms** | Med |
 | **OCR on dirty region (1 request)** | **20–55 ms** | ocrmac M3 Max full-img `.fast` **131 ms** → region ≪ that, but **fixed floor unknown** | **unproven — 20–80 ms; gates the whole claim** | **Low** |
 | Coord transform | — (absent) | trivial arithmetic | **< 1 ms** | High |
 | Role infer + children | 5–15 ms | classical CV / heuristics | **5–20 ms** | Low-Med |
@@ -425,7 +426,7 @@ term (region OCR). P1a must pin that term first; everything else fits.
 | R4 | Coordinate transform bugs (pixel/point/normalised, Retina, multi-DPI) | **High** | single audited transform fn + golden tests (A6) |
 | R5 | OCR misread inverts risk (low-conf "Delete"→safe) | **High (safety)** | risk monotonic in uncertainty: low conf ⇒ raise risk floor (A5.2) |
 | R6 | Affordance/risk layers emit empty graphs for vision (AX-action driven) | Med | role→action inference table in P1c (A1) |
-| R7 | Permanently-dirty tiles (video) starve the loop | Med | dirty-rate blacklist (A2.3) |
+| R7 | Permanently-dirty tiles (video) starve the loop | Med | dirty-rate exclusion list (A2.3) |
 | R8 | Sync `Perceptor` trait vs push SCStream | Med | persistent stream + latest-frame cache (B3/A8) |
 | R9 | Screen-Recording TCC grant (separate from AX) | Low-Med | onboarding + doctor check (A8) |
 | R10 | objc2 ↔ high-level crate type seam forces a frame copy | Low-Med | prefer objc2-sck+objc2-vision for zero-copy (B5) |

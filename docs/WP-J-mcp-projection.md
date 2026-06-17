@@ -1,3 +1,5 @@
+> **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
+
 # WP-J — get_scene_graph projection + latent affordance filter (owner: Claude / tmux %3)
 
 Work **only** in `crates/visualops-mcp` (engine.rs + serve.rs). Do **not** touch

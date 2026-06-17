@@ -14,7 +14,7 @@
 //! that assumption `backing_scale` **cancels**: Vision's coordinates are already
 //! normalised against the image pixel size, and we map straight into *points*, so
 //! the pixel size (and hence the scale factor) never enters the point-space math.
-//! [`retina_and_non_retina_agree`](tests) locks this in. `image_size_px` /
+//! `retina_and_non_retina_agree` locks this in. `image_size_px` /
 //! `backing_scale` are therefore unused by the transforms below; they are kept on
 //! [`CaptureGeometry`] for callers that need pixel-space (e.g. cropping the buffer
 //! Vision OCRs) and as the place to detect **non-uniform scale / letterboxing**

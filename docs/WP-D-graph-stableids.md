@@ -1,3 +1,5 @@
+> **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
+
 # WP-D — `visualops-graph`: ax_identifier-stable IDs + bench (owner: Claude / tmux 3)
 
 Work **only** in `crates/visualops-graph`. Do **not** touch `visualops-core` /

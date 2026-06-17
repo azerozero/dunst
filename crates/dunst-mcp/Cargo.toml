@@ -3,6 +3,14 @@ name = "dunst-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "AX-first macOS MCP server for background UI automation"
+keywords = ["mcp", "macos", "accessibility", "automation"]
+categories = ["command-line-utilities", "development-tools"]
+publish = false
 default-run = "dunst-mcp"
 
 [[bin]]
@@ -13,6 +21,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
 dunst-core = { workspace = true }
 dunst-graph = { workspace = true }
 dunst-platform = { workspace = true }
@@ -24,7 +33,7 @@ serde_json = { workspace = true }
 # clear error off-macOS). Path dep — `dunst-vision` is not a
 # `[workspace.dependencies]` entry.
 [target.'cfg(target_os = "macos")'.dependencies]
-dunst-vision = { path = "../dunst-vision" }
+dunst-vision = { workspace = true }
 
 # Integration phase adds the MCP server runtime here:
 #   rmcp = { version = "0.x", features = ["server", "transport-io"] }

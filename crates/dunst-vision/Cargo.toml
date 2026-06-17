@@ -3,6 +3,12 @@ name = "dunst-vision"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "macOS capture, OCR, and coordinate helpers for dunst-mcp"
+publish = false
 
 # P1a spike: Core Graphics window capture + Apple Vision OCR + coord transform.
 # The latency GO/NO-GO for the non-AX vision pipeline (docs/P1-vision-surfaces.md §10).
