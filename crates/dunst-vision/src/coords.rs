@@ -59,6 +59,19 @@ pub fn vision_norm_to_screen_pt(n: NormRect, geom: &CaptureGeometry) -> Bbox {
     }
 }
 
+/// Map a Vision normalised rect returned from a `regionOfInterest` request back
+/// into screen points. Vision normalises OCR observations inside the ROI, not the
+/// full image, so a `read_text(region=...)` result must be scaled by that region
+/// before agents can safely click the returned bbox centre.
+pub fn vision_norm_to_screen_pt_in_region(n: NormRect, region_screen_pt: Bbox) -> Bbox {
+    Bbox {
+        x: region_screen_pt.x + n.x * region_screen_pt.w,
+        y: region_screen_pt.y + (1.0 - n.y - n.h) * region_screen_pt.h,
+        w: n.w * region_screen_pt.w,
+        h: n.h * region_screen_pt.h,
+    }
+}
+
 /// Inverse of [`vision_norm_to_screen_pt`]: a top-left **screen-point** [`Bbox`]
 /// back to a Vision normalised, **bottom-left** [`NormRect`].
 ///
@@ -408,6 +421,37 @@ mod tests {
                 "screen round-trip failed for {b:?} -> {back:?}"
             );
         }
+    }
+
+    #[test]
+    fn roi_relative_vision_box_maps_inside_requested_screen_region() {
+        let region = Bbox {
+            x: 3120.0,
+            y: 740.0,
+            w: 620.0,
+            h: 570.0,
+        };
+        let got = vision_norm_to_screen_pt_in_region(
+            NormRect {
+                x: 0.10,
+                y: 0.20,
+                w: 0.30,
+                h: 0.25,
+            },
+            region,
+        );
+
+        assert!(bbox_approx(
+            got,
+            Bbox {
+                x: 3182.0,
+                y: 1053.5,
+                w: 186.0,
+                h: 142.5,
+            }
+        ));
+        assert!(got.x >= region.x && got.x + got.w <= region.x + region.w);
+        assert!(got.y >= region.y && got.y + got.h <= region.y + region.h);
     }
 
     // --- I3: scale invariance (backing_scale cancels) -----------------------

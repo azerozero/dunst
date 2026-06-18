@@ -28,6 +28,8 @@ const READ_REFRESH_TTL: Duration = Duration::from_millis(500);
 const DISPLAY_CACHE_TTL: Duration = Duration::from_millis(1_000);
 const OCR_CACHE_TTL: Duration = Duration::from_millis(250);
 const SCREENSHOT_CACHE_TTL: Duration = Duration::from_millis(250);
+const TYPE_VERIFY_SETTLE_TIMEOUT: Duration = Duration::from_millis(1_000);
+const TYPE_VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(80);
 
 fn unique_png_path(prefix: &str) -> PathBuf {
     let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -213,6 +215,14 @@ pub struct KeyElement {
     pub label: Option<String>,
     pub value: Option<String>,
     pub bbox: Option<Bbox>,
+}
+
+/// Where [`Engine::select_file`] should click before filling the native file
+/// chooser. `None` means the chooser is already open.
+#[derive(Debug, Clone)]
+pub enum FileSelectTrigger {
+    ElementId(String),
+    Point { x: f64, y: f64 },
 }
 
 /// Result of resolving and pressing a popover/list/radio option by visible text.
@@ -455,6 +465,28 @@ fn parse_combo(combo: &str) -> Option<(u64, u16)> {
     Some((flags, key?))
 }
 
+fn layout_sensitive_hotkey_message(combo: &str) -> Option<String> {
+    let mut has_cmd = false;
+    let mut has_non_cmd_modifier = false;
+    let mut key = None;
+
+    for part in combo.split('+') {
+        match part.trim().to_ascii_lowercase().as_str() {
+            "cmd" | "command" | "meta" => has_cmd = true,
+            "shift" | "opt" | "option" | "alt" | "ctrl" | "control" => has_non_cmd_modifier = true,
+            other => key = Some(other.to_string()),
+        }
+    }
+
+    match (has_cmd, has_non_cmd_modifier, key.as_deref()) {
+        (true, false, Some("a")) => Some(
+            "hotkey \"cmd+a\" is keyboard-layout sensitive on macOS and can hit the wrong Command shortcut on non-US layouts; use type_into on a text element instead"
+                .into(),
+        ),
+        _ => None,
+    }
+}
+
 /// macOS virtual keycode for a key name or single character (US ANSI layout).
 fn keycode_for(k: &str) -> Option<u16> {
     Some(match k {
@@ -502,6 +534,12 @@ fn is_press_key_name(key: &str) -> bool {
             | "right"
             | "arrowright"
             | "right_arrow"
+            | "pageup"
+            | "page_up"
+            | "pagedown"
+            | "page_down"
+            | "home"
+            | "end"
     )
 }
 
@@ -836,6 +874,19 @@ fn rect_intersection_area(a: Bbox, b: Bbox) -> f64 {
     w.max(0.0) * h.max(0.0)
 }
 
+fn clipped_region_to_window(region: Bbox, window: Bbox) -> Option<Bbox> {
+    let x0 = region.x.max(window.x);
+    let y0 = region.y.max(window.y);
+    let x1 = (region.x + region.w).min(window.x + window.w);
+    let y1 = (region.y + region.h).min(window.y + window.h);
+    (x1 > x0 && y1 > y0).then_some(Bbox {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    })
+}
+
 fn visual_probe_key(region: Bbox, columns: usize, rows: usize) -> VisualProbeKey {
     VisualProbeKey {
         region: (
@@ -1014,6 +1065,11 @@ impl Engine {
         self.refresh().map(|()| true)
     }
 
+    /// Whether the current scene graph was captured within `ttl`.
+    pub fn graph_recent(&self, ttl: Duration) -> bool {
+        self.last_refresh_at.is_some_and(|at| at.elapsed() <= ttl)
+    }
+
     /// Re-target the engine to a different window at runtime — the MCP client
     /// picks one from `list_windows` and attaches, so the server has no fixed,
     /// hardcoded target. Re-perceives the new window.
@@ -1077,23 +1133,32 @@ impl Engine {
     /// where browser chrome and history menu items can match the same text as
     /// the page target.
     pub fn find_element_filtered(&self, query: &str, visible_only: bool) -> Vec<&SceneNode> {
-        let q = query.to_lowercase();
+        let q = normalize_match(query);
         let window_rect = self.cached_window_rect;
         let menubar = self.cached_menubar_root.as_deref();
-        let mut matches: Vec<&SceneNode> = self
-            .scene_graph()
+        let graph = self.scene_graph();
+        let mut matches: Vec<&SceneNode> = graph
             .nodes
             .values()
             .filter(|n| {
-                n.id.to_lowercase().contains(&q)
+                normalized_contains_query(&normalize_match(&n.id), &q)
                     || n.label
                         .as_deref()
-                        .map(|l| l.to_lowercase().contains(&q))
+                        .map(|l| normalized_contains_query(&normalize_match(l), &q))
                         .unwrap_or(false)
-                    || n.ax_role.to_lowercase().contains(&q)
+                    || normalized_contains_query(&normalize_match(&n.ax_role), &q)
             })
             .filter(|n| !visible_only || node_visible_or_menu(n, window_rect, menubar))
             .collect();
+        let mut seen: BTreeSet<String> = matches.iter().map(|node| node.id.clone()).collect();
+        for label in matches.clone() {
+            if let Some(control) = associated_control_for_label(label, graph, window_rect, menubar)
+            {
+                if seen.insert(control.id.clone()) {
+                    matches.push(control);
+                }
+            }
+        }
         matches.sort_by_key(|n| find_rank(n, window_rect, menubar));
         matches
     }
@@ -1116,6 +1181,7 @@ impl Engine {
                     "OCR region width/height must be positive".into(),
                 ));
             }
+            self.ensure_region_in_target_window(region, "read_text")?;
         }
         let key = ocr_cache_key(self.target.window_id, region_screen_pt, accurate);
         if let Some(cached) = self
@@ -1128,31 +1194,16 @@ impl Engine {
                 return Ok(cached.hits);
             }
         }
-        // Region reads capture only that screen rect. That is much cheaper than a
-        // full-window PNG for fovea/OCR workflows and still maps boxes directly
-        // into global screen points. Whole-window reads keep the composited window
-        // capture path because it works for occluded/off-screen targets.
-        let (captured, ocr_region) = match region_screen_pt {
-            Some(region) => (
-                dunst_vision::capture::capture_screen_rect(region.x, region.y, region.w, region.h)
-                    .map_err(|e| {
-                        VisualOpsError::Perception(format!(
-                            "OCR region capture failed for screen rect: {e}"
-                        ))
-                    })?,
-                None,
-            ),
-            None => (
-                dunst_vision::capture::capture_window_composited(self.target.window_id).map_err(
-                    |e| {
-                        VisualOpsError::Perception(format!(
-                            "OCR requires a live macOS window (capture failed: {e})"
-                        ))
-                    },
-                )?,
-                None,
-            ),
-        };
+        // Always capture the target window, even for a requested region. Using a
+        // raw screen-rect capture here can OCR whichever window happens to cover
+        // that rectangle, which is exactly the wrong failure mode when several
+        // Firefox windows are open.
+        let captured = dunst_vision::capture::capture_window_composited(self.target.window_id)
+            .map_err(|e| {
+                VisualOpsError::Perception(format!(
+                    "OCR requires a live macOS window (capture failed: {e})"
+                ))
+            })?;
         let mode = if accurate {
             RecognitionMode::Accurate
         } else {
@@ -1161,7 +1212,7 @@ impl Engine {
         let boxes = match dunst_vision::ocr::ocr_region_with_mode(
             &captured.image,
             &captured.geometry,
-            ocr_region,
+            region_screen_pt,
             mode,
         ) {
             Ok(boxes) => boxes,
@@ -1184,7 +1235,14 @@ impl Engine {
             .into_iter()
             .map(|b| TextHit {
                 text: b.text,
-                bbox: dunst_vision::coords::vision_norm_to_screen_pt(b.norm, &captured.geometry),
+                bbox: match region_screen_pt {
+                    Some(region) => {
+                        dunst_vision::coords::vision_norm_to_screen_pt_in_region(b.norm, region)
+                    }
+                    None => {
+                        dunst_vision::coords::vision_norm_to_screen_pt(b.norm, &captured.geometry)
+                    }
+                },
                 confidence: b.confidence,
             })
             .collect();
@@ -1401,16 +1459,17 @@ impl Engine {
             }
             if let Some(q) = q.as_deref() {
                 let haystack = format!("{} {}", normalize_match(&node.id), normalize_match(&title));
-                if !haystack.contains(q) {
+                if !normalized_contains_query(&haystack, q) {
                     continue;
                 }
             }
 
+            let selected = browser_tab_selected(self.scene_graph(), node, &title);
             tabs.push(BrowserTab {
                 id: node.id.clone(),
                 url: likely_url(&title),
                 title,
-                selected: browser_tab_selected(node),
+                selected,
                 bbox: node.bbox,
             });
         }
@@ -1573,7 +1632,7 @@ impl Engine {
                     node.role.as_str(),
                     normalize_match(text)
                 );
-                if !haystack.contains(q) {
+                if !normalized_contains_query(&haystack, q) {
                     continue;
                 }
             }
@@ -1685,7 +1744,7 @@ impl Engine {
     }
 
     /// Assert a node's `field` currently equals `expected`. `field` is one of
-    /// `label` | `value` | `enabled`.
+    /// `label` | `value` | `enabled` | `focused`.
     pub fn verify_state(&self, id: &str, field: &str, expected: &str) -> dunst_core::Result<bool> {
         let n = self
             .scene_graph()
@@ -1695,6 +1754,7 @@ impl Engine {
             "label" => n.label.clone().unwrap_or_default(),
             "value" => n.value.clone().unwrap_or_default(),
             "enabled" => n.enabled.to_string(),
+            "focused" => n.focused.to_string(),
             other => return Err(VisualOpsError::Execution(format!("unknown field {other}"))),
         };
         Ok(actual == expected)
@@ -1742,8 +1802,17 @@ impl Engine {
         id: &str,
         reasoning: Option<&str>,
     ) -> dunst_core::Result<AuditEntry> {
-        let (target_id, action) = self.resolve_action_target(id, &[SemanticAction::Click])?;
-        self.act(&target_id, action, None, reasoning, None)
+        let (target_id, action) =
+            self.resolve_action_target_refreshing_missing(id, &[SemanticAction::Click])?;
+        self.act_refreshing_missing(&target_id, action, None, reasoning, None)
+    }
+
+    pub fn raise_element(
+        &mut self,
+        id: &str,
+        reasoning: Option<&str>,
+    ) -> dunst_core::Result<AuditEntry> {
+        self.act_refreshing_missing(id, SemanticAction::Raise, None, reasoning, None)
     }
 
     pub fn pick_option(
@@ -1803,11 +1872,11 @@ impl Engine {
                 text.len()
             )));
         }
-        self.act(id, SemanticAction::Type, Some(text), reasoning, None)
+        self.act_refreshing_missing(id, SemanticAction::Type, Some(text), reasoning, None)
     }
 
     pub fn hover_probe(&mut self, id: &str) -> dunst_core::Result<AuditEntry> {
-        self.act(id, SemanticAction::Hover, None, Some("hover probe"), None)
+        self.act_refreshing_missing(id, SemanticAction::Hover, None, Some("hover probe"), None)
     }
 
     /// Drag `source_id` onto `target_id`. The drop point handed to the executor
@@ -1850,7 +1919,7 @@ impl Engine {
             id: target_id.to_string(),
             risk: target_risk,
         };
-        self.act(
+        self.act_refreshing_missing(
             source_id,
             SemanticAction::Drag,
             Some(&format!("{x},{y}")),
@@ -1882,6 +1951,7 @@ impl Engine {
     /// Double-click at a raw screen point — two quick clicks.
     #[cfg(target_os = "macos")]
     pub fn double_click_at(&mut self, x: f64, y: f64) -> dunst_core::Result<AuditEntry> {
+        self.ensure_point_in_target_window(x, y, "double-click")?;
         let target_id = format!("screen@{x},{y}:double-click");
         let risk = self.raw_point_risk(x, y);
         if let Some(entry) = self.gate_raw_input(
@@ -1920,6 +1990,7 @@ impl Engine {
         button: u8,
         label: &str,
     ) -> dunst_core::Result<AuditEntry> {
+        self.ensure_point_in_target_window(x, y, label)?;
         let target_id = format!("screen@{x},{y}:{label}");
         let risk = self.raw_point_risk(x, y);
         if let Some(entry) = self.gate_raw_input(
@@ -1944,26 +2015,28 @@ impl Engine {
 
     #[cfg(target_os = "macos")]
     fn raw_click_outcome(&self, x: f64, y: f64, button: u8) -> dunst_core::Result<()> {
-        let (ox, oy) = dunst_vision::capture::window_bounds(self.target.window_id)
-            .map(|(x, y, _, _)| (x, y))
-            .unwrap_or((0.0, 0.0));
-        if dunst_platform::click_web_background(
-            self.target.pid,
-            self.target.window_id,
-            x,
-            y,
-            ox,
-            oy,
-            button,
-        ) {
-            Ok(())
-        } else if button == 0 {
-            dunst_platform::click_at_point(self.target.pid, x, y)
-        } else {
-            Err(VisualOpsError::Execution(
-                "right-click requires the SkyLight backend".into(),
-            ))
-        }
+        retry_user_active_guard(|| {
+            let (ox, oy) = dunst_vision::capture::window_bounds(self.target.window_id)
+                .map(|(x, y, _, _)| (x, y))
+                .unwrap_or((0.0, 0.0));
+            if dunst_platform::click_web_background(
+                self.target.pid,
+                self.target.window_id,
+                x,
+                y,
+                ox,
+                oy,
+                button,
+            ) {
+                Ok(())
+            } else if button == 0 {
+                dunst_platform::click_at_point(self.target.pid, x, y)
+            } else {
+                Err(VisualOpsError::Execution(
+                    "right-click requires the SkyLight backend".into(),
+                ))
+            }
+        })
     }
 
     /// Non-macOS stub: raw CGEvent input needs the macOS backend.
@@ -2018,7 +2091,7 @@ impl Engine {
     pub fn press_key(&mut self, key: &str) -> dunst_core::Result<AuditEntry> {
         if !is_press_key_name(key) {
             return Err(VisualOpsError::Execution(format!(
-                "unsupported key {key:?}; expected return|enter, tab, escape, space, delete, up/down/left/right"
+                "unsupported key {key:?}; expected return|enter, tab, escape, space, delete, up/down/left/right, pageup/pagedown, home/end"
             )));
         }
         let target_id = format!("keyboard@press:{key}");
@@ -2031,7 +2104,9 @@ impl Engine {
         ) {
             return Ok(entry);
         }
-        let outcome = dunst_platform::press_key(self.target.pid, key);
+        let outcome = retry_user_active_guard(|| {
+            dunst_platform::press_key(self.target.pid, self.target.window_id, key)
+        });
         self.audit_raw_input(
             target_id,
             SemanticAction::Type,
@@ -2067,8 +2142,9 @@ impl Engine {
         ) {
             return Ok(entry);
         }
-        let outcome =
-            dunst_platform::type_text_background(self.target.pid, self.target.window_id, text);
+        let outcome = retry_user_active_guard(|| {
+            dunst_platform::type_text_background(self.target.pid, self.target.window_id, text)
+        });
         self.audit_raw_input(
             target_id,
             SemanticAction::Type,
@@ -2084,6 +2160,61 @@ impl Engine {
     pub fn type_keys(&mut self, _text: &str) -> dunst_core::Result<AuditEntry> {
         Err(VisualOpsError::Execution(
             "type_keys requires a macOS backend".into(),
+        ))
+    }
+
+    /// Select a local file in a native macOS file chooser. When a trigger is
+    /// provided, this performs a real System Events click inside the target
+    /// window first because browser `input[type=file]` controls often reject
+    /// AX/background clicks.
+    #[cfg(target_os = "macos")]
+    pub fn select_file(
+        &mut self,
+        path: &str,
+        trigger: Option<FileSelectTrigger>,
+        reasoning: Option<&str>,
+    ) -> dunst_core::Result<AuditEntry> {
+        let file = canonical_file_path(path)?;
+        let trigger_point = self.file_select_trigger_point(trigger.as_ref())?;
+        let target_id = format!("file@{}", file.display());
+        let risk = RiskAssessment {
+            level: RiskLevel::High,
+            requires_approval: true,
+            reasons: vec![
+                "selects a local file for upload".to_string(),
+                "drives a native file chooser with System Events".to_string(),
+            ],
+        };
+        if let Some(entry) = self.gate_raw_input(
+            &target_id,
+            SemanticAction::Type,
+            Some(file.display().to_string()),
+            reasoning.or(Some("select local file for upload")),
+            risk.clone(),
+        ) {
+            return Ok(entry);
+        }
+        let outcome = retry_user_active_guard(|| self.select_file_outcome(&file, trigger_point));
+        self.audit_raw_input(
+            target_id,
+            SemanticAction::Type,
+            Some(file.display().to_string()),
+            reasoning.or(Some("select local file for upload")),
+            risk,
+            outcome,
+        )
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn select_file(
+        &mut self,
+        _path: &str,
+        _trigger: Option<FileSelectTrigger>,
+        _reasoning: Option<&str>,
+    ) -> dunst_core::Result<AuditEntry> {
+        Err(VisualOpsError::Execution(
+            "select_file requires a macOS backend".into(),
         ))
     }
 
@@ -2138,16 +2269,18 @@ impl Engine {
         }
         let mut outcome = Ok(());
         for _ in 0..n {
-            outcome = dunst_platform::key_web_background(
-                self.target.pid,
-                self.target.window_id,
-                keycode,
-                0,
-            );
+            outcome = retry_user_active_guard(|| {
+                dunst_platform::key_web_background(
+                    self.target.pid,
+                    self.target.window_id,
+                    keycode,
+                    0,
+                )
+            });
             if outcome.is_err() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            std::thread::sleep(std::time::Duration::from_millis(380));
         }
         self.audit_raw_input(
             target_id,
@@ -2193,12 +2326,9 @@ impl Engine {
         ) {
             return Ok(entry);
         }
-        let outcome = dunst_platform::key_web_background(
-            self.target.pid,
-            self.target.window_id,
-            keycode,
-            CMD,
-        );
+        let outcome = retry_user_active_guard(|| {
+            dunst_platform::key_web_background(self.target.pid, self.target.window_id, keycode, CMD)
+        });
         self.audit_raw_input(
             target_id,
             SemanticAction::Type,
@@ -2220,9 +2350,14 @@ impl Engine {
     /// A keyboard shortcut in the background: modifiers (cmd|shift|opt|ctrl, `+`-
     /// separated) plus a key (a single character, or a name like enter/tab/escape/
     /// space/delete/left/right/up/down). E.g. "cmd+l" (focus omnibox), "cmd+t",
-    /// "cmd+a". Auth-signed so it reaches web content. Re-perceives.
+    /// "cmd+w". Auth-signed so it reaches web content. Layout-sensitive text
+    /// selection shortcuts such as "cmd+a" are rejected; use `type_into` for
+    /// field replacement. Re-perceives.
     #[cfg(target_os = "macos")]
     pub fn hotkey(&mut self, combo: &str) -> dunst_core::Result<AuditEntry> {
+        if let Some(message) = layout_sensitive_hotkey_message(combo) {
+            return Err(VisualOpsError::Execution(message));
+        }
         let (flags, keycode) = parse_combo(combo)
             .ok_or_else(|| VisualOpsError::Execution(format!("unrecognised hotkey {combo:?}")))?;
         let target_id = format!("keyboard@hotkey:{combo}");
@@ -2235,12 +2370,14 @@ impl Engine {
         ) {
             return Ok(entry);
         }
-        let outcome = dunst_platform::key_web_background(
-            self.target.pid,
-            self.target.window_id,
-            keycode,
-            flags,
-        );
+        let outcome = retry_user_active_guard(|| {
+            dunst_platform::key_web_background(
+                self.target.pid,
+                self.target.window_id,
+                keycode,
+                flags,
+            )
+        });
         self.audit_raw_input(
             target_id,
             SemanticAction::Type,
@@ -2265,7 +2402,8 @@ impl Engine {
     /// following `read_text` reads the hovered result.
     #[cfg(target_os = "macos")]
     pub fn hover_at(&self, x: f64, y: f64) -> dunst_core::Result<()> {
-        dunst_platform::hover_at_point(self.target.pid, x, y)
+        self.ensure_point_in_target_window(x, y, "hover_at")?;
+        self.hover_target_background(x, y)
     }
 
     /// Non-macOS stub: raw CGEvent input needs the macOS backend.
@@ -2276,17 +2414,138 @@ impl Engine {
         ))
     }
 
-    /// Read text at **several** screen points by time-multiplexing the OS cursor
-    /// (the operator's idea): one borrow for the whole sweep — decouple the
-    /// hardware mouse, warp to each point in turn to trigger its hover (e.g. a
-    /// chart crosshair value-at-cursor), OCR a region around it — then restore the
-    /// cursor and re-couple the mouse. Reading N values at intervals freezes the
-    /// user's mouse **once** (briefly), not N times. For Chrome/web prefer CDP
-    /// (no borrow). macOS-only.
+    fn file_select_trigger_point(
+        &self,
+        trigger: Option<&FileSelectTrigger>,
+    ) -> dunst_core::Result<Option<(f64, f64)>> {
+        match trigger {
+            None => Ok(None),
+            Some(FileSelectTrigger::Point { x, y }) => {
+                self.ensure_point_in_target_window(*x, *y, "select_file trigger")?;
+                Ok(Some((*x, *y)))
+            }
+            Some(FileSelectTrigger::ElementId(id)) => {
+                let node = self
+                    .scene_graph()
+                    .get(id)
+                    .ok_or_else(|| VisualOpsError::ElementNotFound(id.clone()))?;
+                let bbox = node.bbox.ok_or_else(|| {
+                    VisualOpsError::Execution(format!("element {id:?} has no screen bbox"))
+                })?;
+                if bbox.w <= 0.0 || bbox.h <= 0.0 {
+                    return Err(VisualOpsError::Execution(format!(
+                        "element {id:?} has an empty screen bbox"
+                    )));
+                }
+                let point = (bbox.x + bbox.w / 2.0, bbox.y + bbox.h / 2.0);
+                self.ensure_point_in_target_window(point.0, point.1, "select_file trigger")?;
+                Ok(Some(point))
+            }
+        }
+    }
+
     #[cfg(target_os = "macos")]
-    pub fn read_series(&self, points: &[(f64, f64)]) -> dunst_core::Result<Vec<Vec<TextHit>>> {
+    fn select_file_outcome(
+        &self,
+        file: &Path,
+        trigger_point: Option<(f64, f64)>,
+    ) -> dunst_core::Result<()> {
+        let mut cmd = std::process::Command::new("/usr/bin/osascript");
+        cmd.args([
+            "-e",
+            "on run argv",
+            "-e",
+            "set filePath to item 1 of argv",
+            "-e",
+            "set shouldClick to item 2 of argv",
+            "-e",
+            "tell application \"System Events\"",
+            "-e",
+            "if shouldClick is \"1\" then",
+            "-e",
+            "set px to (item 3 of argv) as integer",
+            "-e",
+            "set py to (item 4 of argv) as integer",
+            "-e",
+            "click at {px, py}",
+            "-e",
+            "delay 0.6",
+            "-e",
+            "end if",
+            "-e",
+            "set chooserOpen to false",
+            "-e",
+            "repeat with p in (every process whose name is \"Open and Save Panel Service\")",
+            "-e",
+            "set chooserOpen to true",
+            "-e",
+            "end repeat",
+            "-e",
+            "if chooserOpen is false then error \"native file chooser did not open\"",
+            "-e",
+            "keystroke \"g\" using {command down, shift down}",
+            "-e",
+            "delay 0.2",
+            "-e",
+            "keystroke filePath",
+            "-e",
+            "delay 0.2",
+            "-e",
+            "key code 36",
+            "-e",
+            "delay 0.5",
+            "-e",
+            "key code 36",
+            "-e",
+            "end tell",
+            "-e",
+            "end run",
+        ]);
+        cmd.arg(file.as_os_str());
+        match trigger_point {
+            Some((x, y)) => {
+                cmd.arg("1");
+                cmd.arg(format!("{}", x.round() as i64));
+                cmd.arg(format!("{}", y.round() as i64));
+            }
+            None => {
+                cmd.arg("0");
+                cmd.arg("0");
+                cmd.arg("0");
+            }
+        }
+        let output = cmd
+            .output()
+            .map_err(|e| VisualOpsError::Execution(format!("select_file failed: {e}")))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(VisualOpsError::Execution(format!(
+            "select_file failed: {}",
+            if stderr.is_empty() { stdout } else { stderr }
+        )))
+    }
+
+    /// Read text at **several** screen points. The default path uses background
+    /// hover and OCRs only the target window. Set `borrow_cursor=true` for the
+    /// older real-cursor path: one borrow for the whole sweep, warp to each point,
+    /// OCR a screen fovea, then restore the cursor. macOS-only.
+    #[cfg(target_os = "macos")]
+    pub fn read_series(
+        &self,
+        points: &[(f64, f64)],
+        borrow_cursor: bool,
+    ) -> dunst_core::Result<Vec<Vec<TextHit>>> {
         if points.is_empty() {
             return Ok(Vec::new());
+        }
+        for &(x, y) in points {
+            self.ensure_point_in_target_window(x, y, "read_series")?;
+        }
+        if !borrow_cursor {
+            return self.read_series_background(points);
         }
         let (x0, y0) = points[0];
         let saved = dunst_platform::cursor_borrow_to(x0, y0)?;
@@ -2298,9 +2557,12 @@ impl Engine {
             // screen grab includes it — and it's app/browser agnostic + fast.
             // A small move INTO the point (a delta, not a circle) makes the
             // crosshair render; then let it paint before the composited grab.
-            let _ = dunst_platform::hover_at_point(self.target.pid, x - 8.0, y);
+            let _ = retry_user_active_guard(|| {
+                dunst_platform::hover_at_point(self.target.pid, x - 8.0, y)
+            });
             std::thread::sleep(std::time::Duration::from_millis(30));
-            let _ = dunst_platform::hover_at_point(self.target.pid, x, y);
+            let _ =
+                retry_user_active_guard(|| dunst_platform::hover_at_point(self.target.pid, x, y));
             std::thread::sleep(std::time::Duration::from_millis(320));
             match self.ocr_screen_fovea(x, y) {
                 Ok(hits) => out.push(hits),
@@ -2316,10 +2578,84 @@ impl Engine {
 
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
-    pub fn read_series(&self, _points: &[(f64, f64)]) -> dunst_core::Result<Vec<Vec<TextHit>>> {
+    pub fn read_series(
+        &self,
+        _points: &[(f64, f64)],
+        _borrow_cursor: bool,
+    ) -> dunst_core::Result<Vec<Vec<TextHit>>> {
         Err(VisualOpsError::Execution(
             "read_series requires a macOS backend".into(),
         ))
+    }
+
+    /// Background series read: no OS cursor borrow. This uses the same target-pid
+    /// hover path as `hover_at`, then OCRs a clipped fovea from the target window
+    /// only.
+    #[cfg(target_os = "macos")]
+    fn read_series_background(
+        &self,
+        points: &[(f64, f64)],
+    ) -> dunst_core::Result<Vec<Vec<TextHit>>> {
+        let mut out = Vec::with_capacity(points.len());
+        for &(x, y) in points {
+            let (lead_x, lead_y) = self.clamp_point_to_target_window(x - 8.0, y);
+            self.hover_target_background(lead_x, lead_y)?;
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            self.hover_target_background(x, y)?;
+            std::thread::sleep(std::time::Duration::from_millis(320));
+            out.push(self.ocr_window_fovea(x, y)?);
+        }
+        Ok(out)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn hover_target_background(&self, x: f64, y: f64) -> dunst_core::Result<()> {
+        self.ensure_point_in_target_window(x, y, "background hover")?;
+        let (ox, oy) = dunst_vision::capture::window_bounds(self.target.window_id)
+            .map(|(x, y, _, _)| (x, y))
+            .unwrap_or((0.0, 0.0));
+        retry_user_active_guard(|| {
+            dunst_platform::hover_web_background(
+                self.target.pid,
+                self.target.window_id,
+                x,
+                y,
+                ox,
+                oy,
+            )
+        })
+    }
+
+    fn clamp_point_to_target_window(&self, x: f64, y: f64) -> (f64, f64) {
+        let window = self.current_window_bounds();
+        (
+            x.clamp(window.x, window.x + window.w),
+            y.clamp(window.y, window.y + window.h),
+        )
+    }
+
+    /// OCR a fovea around `(cx, cy)` from the target window capture, never from a
+    /// raw display rectangle. This is the default read path so a point inside one
+    /// Firefox window cannot accidentally read pixels from another Firefox
+    /// window.
+    #[cfg(target_os = "macos")]
+    fn ocr_window_fovea(&self, cx: f64, cy: f64) -> dunst_core::Result<Vec<TextHit>> {
+        const W: f64 = 680.0;
+        const H: f64 = 420.0;
+        let window = self.current_window_bounds();
+        let region = clipped_region_to_window(
+            Bbox {
+                x: cx - W / 2.0,
+                y: cy - H / 2.0,
+                w: W,
+                h: H,
+            },
+            window,
+        )
+        .ok_or_else(|| {
+            VisualOpsError::Perception("window fovea does not intersect target window".into())
+        })?;
+        self.read_text(Some(region), false)
     }
 
     /// OCR a small fovea of the **composited display** around `(cx, cy)` — the
@@ -2379,9 +2715,9 @@ impl Engine {
 
     /// Single-point [`read_series`](Self::read_series): borrow the cursor, hover
     /// `(x, y)`, OCR around it, restore.
-    pub fn read_at(&self, x: f64, y: f64) -> dunst_core::Result<Vec<TextHit>> {
+    pub fn read_at(&self, x: f64, y: f64, borrow_cursor: bool) -> dunst_core::Result<Vec<TextHit>> {
         Ok(self
-            .read_series(&[(x, y)])?
+            .read_series(&[(x, y)], borrow_cursor)?
             .into_iter()
             .next()
             .unwrap_or_default())
@@ -2544,6 +2880,7 @@ impl Engine {
         refresh_on_change: bool,
     ) -> dunst_core::Result<VisualChangeProbe> {
         let region = region.unwrap_or_else(|| self.current_window_bounds());
+        self.ensure_region_in_target_window(region, "visual_change_probe")?;
         if region.w <= 0.0 || region.h <= 0.0 {
             return Err(VisualOpsError::Perception(
                 "visual_change_probe region width/height must be positive".into(),
@@ -2619,6 +2956,22 @@ impl Engine {
         rows: usize,
     ) -> RegionAxAnalysis {
         let region = region.unwrap_or_else(|| self.current_window_bounds());
+        if let Err(err) = self.ensure_region_in_target_window(region, "analyze_region_ax") {
+            return RegionAxAnalysis {
+                region,
+                columns,
+                rows,
+                points_total: columns * rows,
+                hits: 0,
+                unique_elements: Vec::new(),
+                samples: vec![RegionAxSample {
+                    x: region.x + region.w / 2.0,
+                    y: region.y + region.h / 2.0,
+                    element_key: None,
+                    error: Some(err.to_string()),
+                }],
+            };
+        }
         let columns = columns.clamp(1, 64);
         let rows = rows.clamp(1, 64);
         let mut by_key: BTreeMap<String, RegionAxElement> = BTreeMap::new();
@@ -3277,6 +3630,51 @@ impl Engine {
         Self::raw_input_risk(reasons)
     }
 
+    fn ensure_point_in_target_window(
+        &self,
+        x: f64,
+        y: f64,
+        operation: &str,
+    ) -> dunst_core::Result<()> {
+        if off_target_raw_allowed() {
+            return Ok(());
+        }
+        let window = self.current_window_bounds();
+        if point_in_bbox((x, y), window) {
+            return Ok(());
+        }
+        Err(VisualOpsError::Execution(format!(
+            "{operation} point ({x:.1},{y:.1}) is outside the target window {} {:?}; attach the intended window or set DUNST_MCP_ALLOW_OFF_TARGET_RAW=1",
+            self.target.window_id,
+            window
+        )))
+    }
+
+    fn ensure_region_in_target_window(
+        &self,
+        region: Bbox,
+        operation: &str,
+    ) -> dunst_core::Result<()> {
+        if off_target_raw_allowed() {
+            return Ok(());
+        }
+        let window = self.current_window_bounds();
+        if rect_intersection_area(region, window) > 0.0
+            && region.x >= window.x
+            && region.y >= window.y
+            && region.x + region.w <= window.x + window.w
+            && region.y + region.h <= window.y + window.h
+        {
+            return Ok(());
+        }
+        Err(VisualOpsError::Execution(format!(
+            "{operation} region {:?} is outside the target window {} {:?}; pass target-window screen coordinates or set DUNST_MCP_ALLOW_OFF_TARGET_RAW=1",
+            region,
+            self.target.window_id,
+            window
+        )))
+    }
+
     /// Return a pending-approval audit entry when a raw input has not been
     /// explicitly approved. Raw inputs are nameable by synthetic target ids such
     /// as `screen@x,y:click` and `keyboard@hotkey:cmd+l`.
@@ -3385,6 +3783,20 @@ impl Engine {
         Err(VisualOpsError::Execution(format!(
             "no clickable option found for query {query:?}"
         )))
+    }
+
+    fn resolve_action_target_refreshing_missing(
+        &mut self,
+        id: &str,
+        preferred: &[SemanticAction],
+    ) -> dunst_core::Result<(String, SemanticAction)> {
+        match self.resolve_action_target(id, preferred) {
+            Err(err) if is_element_not_found(&err) => {
+                self.refresh()?;
+                self.resolve_action_target(id, preferred)
+            }
+            other => other,
+        }
     }
 
     fn resolve_action_target(
@@ -3534,6 +3946,23 @@ impl Engine {
     /// `co_target` carries a second risk-bearing participant (audit #3 — a drag's
     /// drop target). The gate fires on the **max** of the acted-on element and the
     /// co-target, and the grant must cover *every* high-risk participant.
+    fn act_refreshing_missing(
+        &mut self,
+        id: &str,
+        action: SemanticAction,
+        argument: Option<&str>,
+        reasoning: Option<&str>,
+        co_target: Option<CoTarget>,
+    ) -> dunst_core::Result<AuditEntry> {
+        match self.act(id, action, argument, reasoning, co_target.clone()) {
+            Err(err) if is_element_not_found(&err) => {
+                self.refresh()?;
+                self.act(id, action, argument, reasoning, co_target)
+            }
+            other => other,
+        }
+    }
+
     fn act(
         &mut self,
         id: &str,
@@ -3598,7 +4027,9 @@ impl Engine {
         }
 
         // Execute, then re-perceive and diff.
-        let result = match self.executor.perform(&self.target, &node, action, argument) {
+        let executor_result = match retry_user_active_guard(|| {
+            self.executor.perform(&self.target, &node, action, argument)
+        }) {
             Ok(()) => ActionResult::Success,
             Err(_) => ActionResult::Failed,
         };
@@ -3606,14 +4037,47 @@ impl Engine {
         // successful action; drop it (and clear any pending-gate marker) so a
         // repeat re-gates. (`refresh` below also clears all grants — this keeps
         // the semantics explicit and independent of refresh ordering.)
-        if result == ActionResult::Success {
+        if executor_result == ActionResult::Success {
             for g in &gated_ids {
                 self.approvals.remove(g);
                 self.pending_gate_ids.remove(g);
             }
         }
         let _ = self.refresh();
-        let graph_diff = self.diff_since();
+        let mut graph_diff = self.diff_since();
+        let mut result = verified_action_result(
+            &executor_result,
+            action,
+            id,
+            argument,
+            &graph_diff,
+            self.scene_graph().get(id),
+        );
+        if executor_result == ActionResult::Success
+            && result == ActionResult::Failed
+            && matches!(action, SemanticAction::Type)
+            && argument.is_some_and(|arg| !arg.is_empty())
+        {
+            let started = Instant::now();
+            while started.elapsed() < TYPE_VERIFY_SETTLE_TIMEOUT {
+                std::thread::sleep(TYPE_VERIFY_POLL_INTERVAL);
+                if self.refresh().is_err() {
+                    break;
+                }
+                graph_diff = self.diff_since();
+                result = verified_action_result(
+                    &executor_result,
+                    action,
+                    id,
+                    argument,
+                    &graph_diff,
+                    self.scene_graph().get(id),
+                );
+                if result == ActionResult::Success {
+                    break;
+                }
+            }
+        }
         Ok(self.push_entry(AuditEntry {
             result,
             graph_diff,
@@ -3725,13 +4189,20 @@ fn browser_tab_title(graph: &SceneGraph, node: &SceneNode) -> String {
         .to_string()
 }
 
-fn browser_tab_selected(node: &SceneNode) -> bool {
+fn browser_tab_selected(graph: &SceneGraph, node: &SceneNode, title: &str) -> bool {
+    let window_title = normalize_match(&graph.window.title);
+    let tab_title = normalize_match(title);
     node.focused
         || node
             .value
             .as_deref()
             .map(normalize_match)
-            .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "selected" | "sélectionné"))
+            .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "selected" | "selectionne"))
+        || (!window_title.is_empty()
+            && !tab_title.is_empty()
+            && (window_title == tab_title
+                || window_title.starts_with(&tab_title)
+                || tab_title.starts_with(&window_title)))
 }
 
 fn option_selected_state(node: &SceneNode) -> Option<bool> {
@@ -3746,7 +4217,7 @@ fn option_selected_state(node: &SceneNode) -> Option<bool> {
     let value = normalize_match(raw);
     if matches!(
         value.as_str(),
-        "1" | "true" | "yes" | "on" | "selected" | "checked" | "sélectionné" | "coche"
+        "1" | "true" | "yes" | "on" | "selected" | "checked" | "selectionne" | "coche"
     ) {
         return Some(true);
     }
@@ -3784,8 +4255,116 @@ fn push_unique_action(out: &mut Vec<SemanticAction>, action: SemanticAction) {
     }
 }
 
+fn canonical_file_path(path: &str) -> dunst_core::Result<PathBuf> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(VisualOpsError::Execution(
+            "select_file requires a non-empty path".into(),
+        ));
+    }
+    let path = Path::new(trimmed);
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| VisualOpsError::Execution(format!("file {trimmed:?} not accessible: {e}")))?;
+    if !canonical.is_file() {
+        return Err(VisualOpsError::Execution(format!(
+            "path {:?} is not a file",
+            canonical.display()
+        )));
+    }
+    Ok(canonical)
+}
+
+fn off_target_raw_allowed() -> bool {
+    std::env::var("DUNST_MCP_ALLOW_OFF_TARGET_RAW")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 fn normalize_match(value: &str) -> String {
-    value.trim().to_lowercase()
+    let mut normalized = String::with_capacity(value.len());
+    for ch in value.trim().chars().flat_map(char::to_lowercase) {
+        match ch {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => normalized.push('a'),
+            'ç' => normalized.push('c'),
+            'è' | 'é' | 'ê' | 'ë' => normalized.push('e'),
+            'ì' | 'í' | 'î' | 'ï' => normalized.push('i'),
+            'ñ' => normalized.push('n'),
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' => normalized.push('o'),
+            'ù' | 'ú' | 'û' | 'ü' => normalized.push('u'),
+            'ý' | 'ÿ' => normalized.push('y'),
+            'æ' => normalized.push_str("ae"),
+            'œ' => normalized.push_str("oe"),
+            other => normalized.push(other),
+        }
+    }
+    normalized
+}
+
+fn normalized_contains_query(haystack: &str, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    if !haystack.contains(query) {
+        return false;
+    }
+    if !query.chars().all(|ch| ch.is_ascii_alphanumeric()) || query.chars().count() < 4 {
+        return true;
+    }
+    normalized_contains_word(haystack, query)
+}
+
+fn normalized_contains_word(haystack: &str, query: &str) -> bool {
+    let h: Vec<char> = haystack.chars().collect();
+    let q: Vec<char> = query.chars().collect();
+    if q.is_empty() || q.len() > h.len() {
+        return false;
+    }
+    for start in 0..=h.len() - q.len() {
+        if h[start..start + q.len()] != q[..] {
+            continue;
+        }
+        let before = start == 0 || !h[start - 1].is_ascii_alphanumeric();
+        let after = start + q.len() == h.len() || !h[start + q.len()].is_ascii_alphanumeric();
+        if before && after {
+            return true;
+        }
+    }
+    false
+}
+
+fn retry_user_active_guard<T, F>(f: F) -> dunst_core::Result<T>
+where
+    F: FnMut() -> dunst_core::Result<T>,
+{
+    retry_user_active_guard_after(Duration::from_millis(400), f)
+}
+
+fn retry_user_active_guard_after<T, F>(delay: Duration, mut f: F) -> dunst_core::Result<T>
+where
+    F: FnMut() -> dunst_core::Result<T>,
+{
+    let mut next_delay = delay;
+    let mut last_guard_err = None;
+    for _ in 0..4 {
+        match f() {
+            Err(err) if is_user_active_guard_error(&err) => {
+                last_guard_err = Some(err);
+                std::thread::sleep(next_delay);
+                next_delay += delay;
+            }
+            other => return other,
+        }
+    }
+    Err(last_guard_err.expect("guard retry loop stores the last guard error"))
+}
+
+fn is_user_active_guard_error(err: &VisualOpsError) -> bool {
+    err.to_string().contains("user-active guard blocked")
+}
+
+fn is_element_not_found(err: &VisualOpsError) -> bool {
+    matches!(err, VisualOpsError::ElementNotFound(_))
 }
 
 fn is_terminal_app_name(value: &str) -> bool {
@@ -3967,6 +4546,7 @@ fn read_chrome_node(
     }
     is_unlabeled_window_chrome_button(node, window_rect)
         || browser_chrome_node(graph, node, window_rect)
+        || web_app_chrome_node(graph, node, window_rect)
 }
 
 fn page_state_chrome_node(
@@ -4000,6 +4580,55 @@ fn browser_chrome_node(graph: &SceneGraph, node: &SceneNode, window_rect: Option
                 | Role::StaticText
                 | Role::Radio
                 | Role::Toolbar
+        )
+}
+
+fn web_app_chrome_node(graph: &SceneGraph, node: &SceneNode, window_rect: Option<Bbox>) -> bool {
+    if !is_browser_app_name(&graph.window.app_name) {
+        return false;
+    }
+    let Some(window) = window_rect else {
+        return false;
+    };
+    let Some(b) = node.bbox else { return false };
+    if !bbox_intersects(b, window) {
+        return false;
+    }
+    let Some(raw) = node
+        .label
+        .as_deref()
+        .or(node.value.as_deref())
+        .or(node.help.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return false;
+    };
+    let text = normalize_match(raw);
+
+    if likely_url(raw).is_some() && (b.y <= window.y + 220.0 || b.x <= window.x + window.w * 0.32) {
+        return true;
+    }
+    if matches!(
+        text.as_str(),
+        "open intercom messenger"
+            | "help center"
+            | "copy"
+            | "copier"
+            | "compte"
+            | "account"
+            | "nouveautes"
+            | "notifications"
+    ) {
+        return true;
+    }
+
+    let left_rail = b.x <= window.x + window.w * 0.28;
+    let top_nav = b.y <= window.y + 180.0;
+    (left_rail || top_nav)
+        && matches!(
+            text.as_str(),
+            "accueil" | "home" | "connect" | "profil" | "profile" | "parametres" | "settings"
         )
 }
 
@@ -4049,6 +4678,30 @@ fn page_state_key_element_candidate(
     window_rect: Option<Bbox>,
     menubar_root: Option<&str>,
 ) -> bool {
+    let has_text = node
+        .label
+        .as_deref()
+        .or(node.value.as_deref())
+        .or(node.help.as_deref())
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty());
+    if node.bbox.is_some_and(|b| b.w < 4.0 || b.h < 4.0) {
+        return false;
+    }
+    if !has_text && matches!(node.role, Role::Unknown | Role::Group | Role::Image) {
+        return false;
+    }
+    if !has_text
+        && node.bbox.is_some_and(|b| {
+            window_rect.is_some_and(|window| {
+                let node_area = b.w.max(0.0) * b.h.max(0.0);
+                let window_area = window.w.max(0.0) * window.h.max(0.0);
+                window_area > 0.0 && node_area >= window_area * 0.50
+            })
+        })
+    {
+        return false;
+    }
     if is_top_level_menu(node, menubar_root)
         || matches!(
             node.role,
@@ -4162,7 +4815,7 @@ fn find_rank(
     node: &SceneNode,
     window_rect: Option<Bbox>,
     menubar_root: Option<&str>,
-) -> (u8, &'static str, String) {
+) -> (u8, u8, &'static str, String) {
     let tier = if node_actionable(node, window_rect, menubar_root) {
         0
     } else if node_visible_or_menu(node, window_rect, menubar_root) {
@@ -4172,7 +4825,98 @@ fn find_rank(
     } else {
         3
     };
-    (tier, node.role.as_str(), node.id.clone())
+    (
+        tier,
+        find_role_priority(node.role),
+        node.role.as_str(),
+        node.id.clone(),
+    )
+}
+
+fn find_role_priority(role: Role) -> u8 {
+    match role {
+        Role::TextField | Role::TextArea => 0,
+        Role::Checkbox | Role::Radio | Role::MenuButton => 1,
+        Role::Button | Role::Row | Role::Cell => 2,
+        Role::List | Role::Table | Role::Outline => 3,
+        Role::Group | Role::Unknown => 4,
+        Role::Window | Role::Toolbar | Role::Menu | Role::MenuBar | Role::MenuItem => 5,
+        Role::Image => 6,
+        Role::StaticText => 7,
+    }
+}
+
+fn associated_control_for_label<'a>(
+    label: &SceneNode,
+    graph: &'a SceneGraph,
+    window_rect: Option<Bbox>,
+    menubar_root: Option<&str>,
+) -> Option<&'a SceneNode> {
+    if label.role != Role::StaticText {
+        return None;
+    }
+    graph
+        .nodes
+        .values()
+        .filter(|candidate| {
+            candidate.id != label.id
+                && is_label_associable_control(candidate.role)
+                && node_visible_or_menu(candidate, window_rect, menubar_root)
+        })
+        .filter_map(|candidate| {
+            associated_control_score(label, candidate).map(|score| (score, candidate))
+        })
+        .min_by_key(|(score, candidate)| (*score, candidate.id.clone()))
+        .map(|(_, candidate)| candidate)
+}
+
+fn is_label_associable_control(role: Role) -> bool {
+    matches!(
+        role,
+        Role::TextField | Role::TextArea | Role::Checkbox | Role::Radio | Role::MenuButton
+    )
+}
+
+fn associated_control_score(
+    label: &SceneNode,
+    candidate: &SceneNode,
+) -> Option<(u8, u8, i64, i64)> {
+    let label_box = label.bbox?;
+    let candidate_box = candidate.bbox?;
+    let same_parent = label.parent.as_deref() == candidate.parent.as_deref();
+    let vertical_gap = candidate_box.y - (label_box.y + label_box.h);
+    let horizontal_delta = (candidate_box.x - label_box.x).abs();
+    let overlaps_x = intervals_overlap(
+        label_box.x - 24.0,
+        label_box.x + label_box.w + 24.0,
+        candidate_box.x,
+        candidate_box.x + candidate_box.w,
+    );
+    let overlaps_y = intervals_overlap(
+        label_box.y - 8.0,
+        label_box.y + label_box.h + 8.0,
+        candidate_box.y,
+        candidate_box.y + candidate_box.h,
+    );
+    let below_label = (-4.0..=96.0).contains(&vertical_gap) && overlaps_x;
+    let right_of_label = overlaps_y
+        && candidate_box.x >= label_box.x + label_box.w - 8.0
+        && horizontal_delta <= 360.0;
+
+    if !below_label && !right_of_label {
+        return None;
+    }
+
+    Some((
+        u8::from(!same_parent),
+        if below_label { 0 } else { 1 },
+        vertical_gap.max(0.0).round() as i64,
+        horizontal_delta.round() as i64,
+    ))
+}
+
+fn intervals_overlap(a_start: f64, a_end: f64, b_start: f64, b_end: f64) -> bool {
+    a_start <= b_end && b_start <= a_end
 }
 
 /// WP-J/J1 compact projection of one node: keep only the agent-facing fields and
@@ -4204,6 +4948,7 @@ fn compact_node(n: &SceneNode) -> Value {
 /// A second risk-bearing participant in an action — the **drop target** of a drag
 /// (audit #3). Carried into [`Engine::act`] so the gate can combine its risk with
 /// the dragged element's.
+#[derive(Clone)]
 struct CoTarget {
     id: String,
     risk: RiskAssessment,
@@ -4233,12 +4978,61 @@ fn merge_risk(base: &RiskAssessment, extra: &RiskAssessment, label: &str) -> Ris
     }
 }
 
+fn verified_action_result(
+    executor_result: &ActionResult,
+    action: SemanticAction,
+    id: &str,
+    argument: Option<&str>,
+    graph_diff: &GraphDiff,
+    current_node: Option<&SceneNode>,
+) -> ActionResult {
+    if *executor_result != ActionResult::Success {
+        return executor_result.clone();
+    }
+
+    match action {
+        SemanticAction::Type if argument.is_some_and(|arg| !arg.is_empty()) => {
+            if typed_target_value_matches_expected(
+                id,
+                argument.unwrap_or_default(),
+                graph_diff,
+                current_node,
+            ) {
+                ActionResult::Success
+            } else {
+                ActionResult::Failed
+            }
+        }
+        _ => ActionResult::Success,
+    }
+}
+
+fn typed_target_value_matches_expected(
+    id: &str,
+    expected: &str,
+    graph_diff: &GraphDiff,
+    current_node: Option<&SceneNode>,
+) -> bool {
+    current_node
+        .and_then(|node| node.value.as_deref().or(node.label.as_deref()))
+        .is_some_and(|value| value == expected)
+        || graph_diff.changes.iter().any(|change| {
+            matches!(
+                change,
+                dunst_core::NodeChange::Changed { id: changed_id, field, after, .. }
+                    if changed_id == id && matches!(field.as_str(), "value" | "label") && after == expected
+            )
+        })
+}
+
 #[cfg(test)]
 mod helper_tests {
     use super::{
-        base64_encode, char_keycode, is_axis_token, launchable_app_from_info_json,
-        looks_like_clock, parse_combo, parse_value,
+        base64_encode, char_keycode, is_axis_token, is_press_key_name,
+        launchable_app_from_info_json, layout_sensitive_hotkey_message, looks_like_clock,
+        parse_combo, parse_value, typed_target_value_matches_expected,
     };
+    use dunst_core::{GraphDiff, NodeChange};
     use serde_json::json;
     use std::{collections::BTreeSet, path::Path};
 
@@ -4258,6 +5052,61 @@ mod helper_tests {
         assert_eq!(parse_combo("ctrl+a"), Some((0x0004_0000, 0x00)));
         assert_eq!(parse_combo("enter"), Some((0, 0x24)));
         assert_eq!(parse_combo("cmd+ "), None); // no key
+    }
+
+    #[test]
+    fn cmd_a_is_rejected_as_layout_sensitive() {
+        let message = layout_sensitive_hotkey_message("cmd+a").unwrap();
+        assert!(message.contains("keyboard-layout sensitive"));
+        assert!(layout_sensitive_hotkey_message("ctrl+a").is_none());
+        assert!(layout_sensitive_hotkey_message("cmd+l").is_none());
+        assert!(layout_sensitive_hotkey_message("cmd+shift+a").is_none());
+    }
+
+    #[test]
+    fn press_key_whitelist_includes_navigation_keys() {
+        for key in ["Home", "End", "PageUp", "PageDown", "page_up", "page_down"] {
+            assert!(is_press_key_name(key), "{key} should be accepted");
+        }
+        assert!(!is_press_key_name("definitely-not-a-real-key"));
+    }
+
+    #[test]
+    fn typed_verification_rejects_partial_target_value() {
+        let diff = GraphDiff {
+            changes: vec![NodeChange::Changed {
+                id: "field_title".into(),
+                field: "value".into(),
+                before: "old".into(),
+                after: "nce - partial".into(),
+            }],
+        };
+
+        assert!(!typed_target_value_matches_expected(
+            "field_title",
+            "Freelance - full",
+            &diff,
+            None,
+        ));
+    }
+
+    #[test]
+    fn typed_verification_accepts_exact_target_value() {
+        let diff = GraphDiff {
+            changes: vec![NodeChange::Changed {
+                id: "field_title".into(),
+                field: "value".into(),
+                before: "old".into(),
+                after: "Freelance - full".into(),
+            }],
+        };
+
+        assert!(typed_target_value_matches_expected(
+            "field_title",
+            "Freelance - full",
+            &diff,
+            None,
+        ));
     }
 
     #[test]
@@ -4484,6 +5333,45 @@ mod tests {
         (eng, calls)
     }
 
+    struct SequencePerceptor {
+        captures: Mutex<Vec<Vec<dunst_core::RawAxNode>>>,
+        last: Mutex<Vec<dunst_core::RawAxNode>>,
+        window: WindowRef,
+    }
+
+    impl SequencePerceptor {
+        fn new(captures: Vec<Vec<dunst_core::RawAxNode>>, window: WindowRef) -> Self {
+            Self {
+                captures: Mutex::new(captures),
+                last: Mutex::new(Vec::new()),
+                window,
+            }
+        }
+    }
+
+    impl Perceptor for SequencePerceptor {
+        fn capture(&self, _target: &Target) -> dunst_core::Result<Vec<dunst_core::RawAxNode>> {
+            let next = {
+                let mut captures = self.captures.lock().unwrap();
+                if captures.is_empty() {
+                    None
+                } else {
+                    Some(captures.remove(0))
+                }
+            };
+            if let Some(roots) = next {
+                *self.last.lock().unwrap() = roots.clone();
+                Ok(roots)
+            } else {
+                Ok(self.last.lock().unwrap().clone())
+            }
+        }
+
+        fn window_ref(&self, _target: &Target) -> dunst_core::Result<WindowRef> {
+            Ok(self.window.clone())
+        }
+    }
+
     #[test]
     fn low_risk_click_proceeds_and_executes() {
         let (mut eng, calls) = engine_with_counter();
@@ -4491,6 +5379,126 @@ mod tests {
         let entry = eng.click_element(&id, Some("create")).unwrap();
         assert_eq!(entry.result, ActionResult::Success);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn click_element_refreshes_once_when_id_is_missing_from_stale_graph() {
+        let stale = raw_node(
+            "AXWindow",
+            Some("CVs"),
+            None,
+            test_bbox(0.0, 0.0, 700.0, 900.0),
+            &[],
+            vec![],
+        );
+        let fresh = raw_node(
+            "AXWindow",
+            Some("CVs"),
+            None,
+            test_bbox(0.0, 0.0, 700.0, 900.0),
+            &[],
+            vec![raw_node(
+                "AXButton",
+                Some("Importer"),
+                None,
+                test_bbox(300.0, 200.0, 120.0, 32.0),
+                &["press"],
+                vec![],
+            )],
+        );
+        let perceptor = Box::new(SequencePerceptor::new(
+            vec![vec![stale], vec![fresh]],
+            WindowRef {
+                pid: 1,
+                window_id: 1,
+                app_name: "Firefox".into(),
+                title: "Collective".into(),
+            },
+        ));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let exec = Box::new(RecordingExecutor(calls.clone()));
+        let mut eng = Engine::new(
+            perceptor,
+            exec,
+            Target {
+                pid: 1,
+                window_id: 1,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            eng.scene_graph().get("btn_importer").is_none(),
+            "initial graph is stale and lacks the target"
+        );
+        let entry = eng
+            .click_element("btn_importer", Some("retry stale graph"))
+            .unwrap();
+        assert_eq!(entry.result, ActionResult::Success);
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "btn_importer");
+    }
+
+    #[test]
+    fn type_into_waits_for_ax_value_to_settle() {
+        let expected =
+            "Freelance — Architecte DevSecOps & Platform Engineering | Mission Défense air-gapped";
+        let window = |value: &str| {
+            raw_node(
+                "AXWindow",
+                Some("Collective"),
+                None,
+                test_bbox(0.0, 0.0, 700.0, 900.0),
+                &[],
+                vec![raw_node(
+                    "AXTextField",
+                    Some("Titre de poste"),
+                    Some(value),
+                    test_bbox(100.0, 120.0, 568.0, 32.0),
+                    &["press"],
+                    vec![],
+                )],
+            )
+        };
+        let perceptor = Box::new(SequencePerceptor::new(
+            vec![
+                vec![window("nce — Architecte DevSecOps & Platform Engineering | Mission Défense air-gapped")],
+                vec![window("Freel")],
+                vec![window(expected)],
+            ],
+            WindowRef {
+                pid: 1,
+                window_id: 1,
+                app_name: "Firefox".into(),
+                title: "Collective".into(),
+            },
+        ));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let exec = Box::new(RecordingExecutor(calls.clone()));
+        let mut eng = Engine::new(
+            perceptor,
+            exec,
+            Target {
+                pid: 1,
+                window_id: 1,
+            },
+        )
+        .unwrap();
+        let field = id_for(&eng, "Titre de poste");
+
+        let entry = eng
+            .type_into(&field, expected, Some("wait for AX settle"))
+            .unwrap();
+
+        assert_eq!(entry.result, ActionResult::Success);
+        assert_eq!(
+            eng.scene_graph().get(&field).unwrap().value.as_deref(),
+            Some(expected)
+        );
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, field);
     }
 
     #[test]
@@ -4844,7 +5852,11 @@ mod tests {
         let ok = eng
             .type_into(&field, "supprimer tout", Some("approved"))
             .unwrap();
-        assert_eq!(ok.result, ActionResult::Success);
+        assert_eq!(
+            ok.result,
+            ActionResult::Failed,
+            "mock executor records the type attempt, but the unchanged fixture must fail verification"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         // One-shot: a second destructive type gates again (grant consumed + refresh).
@@ -4854,8 +5866,17 @@ mod tests {
 
         // Benign text into the same field is never gated.
         let benign = eng.type_into(&field, "bonjour", None).unwrap();
-        assert_eq!(benign.result, ActionResult::Success);
+        assert_eq!(benign.result, ActionResult::Failed);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        // Regression: "provider" contains the French destructive keyword
+        // "vider", but it is not a destructive word on token boundaries.
+        let provider = eng
+            .type_into(&field, "failover multi-provider", None)
+            .unwrap();
+        assert_eq!(provider.result, ActionResult::Failed);
+        assert_eq!(provider.risk.level, RiskLevel::Low);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
     // --- effective_risk in isolation (C2 refactor) --------------------------
@@ -5150,6 +6171,76 @@ mod tests {
     }
 
     #[test]
+    fn find_element_matches_accents_insensitively() {
+        let window = raw_node(
+            "AXWindow",
+            Some("Profil"),
+            None,
+            test_bbox(0.0, 0.0, 700.0, 500.0),
+            &[],
+            vec![raw_node(
+                "AXButton",
+                Some("Éditer les expertises"),
+                None,
+                test_bbox(260.0, 80.0, 140.0, 36.0),
+                &["press"],
+                vec![],
+            )],
+        );
+        let (eng, _) = engine_from_roots(vec![window], "Browser", "Profil");
+
+        assert!(
+            !eng.find_element_filtered("éditer", true).is_empty(),
+            "accented query should match"
+        );
+        assert!(
+            !eng.find_element_filtered("editer", true).is_empty(),
+            "unaccented query should match accented UI text"
+        );
+    }
+
+    #[test]
+    fn find_element_promotes_editable_control_associated_with_matching_label() {
+        let window = raw_node(
+            "AXWindow",
+            Some("Experience"),
+            None,
+            test_bbox(0.0, 0.0, 700.0, 500.0),
+            &[],
+            vec![
+                raw_node(
+                    "AXStaticText",
+                    Some("Description"),
+                    None,
+                    test_bbox(40.0, 80.0, 100.0, 20.0),
+                    &[],
+                    vec![],
+                ),
+                raw_node(
+                    "AXTextArea",
+                    None,
+                    Some("Existing body"),
+                    test_bbox(40.0, 108.0, 500.0, 160.0),
+                    &["press"],
+                    vec![],
+                ),
+            ],
+        );
+        let (eng, _) = engine_from_roots(vec![window], "Firefox", "Experience");
+
+        let matches = eng.find_element_filtered("description", true);
+        assert_eq!(
+            matches.first().map(|node| node.role),
+            Some(Role::TextArea),
+            "nearest editable field should rank before the static label: {matches:?}"
+        );
+        assert!(
+            matches.iter().any(|node| node.role == Role::StaticText),
+            "the matching label remains present for orientation"
+        );
+    }
+
+    #[test]
     fn page_state_is_lightweight_orientation_snapshot() {
         let (eng, _) = engine_with_counter();
         let state = eng.page_state(8);
@@ -5186,6 +6277,103 @@ mod tests {
             "window root should not consume page_state key-element budget: {:?}",
             state.key_elements
         );
+    }
+
+    #[test]
+    fn page_state_drops_unlabeled_full_size_unknown_containers() {
+        let window = raw_node(
+            "AXWindow",
+            Some("Collective"),
+            None,
+            test_bbox(2560.0, 440.0, 1728.0, 1000.0),
+            &[],
+            vec![
+                raw_node(
+                    "AXUnknown",
+                    None,
+                    None,
+                    test_bbox(2560.0, 440.0, 1728.0, 1000.0),
+                    &["press"],
+                    vec![],
+                ),
+                raw_node(
+                    "AXButton",
+                    Some("Modifier"),
+                    None,
+                    test_bbox(3627.0, 1306.0, 81.0, 32.0),
+                    &["press"],
+                    vec![],
+                ),
+            ],
+        );
+        let (eng, _) = engine_from_roots(vec![window], "Firefox", "Collective");
+
+        let state = eng.page_state(2);
+        assert!(
+            state
+                .key_elements
+                .iter()
+                .all(|element| element.role != "unknown"),
+            "unlabeled full-size unknown containers should be suppressed: {:?}",
+            state.key_elements
+        );
+        assert!(
+            state
+                .key_elements
+                .iter()
+                .any(|element| element.label.as_deref() == Some("Modifier")),
+            "real action should stay visible: {:?}",
+            state.key_elements
+        );
+    }
+
+    #[test]
+    fn verify_state_supports_focused_field() {
+        let mut description = raw_node(
+            "AXTextArea",
+            Some("Description"),
+            Some("Texte"),
+            test_bbox(40.0, 80.0, 240.0, 120.0),
+            &["press"],
+            vec![],
+        );
+        description.focused = true;
+        let window = raw_node(
+            "AXWindow",
+            Some("Form"),
+            None,
+            test_bbox(0.0, 0.0, 500.0, 400.0),
+            &[],
+            vec![description],
+        );
+        let (eng, _) = engine_from_roots(vec![window], "Browser", "Form");
+        let field = id_for(&eng, "Description");
+
+        assert!(eng.verify_state(&field, "focused", "true").unwrap());
+        assert!(!eng.verify_state(&field, "focused", "false").unwrap());
+    }
+
+    #[test]
+    fn raise_element_executes_raise_affordance() {
+        let window = raw_node(
+            "AXWindow",
+            Some("Collective"),
+            None,
+            test_bbox(0.0, 0.0, 500.0, 400.0),
+            &["raise"],
+            vec![],
+        );
+        let (mut eng, calls) = engine_from_roots(vec![window], "Firefox", "Collective");
+        let id = id_for(&eng, "Collective");
+
+        let entry = eng
+            .raise_element(&id, Some("bring target window forward"))
+            .unwrap();
+        assert_eq!(entry.result, ActionResult::Success);
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, id);
+        assert_eq!(recorded[0].1, SemanticAction::Raise);
     }
 
     #[test]
@@ -5268,6 +6456,51 @@ mod tests {
     }
 
     #[test]
+    fn page_state_drops_tiny_technical_controls_from_key_budget() {
+        let window = raw_node(
+            "AXWindow",
+            Some("Expertises"),
+            None,
+            test_bbox(0.0, 0.0, 700.0, 900.0),
+            &[],
+            vec![
+                raw_node(
+                    "AXCheckBox",
+                    Some("Rust"),
+                    None,
+                    test_bbox(120.0, 180.0, 1.0, 1.0),
+                    &["press"],
+                    vec![],
+                ),
+                raw_node(
+                    "AXButton",
+                    Some("Ajouter"),
+                    None,
+                    test_bbox(260.0, 180.0, 120.0, 36.0),
+                    &["press"],
+                    vec![],
+                ),
+            ],
+        );
+        let (eng, _) = engine_from_roots(vec![window], "Firefox", "Expertises");
+
+        let state = eng.page_state(8);
+        assert!(
+            state.key_elements.iter().all(|e| e.id != "chk_rust"),
+            "1x1 technical checkbox should not consume page_state budget: {:?}",
+            state.key_elements
+        );
+        assert!(
+            state
+                .key_elements
+                .iter()
+                .any(|e| e.label.as_deref() == Some("Ajouter")),
+            "real visible action should remain present: {:?}",
+            state.key_elements
+        );
+    }
+
+    #[test]
     fn pick_option_resolves_static_text_to_clickable_parent() {
         let window = raw_node(
             "AXWindow",
@@ -5308,6 +6541,39 @@ mod tests {
         assert_eq!(picked.audit.result, ActionResult::Success);
         assert_eq!(picked.matched_id, text);
         assert_eq!(picked.action_id, clicked_id);
+    }
+
+    #[test]
+    fn pick_option_reads_french_selected_state_after_normalization() {
+        let window = raw_node(
+            "AXWindow",
+            Some("Options"),
+            None,
+            test_bbox(0.0, 0.0, 600.0, 500.0),
+            &[],
+            vec![raw_node(
+                "AXGroup",
+                None,
+                Some("Sélectionné"),
+                test_bbox(40.0, 100.0, 300.0, 36.0),
+                &["press"],
+                vec![raw_node(
+                    "AXStaticText",
+                    Some("Disponibilité Collective"),
+                    None,
+                    test_bbox(56.0, 108.0, 220.0, 18.0),
+                    &[],
+                    vec![],
+                )],
+            )],
+        );
+        let (mut eng, _) = engine_from_roots(vec![window], "Browser", "Options");
+
+        let picked = eng
+            .pick_option("Disponibilité Collective", true, Some("select option"))
+            .unwrap();
+        assert_eq!(picked.selected_before, Some(true));
+        assert_eq!(picked.selected_after, Some(true));
     }
 
     #[test]
@@ -5404,6 +6670,154 @@ mod tests {
             .key_elements
             .iter()
             .all(|e| e.label.as_deref() != Some("Actualiser")));
+    }
+
+    #[test]
+    fn text_snapshot_filters_web_app_navigation_chrome() {
+        let json = r#"[
+          {
+            "ax_role": "AXWindow",
+            "label": "Collective",
+            "frame": { "x": 2560, "y": 440, "w": 1728, "h": 1000 },
+            "children": [
+              {
+                "ax_role": "AXStaticText",
+                "label": "Accueil",
+                "frame": { "x": 2612, "y": 536, "w": 49, "h": 18 }
+              },
+              {
+                "ax_role": "AXStaticText",
+                "label": "www.collective.work/profile/clement-liard",
+                "frame": { "x": 2888, "y": 557, "w": 237, "h": 15 }
+              },
+              {
+                "ax_role": "AXStaticText",
+                "label": "Connect",
+                "frame": { "x": 2576, "y": 577, "w": 49, "h": 15 }
+              },
+              {
+                "ax_role": "AXButton",
+                "label": "copy",
+                "ax_actions": ["press"],
+                "frame": { "x": 3133, "y": 556, "w": 16, "h": 16 }
+              },
+              {
+                "ax_role": "AXButton",
+                "label": "Open Intercom Messenger",
+                "ax_actions": ["press"],
+                "frame": { "x": 4196, "y": 1350, "w": 48, "h": 48 }
+              },
+              {
+                "ax_role": "AXButton",
+                "label": "Modifier les informations principales",
+                "ax_actions": ["press"],
+                "frame": { "x": 3181, "y": 669, "w": 32, "h": 32 }
+              },
+              {
+                "ax_role": "AXStaticText",
+                "label": "Freelance Architecte DevSecOps & IA souveraine",
+                "frame": { "x": 3343, "y": 721, "w": 500, "h": 22 }
+              }
+            ]
+          }
+        ]"#;
+        let eng = engine_from_json(json, "Firefox", "Collective");
+
+        let snippets = eng.text_snapshot(None, true, 20);
+        let texts: Vec<&str> = snippets.iter().map(|s| s.text.as_str()).collect();
+        assert!(texts
+            .iter()
+            .any(|text| text.contains("Freelance Architecte DevSecOps")));
+        assert!(!texts.contains(&"Accueil"));
+        assert!(!texts.contains(&"Connect"));
+        assert!(!texts
+            .iter()
+            .any(|text| text.contains("collective.work/profile")));
+
+        let state = eng.page_state(20);
+        assert!(state
+            .visible_text
+            .iter()
+            .any(|text| text.contains("Freelance Architecte DevSecOps")));
+        assert!(state.visible_text.iter().all(|text| text != "Accueil"));
+        assert!(state
+            .key_elements
+            .iter()
+            .all(|element| element.label.as_deref() != Some("copy")));
+        assert!(state
+            .key_elements
+            .iter()
+            .all(|element| { element.label.as_deref() != Some("Open Intercom Messenger") }));
+        assert!(state.key_elements.iter().any(|element| {
+            element.label.as_deref() == Some("Modifier les informations principales")
+        }));
+    }
+
+    #[test]
+    fn text_snapshot_query_matches_whole_words_not_substrings_inside_words() {
+        let window = raw_node(
+            "AXWindow",
+            Some("Expertises"),
+            None,
+            test_bbox(0.0, 0.0, 800.0, 600.0),
+            &[],
+            vec![
+                raw_node(
+                    "AXStaticText",
+                    Some("Zero Trust"),
+                    None,
+                    test_bbox(20.0, 180.0, 120.0, 20.0),
+                    &[],
+                    vec![],
+                ),
+                raw_node(
+                    "AXStaticText",
+                    Some("Rust"),
+                    None,
+                    test_bbox(20.0, 120.0, 80.0, 20.0),
+                    &[],
+                    vec![],
+                ),
+            ],
+        );
+        let (eng, _) = engine_from_roots(vec![window], "Firefox", "Expertises");
+
+        let rust = eng.text_snapshot(Some("Rust"), false, 10);
+        assert_eq!(rust.len(), 1);
+        assert_eq!(rust[0].text, "Rust");
+
+        let trust = eng.text_snapshot(Some("Trust"), false, 10);
+        assert_eq!(trust.len(), 1);
+        assert_eq!(trust[0].text, "Zero Trust");
+    }
+
+    #[test]
+    fn user_active_guard_retry_runs_once_before_returning() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_in_closure = attempts.clone();
+        let result = retry_user_active_guard_after(Duration::from_millis(0), || {
+            if attempts_in_closure.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(VisualOpsError::Execution(
+                    "user-active guard blocked hover_at: last keyboard/mouse input was 1 ms ago (< 300 ms)".into(),
+                ))
+            } else {
+                Ok("ok")
+            }
+        })
+        .unwrap();
+
+        assert_eq!(result, "ok");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn internal_hover_lead_point_is_clamped_to_target_window() {
+        let (eng, _) = engine_with_counter();
+        let window = eng.current_window_bounds();
+        let (x, y) = eng.clamp_point_to_target_window(window.x - 8.0, window.y - 8.0);
+        assert!(point_in_bbox((x, y), window));
+        assert_eq!(x, window.x);
+        assert_eq!(y, window.y);
     }
 
     #[test]
@@ -5546,6 +6960,50 @@ mod tests {
                 .any(|r| r.contains("outside the target window")),
             "risk reasons should flag off-window raw points: {:?}",
             risk.reasons
+        );
+    }
+
+    #[test]
+    fn raw_point_guard_rejects_off_target_points() {
+        let old = std::env::var("DUNST_MCP_ALLOW_OFF_TARGET_RAW").ok();
+        std::env::remove_var("DUNST_MCP_ALLOW_OFF_TARGET_RAW");
+        let (eng, _) = engine_with_counter();
+        let err = eng
+            .ensure_point_in_target_window(10_000.0, 10_000.0, "click")
+            .unwrap_err()
+            .to_string();
+        if let Some(value) = old {
+            std::env::set_var("DUNST_MCP_ALLOW_OFF_TARGET_RAW", value);
+        }
+        assert!(
+            err.contains("outside the target window"),
+            "off-target raw coordinates should fail clearly: {err}"
+        );
+    }
+
+    #[test]
+    fn raw_region_guard_rejects_off_target_regions() {
+        let old = std::env::var("DUNST_MCP_ALLOW_OFF_TARGET_RAW").ok();
+        std::env::remove_var("DUNST_MCP_ALLOW_OFF_TARGET_RAW");
+        let (eng, _) = engine_with_counter();
+        let err = eng
+            .ensure_region_in_target_window(
+                Bbox {
+                    x: 10_000.0,
+                    y: 10_000.0,
+                    w: 100.0,
+                    h: 100.0,
+                },
+                "read_text",
+            )
+            .unwrap_err()
+            .to_string();
+        if let Some(value) = old {
+            std::env::set_var("DUNST_MCP_ALLOW_OFF_TARGET_RAW", value);
+        }
+        assert!(
+            err.contains("outside the target window"),
+            "off-target regions should fail clearly: {err}"
         );
     }
 

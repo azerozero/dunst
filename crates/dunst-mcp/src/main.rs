@@ -20,11 +20,24 @@ const DEMO_TARGET: Target = Target {
     pid: 1363,
     window_id: 105,
 };
+const CLI_LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "\n",
+    "git ",
+    env!("DUNST_BUILD_GIT_SHA"),
+    "\n",
+    "dirty ",
+    env!("DUNST_BUILD_GIT_DIRTY"),
+    "\n",
+    "built_unix ",
+    env!("DUNST_BUILD_TIME_UNIX")
+);
 
 #[derive(Debug, Parser)]
 #[command(
     name = "dunst-mcp",
     version,
+    long_version = CLI_LONG_VERSION,
     about = "AX-first macOS MCP server for background UI automation",
     long_about = "Dunst MCP exposes a macOS AX-first affordance graph over MCP, with risk gating and an audit trail. The default command runs the device-free Notes fixture demo."
 )]
@@ -53,10 +66,10 @@ struct ServeArgs {
     /// Target a live WindowServer window id.
     #[arg(long, value_name = "WINDOW_ID")]
     window: Option<u32>,
-    /// Pick the largest on-screen window for this app owner name.
+    /// Pick the frontmost sizeable on-screen window for this app owner name.
     #[arg(long, value_name = "APP")]
     app: Option<String>,
-    /// Pick the largest on-screen window of any app.
+    /// Pick the frontmost sizeable on-screen window of any app.
     #[arg(long)]
     live: bool,
 }
@@ -196,24 +209,21 @@ fn run_serve(args: ServeArgs) -> i32 {
     let mut window = args.window;
     let requested_live_target = args.app.is_some() || args.live;
 
-    // Dynamic targeting: `--app "<Owner Name>"` picks that app's largest on-screen
-    // window; `--live` bootstraps to the largest on-screen window of ANY app. In
-    // both cases the client re-targets at runtime with `list_windows` + `attach`,
-    // so nothing is hardcoded. (Robust to window-id churn, e.g. Chrome.)
+    // Dynamic targeting: CoreGraphics returns layer-0 windows in z-order, so pick
+    // the first sizeable on-screen match. With multiple Firefox windows this means
+    // the active/frontmost eligible window, not whichever window happens to be
+    // largest.
     #[cfg(target_os = "macos")]
     if (pid.is_none() || window.is_none()) && (args.app.is_some() || args.live) {
-        let pick = dunst_vision::capture::list_windows()
-            .into_iter()
-            .filter(|w| {
-                w.on_screen
-                    && w.w > 200.0
-                    && w.h > 200.0
-                    && match args.app.as_deref() {
-                        Some(app) => w.app == app,
-                        None => true,
-                    }
-            })
-            .max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)));
+        let pick = dunst_vision::capture::list_windows().into_iter().find(|w| {
+            w.on_screen
+                && w.w > 200.0
+                && w.h > 200.0
+                && match args.app.as_deref() {
+                    Some(app) => w.app == app,
+                    None => true,
+                }
+        });
         match pick {
             Some(w) => {
                 eprintln!(

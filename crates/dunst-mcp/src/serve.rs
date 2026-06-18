@@ -13,10 +13,18 @@ use std::{
 use serde_json::{json, Value};
 
 use crate::engine::{Engine, OptionPickResult, SceneView};
-use dunst_core::{ActionResult, AuditEntry, Bbox, GraphDiff, NodeChange, SemanticAction};
+use dunst_core::{
+    ActionResult, AuditEntry, Bbox, GraphDiff, NodeChange, SceneNode, SemanticAction,
+};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
+const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILD_GIT_SHA: Option<&str> = option_env!("DUNST_BUILD_GIT_SHA");
+const BUILD_GIT_DIRTY: Option<&str> = option_env!("DUNST_BUILD_GIT_DIRTY");
+const BUILD_TIME_UNIX: Option<&str> = option_env!("DUNST_BUILD_TIME_UNIX");
 const FORCE_REFRESH_COALESCE_TTL: Duration = Duration::from_millis(300);
+const FIND_ELEMENT_FORCE_REFRESH_FAST_PATH_TTL: Duration = Duration::from_millis(2_000);
+const DIFF_SUMMARY_VALUE_LIMIT: usize = 160;
 
 /// Run the stdio server loop until stdin closes.
 pub fn serve(mut engine: Engine) -> i32 {
@@ -24,7 +32,11 @@ pub fn serve(mut engine: Engine) -> i32 {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     eprintln!(
-        "dunst-mcp: stdio MCP server ready ({} tools)",
+        "dunst-mcp: stdio MCP server ready (version {}, git {}, dirty {}, built {}, {} tools)",
+        SERVER_VERSION,
+        build_git_sha(),
+        build_git_dirty(),
+        build_time_unix(),
         tools_list().len()
     );
 
@@ -72,12 +84,23 @@ fn initialize_result() -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": {} },
-        "serverInfo": { "name": "dunst", "version": env!("CARGO_PKG_VERSION") }
+        "serverInfo": {
+            "name": "dunst",
+            "version": server_version_label()
+        },
+        "_meta": {
+            "dunst": build_info()
+        }
     })
 }
 
 fn tools_list() -> Vec<Value> {
     let mut tools = vec![
+        tool(
+            "version",
+            "Return the running dunst-mcp build identity: package version, git commit, dirty flag, build timestamp, and protocol version. Use this after restart to confirm the active server binary.",
+            json!({}),
+        ),
         tool("refresh", "Re-perceive the target window and rebuild the scene + affordance graphs.", json!({})),
         tool(
             "get_scene_graph",
@@ -287,6 +310,11 @@ fn tools_list() -> Vec<Value> {
             schema(json!({ "id": {"type":"string"}, "reasoning": {"type":"string"}, "include_diff": {"type":"boolean"} }), &["id"]),
         ),
         tool(
+            "raise_element",
+            "Raise an element by id when its affordance exposes the semantic raise action, typically a window root such as win_collective. Use this instead of click_element when click_element reports Click is unavailable on a window.",
+            schema(json!({ "id": {"type":"string"}, "reasoning": {"type":"string"}, "include_diff": {"type":"boolean"} }), &["id"]),
+        ),
+        tool(
             "pick_option",
             "Pick a popover/list/radio option by visible text. Resolves static option text to the nearest clickable parent, then reports best-effort selected/closed state. High-risk targets still gate like click_element.",
             schema(
@@ -301,7 +329,7 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "type_into",
-            "Type text into a text element by id (subject to risk gating).",
+            "Replace text in a text element by id (subject to risk gating). On macOS this uses an element-bound selected-text range plus Unicode keystrokes when possible, so React/web fields receive real input events without layout-sensitive Cmd+A.",
             schema(json!({ "id": {"type":"string"}, "text": {"type":"string"}, "reasoning": {"type":"string"} }), &["id", "text"]),
         ),
         tool(
@@ -319,24 +347,39 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "click_at",
-            "Click at a raw screen point (x,y). For OCR-driven navigation: read_text a link, then click_at its bbox centre. Raw mutating input is high-risk and requires approval; points outside visible scene elements are flagged as possible backdrop/blank-area clicks. If the user-active guard blocks it, wait until the operator is idle and retry once.",
+            "Click at a raw screen point (x,y) inside the target window. For OCR-driven navigation: read_text a link, then click_at its bbox centre. Raw mutating input is high-risk and requires approval. If pending_approval is not explicitly approved, switch to ui_fallback_hint: map the UI with window_view/get_affordances/find_element, then use click_element/type_into/scroll by id. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1. If the user-active guard blocks it, wait until the operator is idle and retry once.",
             schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
         ),
         tool(
+            "select_file",
+            "Select a local file in a native macOS file chooser for browser upload controls. Provide path plus either trigger_id (an existing upload/dropzone/link element to real-click first) or x/y (screen point to real-click first); omit trigger_id/x/y only when the file chooser is already open. High-risk: uses System Events to click inside the target window and drive the chooser. Off-target trigger points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
+            schema(
+                json!({
+                    "path": { "type": "string", "description": "absolute or working-directory-relative local file path to select" },
+                    "trigger_id": { "type": "string", "description": "optional element id to click before selecting the file" },
+                    "x": { "type": "number", "description": "optional screen x to click before selecting the file" },
+                    "y": { "type": "number", "description": "optional screen y to click before selecting the file" },
+                    "reasoning": { "type": "string" },
+                    "include_diff": { "type": "boolean" }
+                }),
+                &["path"],
+            ),
+        ),
+        tool(
             "hover_at",
-            "Hover (background mouse-move, no cursor movement) at a raw screen point (x,y) so the target reveals a hover state — e.g. a chart crosshair tooltip / value-at-cursor — then read_text it. A probe: no gating, no audit.",
+            "Hover (background mouse-move, no cursor movement) at a raw screen point (x,y) inside the target window so the target reveals a hover state — e.g. a chart crosshair tooltip / value-at-cursor — then read_text it. A probe: no gating, no audit. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
             schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
         ),
         tool(
             "read_at",
-            "Read the value at a screen point by time-multiplexing the cursor: briefly borrow the OS cursor, warp to (x,y) to trigger a real hover (chart crosshair), OCR around it, then restore the cursor. For non-CDP surfaces.",
-            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
+            "Read the value at a screen point inside the target window. Defaults to background hover without borrowing the OS cursor; set borrow_cursor=true only when a surface requires a real cursor hover. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
+            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"}, "borrow_cursor": {"type":"boolean","description":"briefly borrow and restore the OS cursor for real-hover-only surfaces (default false)"} }), &["x", "y"]),
         ),
         tool(
             "read_series",
-            "Read values at SEVERAL screen points in ONE cursor borrow — efficient for sampling a chart at intervals: borrow once, warp+OCR each point, restore once. points = [[x,y], ...]; returns one OCR list per point.",
+            "Read values at SEVERAL screen points inside the target window. Defaults to background hover without borrowing the OS cursor; set borrow_cursor=true to borrow once, warp+OCR each point, then restore. points = [[x,y], ...]; returns one OCR list per point. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
             schema(
-                json!({ "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } } }),
+                json!({ "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "borrow_cursor": {"type":"boolean","description":"borrow and restore the OS cursor for real-hover-only surfaces (default false)"} }),
                 &["points"],
             ),
         ),
@@ -442,12 +485,12 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "right_click_at",
-            "Right-click at a raw screen point (x,y) — context menus. Background web via SkyLight (no cursor, no foreground). If the user-active guard blocks it, wait until the operator is idle and retry once.",
+            "Right-click at a raw screen point (x,y) — context menus. Background web via SkyLight (no cursor, no foreground). Raw input is high-risk; if approval is unavailable or denied, switch to ui_fallback_hint and prefer element-bound actions. If the user-active guard blocks it, wait until the operator is idle and retry once.",
             schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
         ),
         tool(
             "double_click_at",
-            "Double-click at a raw screen point (x,y). Background web via SkyLight. If the user-active guard blocks it, wait until the operator is idle and retry once.",
+            "Double-click at a raw screen point (x,y). Background web via SkyLight. Raw input is high-risk; if approval is unavailable or denied, switch to ui_fallback_hint and prefer element-bound actions. If the user-active guard blocks it, wait until the operator is idle and retry once.",
             schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
         ),
         tool(
@@ -457,12 +500,12 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "press_key",
-            "Press a named key on the target (e.g. \"Return\"/\"Enter\" to submit a typed URL, \"Tab\", \"Escape\"). Raw mutating keyboard input is high-risk: if the result is pending_approval, call approve with the returned target_id, then retry the exact same tool call once. If the user-active guard blocks it, wait until the operator is idle and retry once.",
+            "Press a named key on the target (e.g. \"Return\"/\"Enter\", \"Tab\", \"Escape\", arrows, \"Home\", \"End\", \"PageUp\", \"PageDown\"). Raw mutating keyboard input is high-risk: approve only after explicit operator authorization. If approval is unavailable or denied, switch to ui_fallback_hint and drive the UI through mapped element ids instead. If the user-active guard blocks it, wait until the operator is idle and retry once.",
             schema(json!({ "key": {"type":"string"} }), &["key"]),
         ),
         tool(
             "type_keys",
-            "Type text into the FOCUSED element via the SkyLight auth-signed keyboard path — reaches a backgrounded/occluded window's web content. Focus the field first (e.g. click_at it). Raw mutating keyboard input is high-risk and requires approval. If the user-active guard blocks it, wait until the operator is idle and retry once.",
+            "Type text into the FOCUSED element via the SkyLight auth-signed keyboard path — reaches a backgrounded/occluded window's web content. Focus the field first (prefer click_element on a field; click_at is raw). Raw mutating keyboard input is high-risk and requires approval. If approval is unavailable or denied, switch to ui_fallback_hint and use type_into on a mapped field id. If the user-active guard blocks it, wait until the operator is idle and retry once.",
             schema(json!({ "text": {"type":"string"} }), &["text"]),
         ),
         tool(
@@ -477,12 +520,12 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "hotkey",
-            "Send a keyboard shortcut in the background (auth-signed, reaches web): modifiers cmd|shift|opt|ctrl + a key, '+'-separated. E.g. \"cmd+l\" (focus omnibox — clean URL entry), \"cmd+t\", \"cmd+a\", \"cmd+w\". If the user-active guard blocks it, wait until the operator is idle and retry once.",
+            "Send a keyboard shortcut in the background (auth-signed, reaches web): modifiers cmd|shift|opt|ctrl + a key, '+'-separated. E.g. \"cmd+l\", \"cmd+t\", \"cmd+w\". This is raw keyboard input: approve only after explicit operator authorization. If approval is unavailable or denied, do not route through browser chrome or javascript:; switch to ui_fallback_hint and use mapped element actions. Layout-sensitive text-selection shortcuts such as \"cmd+a\" are rejected; use type_into for field replacement.",
             schema(json!({ "combo": {"type":"string"} }), &["combo"]),
         ),
         tool(
             "verify_state",
-            "Assert an element's field (label|value|enabled) equals an expected value.",
+            "Assert an element's field (label|value|enabled|focused) equals an expected value.",
             schema(json!({ "id": {"type":"string"}, "field": {"type":"string"}, "expected": {"type":"string"} }), &["id", "field", "expected"]),
         ),
         tool(
@@ -500,6 +543,42 @@ fn tools_list() -> Vec<Value> {
         ));
     }
     tools
+}
+
+fn build_git_sha() -> &'static str {
+    BUILD_GIT_SHA.unwrap_or("unknown")
+}
+
+fn build_git_dirty() -> &'static str {
+    BUILD_GIT_DIRTY.unwrap_or("unknown")
+}
+
+fn build_time_unix() -> &'static str {
+    BUILD_TIME_UNIX.unwrap_or("unknown")
+}
+
+fn server_version_label() -> String {
+    format!(
+        "{}+git.{}{}",
+        SERVER_VERSION,
+        build_git_sha(),
+        if build_git_dirty() == "true" {
+            ".dirty"
+        } else {
+            ""
+        }
+    )
+}
+
+fn build_info() -> Value {
+    json!({
+        "version": SERVER_VERSION,
+        "version_label": server_version_label(),
+        "git_sha": build_git_sha(),
+        "git_dirty": build_git_dirty(),
+        "build_time_unix": build_time_unix(),
+        "protocol_version": PROTOCOL_VERSION,
+    })
 }
 
 fn approval_tool_enabled() -> bool {
@@ -672,6 +751,30 @@ fn ensure_recent_graph(engine: &mut Engine, fresh: bool, force: bool) -> Result<
     }
 }
 
+fn find_matches_value(matches: Vec<&SceneNode>) -> Value {
+    serde_json::to_value(matches).unwrap_or(Value::Null)
+}
+
+fn find_element_value(
+    engine: &mut Engine,
+    query: &str,
+    visible_only: bool,
+    fresh: bool,
+    force: bool,
+) -> Result<Value, String> {
+    if force && visible_only && engine.graph_recent(FIND_ELEMENT_FORCE_REFRESH_FAST_PATH_TTL) {
+        let cached_matches = engine.find_element_filtered(query, visible_only);
+        if !cached_matches.is_empty() {
+            return Ok(find_matches_value(cached_matches));
+        }
+    }
+
+    ensure_recent_graph(engine, fresh, force)?;
+    Ok(find_matches_value(
+        engine.find_element_filtered(query, visible_only),
+    ))
+}
+
 fn tool(name: &str, description: &str, mut input_schema: Value) -> Value {
     // MCP clients validate each `inputSchema` as a JSON Schema object (Claude Code
     // rejects the whole `tools/list` otherwise: "expected object"). A no-arg tool
@@ -719,6 +822,7 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
     }
 
     let outcome: Result<Value, String> = match name {
+        "version" => Ok(build_info()),
         "refresh" => engine
             .refresh()
             .map(|_| json!("ok"))
@@ -829,20 +933,13 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
             Ok(engine.affordances_view(arg_bool("include_latent").unwrap_or(false)))
         }
         "find_element" => match arg("query") {
-            Some(q) => {
-                if let Err(e) = ensure_recent_graph(
-                    engine,
-                    arg_bool("fresh").unwrap_or(true),
-                    arg_bool("force_refresh").unwrap_or(false),
-                ) {
-                    Err(e)
-                } else {
-                    Ok(serde_json::to_value(
-                        engine.find_element_filtered(&q, arg_bool("visible_only").unwrap_or(false)),
-                    )
-                    .unwrap_or(Value::Null))
-                }
-            }
+            Some(q) => find_element_value(
+                engine,
+                &q,
+                arg_bool("visible_only").unwrap_or(false),
+                arg_bool("fresh").unwrap_or(true),
+                arg_bool("force_refresh").unwrap_or(false),
+            ),
             None => Err("missing 'query'".into()),
         },
         "wait_for_element" => match arg("query") {
@@ -893,6 +990,13 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map_err(|e| e.to_string()),
             None => Err("missing 'id'".into()),
         },
+        "raise_element" => match arg("id") {
+            Some(eid) => engine
+                .raise_element(&eid, arg("reasoning").as_deref())
+                .map(|e| audit_entry_value(e, arg_bool("include_diff").unwrap_or(false)))
+                .map_err(|e| e.to_string()),
+            None => Err("missing 'id'".into()),
+        },
         "pick_option" => match arg("query") {
             Some(query) => engine
                 .pick_option(
@@ -935,6 +1039,39 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map_err(|e| e.to_string()),
             _ => Err("click_at requires numeric 'x' and 'y'".into()),
         },
+        "select_file" => match arg("path") {
+            Some(path) => {
+                let click_point = match (
+                    arg("trigger_id"),
+                    args.get("x").and_then(Value::as_f64),
+                    args.get("y").and_then(Value::as_f64),
+                ) {
+                    (Some(trigger_id), _, _) => Some(crate::engine::FileSelectTrigger::ElementId(
+                        trigger_id,
+                    )),
+                    (None, Some(x), Some(y)) => {
+                        Some(crate::engine::FileSelectTrigger::Point { x, y })
+                    }
+                    (None, None, None) => None,
+                    (None, _, _) => return result_obj(
+                        id,
+                        add_timing_meta(
+                            json!({
+                                "content": [{ "type": "text", "text": "select_file requires both numeric 'x' and 'y' when using coordinates" }],
+                                "isError": true
+                            }),
+                            name,
+                            started,
+                        ),
+                    ),
+                };
+                engine
+                    .select_file(&path, click_point, arg("reasoning").as_deref())
+                    .map(|e| audit_entry_value(e, arg_bool("include_diff").unwrap_or(false)))
+                    .map_err(|e| e.to_string())
+            }
+            None => Err("missing 'path'".into()),
+        },
         "hover_at" => match (
             args.get("x").and_then(Value::as_f64),
             args.get("y").and_then(Value::as_f64),
@@ -950,7 +1087,7 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
             args.get("y").and_then(Value::as_f64),
         ) {
             (Some(x), Some(y)) => engine
-                .read_at(x, y)
+                .read_at(x, y, arg_bool("borrow_cursor").unwrap_or(false))
                 .map(|h| serde_json::to_value(h).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string()),
             _ => Err("read_at requires numeric 'x' and 'y'".into()),
@@ -958,7 +1095,7 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
         "read_series" => match args.get("points").map(parse_points) {
             Some(Ok(pts)) => {
                 engine
-                    .read_series(&pts)
+                    .read_series(&pts, arg_bool("borrow_cursor").unwrap_or(false))
                     .map(|h| serde_json::to_value(h).unwrap_or(Value::Null))
                     .map_err(|e| e.to_string())
             }
@@ -1191,7 +1328,12 @@ fn add_timing_meta(mut result: Value, tool: &str, started: Instant) -> Value {
             json!({
                 "dunst": {
                     "tool": tool,
-                    "timing_ms": elapsed_ms
+                    "timing_ms": elapsed_ms,
+                    "version": SERVER_VERSION,
+                    "version_label": server_version_label(),
+                    "git_sha": build_git_sha(),
+                    "git_dirty": build_git_dirty(),
+                    "build_time_unix": build_time_unix()
                 }
             }),
         );
@@ -1200,28 +1342,133 @@ fn add_timing_meta(mut result: Value, tool: &str, started: Instant) -> Value {
 }
 
 fn audit_entry_value(entry: AuditEntry, include_diff: bool) -> Value {
-    if include_diff {
-        return serde_json::to_value(entry).unwrap_or(Value::Null);
+    let mut summary = diff_summary_value(&entry.graph_diff, 12);
+    if typed_content_observation_relevant(&entry) {
+        let observed = typed_content_change_observed(&entry);
+        let exact = typed_content_exact_match(&entry);
+        if let Value::Object(obj) = &mut summary {
+            obj.insert("typed_content_change_observed".into(), json!(observed));
+            obj.insert("typed_content_exact_match".into(), json!(exact));
+        }
     }
-
-    let summary = diff_summary_value(&entry.graph_diff, 12);
     let mut value = serde_json::to_value(&entry).unwrap_or(Value::Null);
     if let Value::Object(obj) = &mut value {
-        obj.remove("graph_diff");
+        if !include_diff {
+            obj.remove("graph_diff");
+        }
         obj.insert("graph_diff_summary".into(), summary);
         if entry.result == ActionResult::PendingApproval {
+            let raw_target = raw_input_target(&entry.target_id);
             obj.insert(
                 "approval_hint".into(),
                 json!({
-                    "next_step": "If this action was intended and the approve tool is available, call approve with this target_id, then retry the exact same tool call once.",
+                    "next_step": if raw_target {
+                        "Use approve only after explicit operator authorization for this raw input. Otherwise switch to ui_fallback_hint and drive visible elements by id."
+                    } else {
+                        "If this element-bound action was intended and the approve tool is available, call approve with this target_id, then retry the exact same tool call once."
+                    },
                     "approve_tool": "approve",
                     "approve_arguments": { "id": entry.target_id },
                     "retry_required": true
                 }),
             );
+            if raw_target {
+                obj.insert("ui_fallback_hint".into(), raw_input_fallback_hint(&entry));
+            }
+        }
+        if entry.result == ActionResult::Failed {
+            if let Some(hint) = failed_action_hint(&entry) {
+                obj.insert("failure_hint".into(), hint);
+            }
         }
     }
     value
+}
+
+fn raw_input_target(target_id: &str) -> bool {
+    target_id.starts_with("keyboard@") || target_id.starts_with("screen@")
+}
+
+fn raw_input_fallback_hint(entry: &AuditEntry) -> Value {
+    json!({
+        "mode": "ui_mapping",
+        "why": "Raw keyboard/pointer input is not bound to a scene element and may affect the wrong UI surface.",
+        "goal": "Map the visible UI, choose element-bound actions, verify state after each mutation, then save only after the target fields expose the intended values.",
+        "recommended_sequence": [
+            { "tool": "window_view", "purpose": "confirm target window, visible text, current field values, and key controls" },
+            { "tool": "get_affordances", "arguments": { "include_latent": false }, "purpose": "list clickable/typeable/scrollable element ids and their risk" },
+            { "tool": "find_element", "purpose": "resolve a visible label to a stable element id before acting" },
+            { "tool": "click_element/type_into/pick_option/scroll", "purpose": "act only through element ids or scrollable containers" },
+            { "tool": "window_view/text_snapshot/verify_state/diff_since", "purpose": "verify the UI changed as intended before the next action" }
+        ],
+        "avoid": [
+            "do not use browser address-bar javascript: injection as a fallback",
+            "do not retry raw hotkeys or raw clicks after approval is denied",
+            "do not click save/submit until visible state confirms the intended values"
+        ],
+        "blocked_action": {
+            "target_id": entry.target_id,
+            "action": entry.action,
+            "argument": entry.argument
+        }
+    })
+}
+
+fn typed_content_observation_relevant(entry: &AuditEntry) -> bool {
+    entry.action == SemanticAction::Type
+        && entry.argument.as_deref().is_some_and(|arg| !arg.is_empty())
+        && !entry.target_id.starts_with("keyboard@")
+}
+
+fn typed_content_change_observed(entry: &AuditEntry) -> bool {
+    entry.graph_diff.changes.iter().any(|change| {
+        matches!(
+            change,
+            NodeChange::Changed { id, field, .. }
+                if id == &entry.target_id && matches!(field.as_str(), "value" | "label")
+        )
+    })
+}
+
+fn typed_content_exact_match(entry: &AuditEntry) -> bool {
+    let Some(expected) = entry.argument.as_deref() else {
+        return false;
+    };
+    entry.graph_diff.changes.iter().any(|change| {
+        matches!(
+            change,
+            NodeChange::Changed { id, field, after, .. }
+                if id == &entry.target_id && matches!(field.as_str(), "value" | "label") && after == expected
+        )
+    })
+}
+
+fn failed_action_hint(entry: &AuditEntry) -> Option<Value> {
+    match entry.action {
+        SemanticAction::Type if !entry.target_id.starts_with("keyboard@") => Some(json!({
+            "reason": "The element-bound type action completed at the platform layer, but the target element did not expose the exact requested value afterward.",
+            "next_step": "Do not click save/submit. Re-read the field with find_element or text_snapshot. If the value is partial/truncated/unchanged, use an explicit operator-approved paste path or a product/API-level edit path.",
+            "verification": "graph_diff_summary.typed_content_exact_match must be true before saving"
+        })),
+        SemanticAction::OpenMenu => Some(json!({
+            "reason": "The requested menu did not expose usable menu items after the AX open-menu attempt.",
+            "next_step": "Check desktop_view/window_view for whether another window of the same app is frontmost. If the target window root exposes raise, use raise_element on that window id before retrying."
+        })),
+        SemanticAction::Click if entry.target_id.starts_with("menubar_") => Some(json!({
+            "reason": "The menu-bar item was visible in AX but pressing it did not open the menu.",
+            "next_step": "Use open_menu with the exact localized label, or raise the target window first if another window of the same app is frontmost."
+        })),
+        SemanticAction::Click
+            if entry.target_id.starts_with("field_") || entry.target_id.starts_with("text_") =>
+        {
+            Some(json!({
+                "reason": "The text-field click did not produce a verified focus/caret placement.",
+                "next_step": "Do not type yet. Re-read the field with find_element or verify_state focused=true. If it is still false, raise/focus the target window and retry the element click; use raw click only after explicit operator authorization.",
+                "verification": "verify_state(field='focused', expected='true') should pass before typing"
+            }))
+        }
+        _ => None,
+    }
 }
 
 fn option_pick_value(result: OptionPickResult, include_diff: bool) -> Value {
@@ -1243,9 +1490,13 @@ fn diff_summary_value(diff: &GraphDiff, limit: usize) -> Value {
     let mut added = 0usize;
     let mut removed = 0usize;
     let mut changed = 0usize;
+    let mut low_signal_suppressed = 0usize;
     let mut fields = serde_json::Map::new();
 
     for change in &diff.changes {
+        if low_signal_diff_change(change) {
+            low_signal_suppressed += 1;
+        }
         match change {
             NodeChange::Added { .. } => added += 1,
             NodeChange::Removed { .. } => removed += 1,
@@ -1257,16 +1508,79 @@ fn diff_summary_value(diff: &GraphDiff, limit: usize) -> Value {
         }
     }
 
-    let sample: Vec<&NodeChange> = diff.changes.iter().take(limit).collect();
+    let sample = compact_diff_summary_sample(&diff.changes, limit);
+    let meaningful_changes = diff.changes.len().saturating_sub(low_signal_suppressed);
     json!({
         "n_changes": diff.changes.len(),
+        "meaningful_changes": meaningful_changes,
+        "low_signal_suppressed": low_signal_suppressed,
         "added": added,
         "removed": removed,
         "changed": changed,
         "changed_fields": fields,
         "sample": sample,
-        "truncated": diff.changes.len() > limit,
+        "truncated": meaningful_changes > limit,
     })
+}
+
+fn compact_diff_summary_sample(changes: &[NodeChange], limit: usize) -> Vec<Value> {
+    changes
+        .iter()
+        .filter(|change| !low_signal_diff_change(change))
+        .take(limit)
+        .map(compact_node_change)
+        .collect()
+}
+
+fn compact_node_change(change: &NodeChange) -> Value {
+    match change {
+        NodeChange::Added { id, label } => json!({
+            "kind": "added",
+            "id": id,
+            "label": label.as_deref().map(truncate_diff_summary_value),
+        }),
+        NodeChange::Removed { id, label } => json!({
+            "kind": "removed",
+            "id": id,
+            "label": label.as_deref().map(truncate_diff_summary_value),
+        }),
+        NodeChange::Changed {
+            id,
+            field,
+            before,
+            after,
+        } => json!({
+            "kind": "changed",
+            "id": id,
+            "field": field,
+            "before": truncate_diff_summary_value(before),
+            "after": truncate_diff_summary_value(after),
+        }),
+    }
+}
+
+fn low_signal_diff_change(change: &NodeChange) -> bool {
+    diff_change_id(change).starts_with("mi_menuitemhit_")
+}
+
+fn diff_change_id(change: &NodeChange) -> &str {
+    match change {
+        NodeChange::Added { id, .. }
+        | NodeChange::Removed { id, .. }
+        | NodeChange::Changed { id, .. } => id,
+    }
+}
+
+fn truncate_diff_summary_value(value: &str) -> String {
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= DIFF_SUMMARY_VALUE_LIMIT {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Parse the optional `region` argument of `read_text` into a screen-point
@@ -1318,7 +1632,9 @@ fn send(out: &mut impl Write, msg: Value) {
 mod tests {
     use super::*;
     use dunst_core::mock::{MockPerceptor, RecordingExecutor};
-    use dunst_core::Target;
+    use dunst_core::{Perceptor, RawAxNode, Target, WindowRef};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn engine() -> Engine {
         engine_with_window(105)
@@ -1350,6 +1666,50 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    struct CountingPerceptor {
+        roots: Vec<RawAxNode>,
+        window: WindowRef,
+        captures: Arc<AtomicUsize>,
+    }
+
+    impl Perceptor for CountingPerceptor {
+        fn capture(&self, _target: &Target) -> dunst_core::Result<Vec<RawAxNode>> {
+            self.captures.fetch_add(1, Ordering::SeqCst);
+            Ok(self.roots.clone())
+        }
+
+        fn window_ref(&self, _target: &Target) -> dunst_core::Result<WindowRef> {
+            Ok(self.window.clone())
+        }
+    }
+
+    fn engine_with_capture_counter() -> (Engine, Arc<AtomicUsize>) {
+        let roots: Vec<RawAxNode> =
+            serde_json::from_str(include_str!("../../dunst-core/fixtures/notes.json")).unwrap();
+        let captures = Arc::new(AtomicUsize::new(0));
+        let perceptor = Box::new(CountingPerceptor {
+            roots,
+            window: WindowRef {
+                pid: 1363,
+                window_id: 105,
+                app_name: "Notes".into(),
+                title: "Notes – Aucune note".into(),
+            },
+            captures: captures.clone(),
+        });
+        let exec = Box::<RecordingExecutor>::default();
+        let eng = Engine::new(
+            perceptor,
+            exec,
+            Target {
+                pid: 1363,
+                window_id: 105,
+            },
+        )
+        .unwrap();
+        (eng, captures)
     }
 
     /// Drive `handle_tool_call` exactly as the stdio loop does.
@@ -1497,6 +1857,37 @@ mod tests {
     }
 
     #[test]
+    fn find_element_force_refresh_uses_recent_visible_cached_match() {
+        let (mut e, captures) = engine_with_capture_counter();
+        assert_eq!(
+            captures.load(Ordering::SeqCst),
+            1,
+            "Engine::new performs the initial capture"
+        );
+
+        let resp = call(
+            &mut e,
+            "find_element",
+            json!({
+                "query": "Nouvelle note",
+                "visible_only": true,
+                "force_refresh": true
+            }),
+        );
+
+        assert!(!is_error(&resp), "find_element succeeds: {resp}");
+        assert_eq!(
+            captures.load(Ordering::SeqCst),
+            1,
+            "a visible match in a very recent graph should not force a second AX capture"
+        );
+        assert!(
+            !text_json(&resp).as_array().unwrap().is_empty(),
+            "cached visible match returned"
+        );
+    }
+
+    #[test]
     fn wait_for_element_timeout_has_single_clear_status() {
         let mut e = engine();
         let resp = call(
@@ -1557,10 +1948,214 @@ mod tests {
     }
 
     #[test]
+    fn diff_summary_sample_prioritizes_useful_changes_over_browser_menu_noise() {
+        let diff = GraphDiff {
+            changes: vec![
+                NodeChange::Changed {
+                    id: "mi_menuitemhit_35".into(),
+                    field: "label".into(),
+                    before: "Toujours afficher".into(),
+                    after: "".into(),
+                },
+                NodeChange::Changed {
+                    id: "mi_menuitemhit_36".into(),
+                    field: "label".into(),
+                    before: "Afficher seulement sur la page de nouvel onglet".into(),
+                    after: "".into(),
+                },
+                NodeChange::Added {
+                    id: "btn_ajouter".into(),
+                    label: Some("Ajouter".into()),
+                },
+            ],
+        };
+
+        let summary = diff_summary_value(&diff, 2);
+        let sample = summary["sample"].as_array().unwrap();
+        assert_eq!(summary["meaningful_changes"], 1);
+        assert_eq!(summary["low_signal_suppressed"], 2);
+        assert_eq!(sample.len(), 1);
+        assert_eq!(sample[0]["id"], "btn_ajouter");
+        assert!(
+            sample
+                .iter()
+                .all(|entry| !entry["id"].as_str().unwrap().starts_with("mi_menuitemhit_")),
+            "menu items should not dominate the compact diff sample: {summary}"
+        );
+    }
+
+    #[test]
+    fn audit_entry_full_diff_also_reports_meaningful_summary() {
+        let entry = AuditEntry {
+            ts_ms: 42,
+            target_id: "txt_rust".into(),
+            action: SemanticAction::Click,
+            argument: None,
+            risk: dunst_core::RiskAssessment::low(),
+            reasoning: Some("select Rust".into()),
+            result: ActionResult::Success,
+            graph_diff: GraphDiff {
+                changes: vec![NodeChange::Changed {
+                    id: "mi_menuitemhit_35".into(),
+                    field: "label".into(),
+                    before: "".into(),
+                    after: "Toujours afficher".into(),
+                }],
+            },
+        };
+
+        let value = audit_entry_value(entry, true);
+        assert!(value.get("graph_diff").is_some());
+        assert_eq!(value["graph_diff_summary"]["meaningful_changes"], 0);
+        assert_eq!(value["graph_diff_summary"]["low_signal_suppressed"], 1);
+        assert!(value["graph_diff_summary"]["sample"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn typed_audit_summary_reports_whether_target_value_changed() {
+        let changed = AuditEntry {
+            ts_ms: 42,
+            target_id: "field_description".into(),
+            action: SemanticAction::Type,
+            argument: Some("nouvelle description".into()),
+            risk: dunst_core::RiskAssessment::low(),
+            reasoning: None,
+            result: ActionResult::Success,
+            graph_diff: GraphDiff {
+                changes: vec![NodeChange::Changed {
+                    id: "field_description".into(),
+                    field: "value".into(),
+                    before: "old".into(),
+                    after: "nouvelle description".into(),
+                }],
+            },
+        };
+        let value = audit_entry_value(changed, false);
+        assert_eq!(
+            value["graph_diff_summary"]["typed_content_change_observed"],
+            true
+        );
+        assert_eq!(
+            value["graph_diff_summary"]["typed_content_exact_match"],
+            true
+        );
+
+        let unchanged = AuditEntry {
+            ts_ms: 43,
+            target_id: "field_description".into(),
+            action: SemanticAction::Type,
+            argument: Some("nouvelle description".into()),
+            risk: dunst_core::RiskAssessment::low(),
+            reasoning: None,
+            result: ActionResult::Success,
+            graph_diff: GraphDiff {
+                changes: vec![NodeChange::Changed {
+                    id: "spinner".into(),
+                    field: "bbox".into(),
+                    before: "Some(Bbox { x: 1.0, y: 1.0, w: 1.0, h: 1.0 })".into(),
+                    after: "Some(Bbox { x: 2.0, y: 2.0, w: 1.0, h: 1.0 })".into(),
+                }],
+            },
+        };
+        let value = audit_entry_value(unchanged, false);
+        assert_eq!(
+            value["graph_diff_summary"]["typed_content_change_observed"],
+            false
+        );
+        assert_eq!(
+            value["graph_diff_summary"]["typed_content_exact_match"],
+            false
+        );
+    }
+
+    #[test]
+    fn typed_audit_summary_rejects_partial_target_value() {
+        let partial = AuditEntry {
+            ts_ms: 43,
+            target_id: "field_description".into(),
+            action: SemanticAction::Type,
+            argument: Some("nouvelle description complete".into()),
+            risk: dunst_core::RiskAssessment::low(),
+            reasoning: None,
+            result: ActionResult::Failed,
+            graph_diff: GraphDiff {
+                changes: vec![NodeChange::Changed {
+                    id: "field_description".into(),
+                    field: "value".into(),
+                    before: "old".into(),
+                    after: "uvelle description".into(),
+                }],
+            },
+        };
+
+        let value = audit_entry_value(partial, false);
+        assert_eq!(
+            value["graph_diff_summary"]["typed_content_change_observed"],
+            true
+        );
+        assert_eq!(
+            value["graph_diff_summary"]["typed_content_exact_match"],
+            false
+        );
+    }
+
+    #[test]
+    fn failed_type_audit_includes_do_not_save_hint() {
+        let entry = AuditEntry {
+            ts_ms: 44,
+            target_id: "field_description".into(),
+            action: SemanticAction::Type,
+            argument: Some("nouvelle description".into()),
+            risk: dunst_core::RiskAssessment::low(),
+            reasoning: None,
+            result: ActionResult::Failed,
+            graph_diff: GraphDiff::default(),
+        };
+
+        let value = audit_entry_value(entry, false);
+        assert_eq!(
+            value["graph_diff_summary"]["typed_content_change_observed"],
+            false
+        );
+        assert_eq!(
+            value["graph_diff_summary"]["typed_content_exact_match"],
+            false
+        );
+        assert!(value["failure_hint"]["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("Do not click save"));
+    }
+
+    #[test]
+    fn diff_summary_sample_truncates_large_changed_values() {
+        let long_children = (0..80)
+            .map(|idx| format!("grp_{idx:02}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let diff = GraphDiff {
+            changes: vec![NodeChange::Changed {
+                id: "el_collective".into(),
+                field: "children".into(),
+                before: "".into(),
+                after: long_children.clone(),
+            }],
+        };
+
+        let summary = diff_summary_value(&diff, 1);
+        let after = summary["sample"][0]["after"].as_str().unwrap();
+        assert!(after.len() < long_children.len(), "{after}");
+        assert!(after.ends_with("..."), "{after}");
+    }
+
+    #[test]
     fn tools_list_exposes_read_text_with_object_schema() {
         std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
         let tools = tools_list();
-        assert_eq!(tools.len(), 50, "tool count");
+        assert_eq!(tools.len(), 53, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(
@@ -1601,6 +2196,10 @@ mod tests {
             "popover/list/radio option helper present"
         );
         assert!(
+            tools.iter().any(|t| t["name"] == "raise_element"),
+            "raise action helper present"
+        );
+        assert!(
             tools.iter().any(|t| t["name"] == "text_snapshot"),
             "AX text snapshot tool present"
         );
@@ -1635,6 +2234,14 @@ mod tests {
         assert!(
             tools.iter().any(|t| t["name"] == "arrange_windows"),
             "window arrangement tool present"
+        );
+        assert!(
+            tools.iter().any(|t| t["name"] == "version"),
+            "runtime version tool present"
+        );
+        assert!(
+            tools.iter().any(|t| t["name"] == "select_file"),
+            "native file selection tool present"
         );
     }
 
@@ -1682,10 +2289,52 @@ mod tests {
             .expect("press_key tool present");
         assert_eq!(press["inputSchema"]["type"], "object");
         assert_eq!(press["inputSchema"]["required"], json!(["key"]));
+
+        let select_file = tools
+            .iter()
+            .find(|t| t["name"] == "select_file")
+            .expect("select_file tool present");
+        assert_eq!(select_file["inputSchema"]["type"], "object");
+        assert_eq!(select_file["inputSchema"]["required"], json!(["path"]));
+
+        let read_at = tools
+            .iter()
+            .find(|t| t["name"] == "read_at")
+            .expect("read_at tool present");
+        assert_eq!(read_at["inputSchema"]["required"], json!(["x", "y"]));
+        assert_eq!(
+            read_at["inputSchema"]["properties"]["borrow_cursor"]["type"],
+            "boolean"
+        );
+
+        let read_series = tools
+            .iter()
+            .find(|t| t["name"] == "read_series")
+            .expect("read_series tool present");
+        assert_eq!(
+            read_series["inputSchema"]["properties"]["borrow_cursor"]["type"],
+            "boolean"
+        );
         assert!(
             tools.iter().all(|t| t["name"] != "approve"),
             "approve is an operator-side escape hatch and is not advertised by default"
         );
+    }
+
+    #[test]
+    fn version_tool_reports_build_identity() {
+        let mut e = engine();
+        let resp = call(&mut e, "version", json!({}));
+        assert!(!is_error(&resp), "version succeeds: {resp}");
+        let body = text_json(&resp);
+        assert_eq!(body["version"], SERVER_VERSION);
+        assert_eq!(body["protocol_version"], PROTOCOL_VERSION);
+        assert!(body["version_label"]
+            .as_str()
+            .unwrap()
+            .contains(SERVER_VERSION));
+        assert!(body["git_sha"].is_string());
+        assert!(body["build_time_unix"].is_string());
     }
 
     #[test]
@@ -1698,6 +2347,44 @@ mod tests {
             "approve must be disabled by default: {resp}"
         );
         assert!(text(&resp).contains("disabled"));
+    }
+
+    #[test]
+    fn raw_pending_approval_includes_ui_mapping_fallback() {
+        let entry = AuditEntry {
+            ts_ms: 1,
+            target_id: "keyboard@hotkey:cmd+l".into(),
+            action: SemanticAction::Type,
+            argument: Some("cmd+l".into()),
+            risk: dunst_core::RiskAssessment {
+                level: dunst_core::RiskLevel::High,
+                requires_approval: true,
+                reasons: vec!["raw input is not bound to a scene element".into()],
+            },
+            reasoning: Some("background hotkey".into()),
+            result: ActionResult::PendingApproval,
+            graph_diff: GraphDiff::default(),
+        };
+
+        let body = audit_entry_value(entry, false);
+        assert_eq!(body["approval_hint"]["approve_tool"], "approve");
+        assert_eq!(body["ui_fallback_hint"]["mode"], "ui_mapping");
+        assert!(
+            body["ui_fallback_hint"]["recommended_sequence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|step| step["tool"] == "get_affordances"),
+            "fallback should direct agents back to the affordance graph: {body}"
+        );
+        assert!(
+            body["ui_fallback_hint"]["avoid"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|step| step.as_str().unwrap().contains("javascript: injection")),
+            "fallback should rule out address-bar DOM injection: {body}"
+        );
     }
 
     #[test]
@@ -1726,10 +2413,15 @@ mod tests {
         assert!(is_error(&bad), "unknown key must be a clean isError: {bad}");
         assert_eq!(bad["jsonrpc"], "2.0");
 
-        // click_at with valid coords reaches the engine and returns a well-formed
-        // JSON-RPC response (success when a live window backs the pid, isError on the
+        // click_at with in-target coords reaches the engine and returns a
+        // well-formed JSON-RPC response (pending approval on macOS, isError on
         // non-macOS stub) — never a panic.
-        let resp = call(&mut e, "click_at", json!({ "x": 100.0, "y": 200.0 }));
+        let window = e.window_view(1).window;
+        let resp = call(
+            &mut e,
+            "click_at",
+            json!({ "x": window.x + 10.0, "y": window.y + 10.0 }),
+        );
         assert_eq!(resp["jsonrpc"], "2.0");
         assert!(resp.get("result").is_some(), "well-formed response: {resp}");
         let body = text_json(&resp);
@@ -1742,7 +2434,41 @@ mod tests {
                 body["approval_hint"]["approve_arguments"]["id"],
                 body["target_id"]
             );
+            assert_eq!(body["ui_fallback_hint"]["mode"], "ui_mapping");
         }
+
+        let missing_file = call(
+            &mut e,
+            "select_file",
+            json!({ "path": "/definitely/not/a/real/file.pdf" }),
+        );
+        assert!(
+            is_error(&missing_file),
+            "select_file rejects missing paths before touching the OS: {missing_file}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn select_file_gates_existing_file_before_os_interaction() {
+        let mut e = engine();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let resp = call(&mut e, "select_file", json!({ "path": path }));
+        assert!(!is_error(&resp), "first select_file call gates: {resp}");
+        let body = text_json(&resp);
+        assert_eq!(body["result"], "pending_approval");
+        assert_eq!(body["approval_hint"]["approve_tool"], "approve");
+        assert!(
+            body["risk"]["reasons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|reason| reason
+                    .as_str()
+                    .unwrap()
+                    .contains("selects a local file for upload")),
+            "risk explains file selection: {body}"
+        );
     }
 
     #[test]

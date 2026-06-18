@@ -113,12 +113,6 @@ impl RiskEngine {
     /// target field is itself low-risk (audit #13). Normalises (lowercase +
     /// accent-fold) then matches high, then medium; highest tier wins.
     pub fn assess_text(&self, text: &str) -> RiskAssessment {
-        // Keyword matching is unbounded substring containment (see `match_tier`),
-        // so it can over-match a keyword embedded in a larger token ("reset" in
-        // "preset"). That direction is **fail-safe for a risk gate**: over-matching
-        // only ever asks for *more* approval, never less — a destructive word can't
-        // be *missed* by substring search. If false-positive gating gets noisy,
-        // switch to word-boundary matching on the normalised haystack.
         let hay = normalize(text);
         if let Some(reasons) = match_tier(&hay, &self.high) {
             return RiskAssessment {
@@ -151,17 +145,97 @@ fn compile(keywords: &[&'static str]) -> Vec<Keyword> {
 }
 
 /// Collect `"matched keyword: <kw>"` for every keyword (in table order) whose
-/// pre-normalised needle appears in the normalised haystack. Returns `None` when
-/// nothing matched. No per-keyword normalisation/allocation here.
+/// pre-normalised needle appears on token boundaries in the normalised haystack.
+/// Returns `None` when nothing matched. No per-keyword normalisation/allocation
+/// here.
 fn match_tier(hay: &str, keywords: &[Keyword]) -> Option<Vec<String>> {
     let reasons: Vec<String> = keywords
         .iter()
-        .filter(|kw| hay.contains(kw.needle.as_str()))
+        .filter(|kw| contains_keyword(hay, kw.needle.as_str()))
         .map(|kw| format!("matched keyword: {}", kw.original))
         .collect();
     if reasons.is_empty() {
         None
     } else {
         Some(reasons)
+    }
+}
+
+fn contains_keyword(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let h: Vec<char> = haystack.chars().collect();
+    let n: Vec<char> = needle.chars().collect();
+    if n.len() > h.len() {
+        return false;
+    }
+    for start in 0..=h.len() - n.len() {
+        if h[start..start + n.len()] != n[..] {
+            continue;
+        }
+        let before = start == 0 || !risk_word_char(h[start - 1]);
+        let after = start + n.len() == h.len() || !risk_word_char(h[start + n.len()]);
+        if before && after {
+            return true;
+        }
+    }
+    false
+}
+
+fn risk_word_char(ch: char) -> bool {
+    ch.is_alphanumeric()
+}
+
+#[cfg(test)]
+mod tests {
+    use dunst_core::RiskLevel;
+
+    use super::RiskEngine;
+
+    #[test]
+    fn typed_payload_risk_matches_destructive_words_on_boundaries() {
+        let engine = RiskEngine::new();
+
+        let risk = engine.assess_text("merci de vider le cache");
+        assert_eq!(risk.level, RiskLevel::High);
+        assert!(risk.requires_approval);
+        assert!(risk.reasons.iter().any(|r| r.contains("vider")));
+    }
+
+    #[test]
+    fn typed_payload_risk_does_not_match_keyword_inside_larger_word() {
+        let engine = RiskEngine::new();
+
+        for text in [
+            "failover multi-provider",
+            "provider fallback",
+            "preset configuration",
+            "sauvegarder dans le clipboard",
+        ] {
+            let risk = engine.assess_text(text);
+            assert_ne!(risk.level, RiskLevel::High, "{text}");
+            assert!(
+                !risk
+                    .reasons
+                    .iter()
+                    .any(|r| r.contains("vider") || r.contains("reset")),
+                "{text}: {:?}",
+                risk.reasons
+            );
+        }
+    }
+
+    #[test]
+    fn typed_payload_risk_still_matches_multi_word_keywords() {
+        let engine = RiskEngine::new();
+
+        let risk = engine.assess_text("empty trash now");
+        assert_eq!(risk.level, RiskLevel::High);
+        assert!(risk.reasons.iter().any(|r| r.contains("empty trash")));
+
+        let risk = engine.assess_text("forcer a quitter Firefox");
+        assert_eq!(risk.level, RiskLevel::High);
+        assert!(risk.reasons.iter().any(|r| r.contains("forcer à quitter")));
     }
 }

@@ -102,9 +102,9 @@ pub fn capture_screen_rect(x: f64, y: f64, w: f64, h: f64) -> Result<CapturedWin
         &CGPoint::new(x - db.origin.x, y - db.origin.y),
         &CGSize::new(w, h),
     );
-    let image = display.image_for_rect(local).or_else(|| {
-        display.image_for_rect(CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)))
-    });
+    let image = display
+        .image_for_rect(local)
+        .or_else(|| display.image_for_rect(CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))));
     if let Some(image) = image {
         return Ok(captured_from_rect_image(image, x, y, w, h));
     }

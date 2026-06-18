@@ -12,6 +12,7 @@ keywords = ["mcp", "macos", "accessibility", "automation"]
 categories = ["command-line-utilities", "development-tools"]
 publish = false
 default-run = "dunst-mcp"
+build = "build.rs"
 
 [[bin]]
 name = "dunst-mcp"

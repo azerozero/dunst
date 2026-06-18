@@ -27,15 +27,15 @@ pub fn click_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
     macos::click_at_point(pid, x, y)
 }
 
-/// Post a named keyboard key to a macOS process without touching the mouse.
+/// Post a named keyboard key to a macOS window without touching the mouse.
 #[cfg(target_os = "macos")]
-pub fn press_key(pid: i32, key: &str) -> Result<()> {
-    macos::press_key(pid, key)
+pub fn press_key(pid: i32, window_id: u32, key: &str) -> Result<()> {
+    macos::press_key(pid, window_id, key)
 }
 
-/// Post a background mouse-move (hover) at a screen point so the target's hover
-/// handlers fire (e.g. a chart crosshair tooltip / value-at-cursor) without
-/// moving the visible cursor — read the result afterwards with OCR.
+/// Trigger a real cursor hover at a screen point so non-web surfaces can reveal
+/// hover state. This can move the visible cursor; web callers should prefer
+/// [`hover_web_background`] when they need a cursorless probe.
 #[cfg(target_os = "macos")]
 pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
     macos::hover_at_point(pid, x, y)
@@ -123,6 +123,21 @@ pub fn click_web_background(
     macos::click_web_background(pid, window_id, x, y, origin_x, origin_y, button)
 }
 
+/// Post a background mouse-move (hover) to a web window via SkyLight without
+/// moving the visible cursor. `window_origin` is the window's top-left in screen
+/// points so the event can be stamped with the window-local coordinate.
+#[cfg(target_os = "macos")]
+pub fn hover_web_background(
+    pid: i32,
+    window_id: u32,
+    x: f64,
+    y: f64,
+    origin_x: f64,
+    origin_y: f64,
+) -> Result<()> {
+    macos::hover_web_background(pid, window_id, x, y, origin_x, origin_y)
+}
+
 /// Type `text` into the focused element of a **backgrounded** window's (web)
 /// content via SkyLight — trusted (auth-signed), no cursor, no foreground. The
 /// caller should first focus the field (e.g. a [`click_web_background`] on it).
@@ -186,9 +201,10 @@ mod macos {
         kAXErrorCannotComplete, kAXErrorIllegalArgument, kAXErrorInvalidUIElement, kAXErrorNoValue,
         kAXErrorSuccess, kAXFocusedAttribute, kAXHelpAttribute, kAXIdentifierAttribute,
         kAXMainWindowAttribute, kAXMaxValueAttribute, kAXMenuBarAttribute, kAXMinValueAttribute,
-        kAXParentAttribute, kAXPositionAttribute, kAXPressAction, kAXRaiseAction, kAXRoleAttribute,
-        kAXShowMenuAction, kAXSizeAttribute, kAXTitleAttribute, kAXValueAttribute,
-        kAXValueIncrementAttribute, kAXValueTypeAXError, kAXValueTypeCGPoint, kAXValueTypeCGRect,
+        kAXNumberOfCharactersAttribute, kAXParentAttribute, kAXPositionAttribute, kAXPressAction,
+        kAXRaiseAction, kAXRoleAttribute, kAXSelectedTextRangeAttribute, kAXShowMenuAction,
+        kAXSizeAttribute, kAXTitleAttribute, kAXValueAttribute, kAXValueIncrementAttribute,
+        kAXValueTypeAXError, kAXValueTypeCFRange, kAXValueTypeCGPoint, kAXValueTypeCGRect,
         kAXValueTypeCGSize, kAXVerticalScrollBarAttribute, kAXWindowsAttribute, AXError,
         AXIsProcessTrusted, AXUIElementCopyActionNames, AXUIElementCopyAttributeValue,
         AXUIElementCopyElementAtPosition, AXUIElementCopyMultipleAttributeValues,
@@ -203,7 +219,7 @@ mod macos {
         string::CFString,
     };
     use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
-    use core_foundation_sys::base::CFNullGetTypeID;
+    use core_foundation_sys::base::{CFIndex, CFNullGetTypeID, CFRange};
     use core_graphics::{
         display::CGDisplay,
         event::{
@@ -214,7 +230,7 @@ mod macos {
         geometry::{CGPoint, CGRect, CGSize},
     };
     use dunst_core::{
-        Bbox, RawAxNode, Result, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
+        Bbox, RawAxNode, Result, Role, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
     };
     use foreign_types::ForeignType;
     use objc2::msg_send;
@@ -241,6 +257,11 @@ mod macos {
     const DRAG_STEP_DELAY: Duration = Duration::from_millis(8);
     const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.0;
     const DEFAULT_USER_IDLE_GUARD_MS: u64 = 300;
+    const TYPE_SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(80);
+    const TYPE_SETTLE_BASE_MS: u64 = 300;
+    const TYPE_SETTLE_PER_CHAR_MS: u64 = 12;
+    const TYPE_SETTLE_MAX_MS: u64 = 10_000;
+    const RETURN_KEYCODE: CGKeyCode = 36;
 
     thread_local! {
         static AX_CACHE: RefCell<HashMap<CacheKey, AxElement>> = RefCell::new(HashMap::new());
@@ -527,7 +548,7 @@ mod macos {
         path: &mut &'static str,
     ) -> Result<()> {
         if matches!(action, SemanticAction::Hover | SemanticAction::Drag) {
-            return perform_on_element(None, target.pid, node, action, argument)
+            return perform_on_element(None, target, node, action, argument)
                 .map_err(ActionFailure::into);
         }
 
@@ -537,7 +558,7 @@ mod macos {
                     remove_cached_element(key);
                 } else {
                     *path = "cached";
-                    match perform_on_element(Some(&element), target.pid, node, action, argument) {
+                    match perform_on_element(Some(&element), target, node, action, argument) {
                         Ok(()) => return Ok(()),
                         Err(err) if err.is_stale() => {
                             remove_cached_element(key);
@@ -557,13 +578,13 @@ mod macos {
                 node.ax_role, node.label, node.ax_identifier
             ))
         })?;
-        perform_on_element(Some(&element), target.pid, node, action, argument)
+        perform_on_element(Some(&element), target, node, action, argument)
             .map_err(ActionFailure::into)
     }
 
     fn perform_on_element(
         element: Option<&AxElement>,
-        pid: i32,
+        target: &Target,
         node: &SceneNode,
         action: SemanticAction,
         argument: Option<&str>,
@@ -573,7 +594,7 @@ mod macos {
             // and no foreground activation. `Raise` below is the intentional exception.
             SemanticAction::Click | SemanticAction::Pick => {
                 let element = require_ax_element(element)?;
-                perform_ax_action(element, kAXPressAction)
+                click_element_action(element, target, node)
             }
             SemanticAction::OpenMenu => {
                 let element = require_ax_element(element)?;
@@ -591,10 +612,10 @@ mod macos {
                     ActionFailure::Execution("type action requires an argument".into())
                 })?;
                 let element = require_ax_element(element)?;
-                type_text(element, pid, text)
+                type_text(element, target, text)
             }
-            SemanticAction::Hover => hover(pid, node),
-            SemanticAction::Drag => drag(pid, node, argument),
+            SemanticAction::Hover => hover(target.pid, node),
+            SemanticAction::Drag => drag(target.pid, node, argument),
             SemanticAction::Scroll => {
                 let element = require_ax_element(element)?;
                 scroll_element(element, argument)
@@ -610,6 +631,65 @@ mod macos {
     ) -> std::result::Result<&AxElement, ActionFailure> {
         element
             .ok_or_else(|| ActionFailure::Execution("action requires a resolved AX element".into()))
+    }
+
+    fn click_element_action(
+        element: &AxElement,
+        target: &Target,
+        node: &SceneNode,
+    ) -> std::result::Result<(), ActionFailure> {
+        if !matches!(node.role, Role::TextField | Role::TextArea) {
+            return perform_ax_action(element, kAXPressAction);
+        }
+
+        match perform_ax_action(element, kAXPressAction) {
+            Ok(()) => {
+                thread::sleep(Duration::from_millis(50));
+                if attr_bool(element, kAXFocusedAttribute).unwrap_or(false) {
+                    return Ok(());
+                }
+            }
+            Err(err) if err.is_stale() => return Err(err),
+            Err(_) => {}
+        }
+
+        let _ = set_bool_attr(element, kAXFocusedAttribute, true);
+        thread::sleep(Duration::from_millis(40));
+        if attr_bool(element, kAXFocusedAttribute).unwrap_or(false) {
+            return Ok(());
+        }
+
+        let bbox = node.bbox.ok_or_else(|| {
+            ActionFailure::Execution("text field click fallback needs a bbox".into())
+        })?;
+        let (origin_x, origin_y) = target_window_origin(target)?;
+        let x = bbox.x + bbox.w / 2.0;
+        let y = bbox.y + bbox.h / 2.0;
+        if !click_web_background(target.pid, target.window_id, x, y, origin_x, origin_y, 0) {
+            return Err(ActionFailure::Execution(
+                "element-bound text-field click fallback could not post a background web click"
+                    .into(),
+            ));
+        }
+        thread::sleep(Duration::from_millis(120));
+        if attr_bool(element, kAXFocusedAttribute).unwrap_or(false) {
+            Ok(())
+        } else {
+            Err(ActionFailure::Execution(
+                "element-bound text-field click fallback posted but AXFocused stayed false".into(),
+            ))
+        }
+    }
+
+    fn target_window_origin(target: &Target) -> std::result::Result<(f64, f64), ActionFailure> {
+        let app =
+            app_element(target.pid).map_err(|err| ActionFailure::Execution(err.to_string()))?;
+        let window = resolve_window(&app, target.window_id)
+            .map_err(|err| ActionFailure::Execution(err.to_string()))?;
+        let bbox = frame(&window).ok_or_else(|| {
+            ActionFailure::Execution("target window frame unavailable for click fallback".into())
+        })?;
+        Ok((bbox.x, bbox.y))
     }
 
     pub fn accessibility_trusted() -> bool {
@@ -843,7 +923,7 @@ mod macos {
         let ax_role = attr_string(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
         assemble_node(NodeFields {
             ax_role,
-            value: attr_string(element, kAXValueAttribute),
+            value: attr_value_string(element, kAXValueAttribute),
             title: attr_label_string(element, kAXTitleAttribute),
             description: attr_label_string(element, kAXDescriptionAttribute),
             help: attr_string(element, kAXHelpAttribute),
@@ -881,7 +961,7 @@ mod macos {
 
         let fields = NodeFields {
             ax_role,
-            value: batch.get(IDX_VALUE).and_then(cf_string),
+            value: batch.get(IDX_VALUE).and_then(cf_value_string),
             title: batch.get(IDX_TITLE).and_then(cf_label_string),
             description: batch.get(IDX_DESCRIPTION).and_then(cf_label_string),
             help: batch.get(IDX_HELP).and_then(cf_string),
@@ -1301,29 +1381,28 @@ mod macos {
 
     fn type_text(
         element: &AxElement,
-        pid: i32,
+        target: &Target,
         text: &str,
     ) -> std::result::Result<(), ActionFailure> {
+        if let Some(outcome) = type_text_by_replacing_selection(element, target, text)? {
+            return outcome;
+        }
+
         if attr_settable(element, kAXValueAttribute) {
             let before = attr_string(element, kAXValueAttribute);
             let err = set_string_attr_raw(element, kAXValueAttribute, text);
             if err == kAXErrorSuccess {
-                for attempt in 0..5 {
-                    match attr_string(element, kAXValueAttribute) {
-                        Some(value) if value == text => return Ok(()),
-                        Some(value) if before.as_deref() != Some(value.as_str()) => {
-                            // Some web controls clamp, normalise, or async-commit values
-                            // after AX reports success. Treat any observed mutation as the
-                            // completed replacement: the keyboard fallback appends text and
-                            // corrupts max-length fields.
-                            return Ok(());
-                        }
-                        Some(_) => {}
-                        None => return Ok(()),
+                match wait_for_string_attr(element, kAXValueAttribute, text) {
+                    Some(value) if value == text => return Ok(()),
+                    Some(value) if before.as_deref() != Some(value.as_str()) => {
+                        return Err(ActionFailure::Execution(format!(
+                            "AX set-value changed the field but did not produce the requested value: expected {} chars, observed {} chars",
+                            text.chars().count(),
+                            value.chars().count()
+                        )));
                     }
-                    if attempt < 4 {
-                        std::thread::sleep(std::time::Duration::from_millis(40));
-                    }
+                    Some(_) => {}
+                    None => return Ok(()),
                 }
                 return Err(ActionFailure::Execution(
                     "AX set-value reported success but the field did not change; keyboard fallback suppressed to avoid appending text".into(),
@@ -1338,7 +1417,115 @@ mod macos {
 
         // AX set-value replaces text; synthetic Unicode keystrokes append to the focused editor.
         set_bool_attr(element, kAXFocusedAttribute, true)?;
-        post_unicode_text(pid, text)
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        post_window_bound_text(target, text)
+    }
+
+    fn type_text_by_replacing_selection(
+        element: &AxElement,
+        target: &Target,
+        text: &str,
+    ) -> std::result::Result<Option<std::result::Result<(), ActionFailure>>, ActionFailure> {
+        let Some(len) = text_character_count(element) else {
+            return Ok(None);
+        };
+        if !attr_settable(element, kAXSelectedTextRangeAttribute) {
+            return Ok(None);
+        }
+
+        let before = attr_string(element, kAXValueAttribute);
+        set_bool_attr(element, kAXFocusedAttribute, true)?;
+        let range = CFRange::init(0, len);
+        let err = set_axvalue_attr_raw(
+            element,
+            kAXSelectedTextRangeAttribute,
+            kAXValueTypeCFRange,
+            (&range as *const CFRange).cast(),
+        );
+        if err == kAXErrorIllegalArgument || err == kAXErrorNoValue {
+            return Ok(None);
+        }
+        if err != kAXErrorSuccess {
+            return Err(ActionFailure::Ax {
+                operation: "set AX selected text range",
+                err,
+            });
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        post_window_bound_text(target, text)?;
+        Ok(Some(match wait_for_string_attr(element, kAXValueAttribute, text) {
+            Some(value) if value == text => Ok(()),
+            Some(value)
+                if before
+                    .as_deref()
+                    .map(|before| value == format!("{before}{text}") || value == format!("{text}{before}"))
+                    .unwrap_or(false) =>
+            {
+                Err(ActionFailure::Execution(
+                    "keyboard replacement appended instead of replacing; selected text range was not honored".into(),
+                ))
+            }
+            Some(value) if before.as_deref() != Some(value.as_str()) => {
+                Err(ActionFailure::Execution(format!(
+                    "keyboard replacement changed the field but did not produce the requested value: expected {} chars, observed {} chars",
+                    text.chars().count(),
+                    value.chars().count()
+                )))
+            }
+            Some(_) => Err(ActionFailure::Execution(
+                "keyboard replacement posted but the field did not change".into(),
+            )),
+            None => Ok(()),
+        }))
+    }
+
+    fn post_window_bound_text(
+        target: &Target,
+        text: &str,
+    ) -> std::result::Result<(), ActionFailure> {
+        if target.window_id == 0 {
+            return Err(ActionFailure::Execution(
+                "element-bound typing requires a target window id; process-wide keyboard fallback suppressed".into(),
+            ));
+        }
+        type_text_background_impl(target.pid, target.window_id, text)
+    }
+
+    fn wait_for_string_attr(element: &AxElement, attr: &str, expected: &str) -> Option<String> {
+        let timeout = type_settle_timeout(expected);
+        let started = Instant::now();
+        let mut last = attr_string(element, attr)?;
+        if last == expected {
+            return Some(last);
+        }
+        loop {
+            if started.elapsed() >= timeout {
+                return Some(last);
+            }
+            std::thread::sleep(TYPE_SETTLE_POLL_INTERVAL);
+            match attr_string(element, attr) {
+                Some(value) if value == expected => return Some(value),
+                Some(value) => last = value,
+                None => return None,
+            }
+        }
+    }
+
+    fn type_settle_timeout(text: &str) -> Duration {
+        let chars = text.chars().count() as u64;
+        Duration::from_millis(
+            (TYPE_SETTLE_BASE_MS + chars * TYPE_SETTLE_PER_CHAR_MS).min(TYPE_SETTLE_MAX_MS),
+        )
+    }
+
+    fn text_character_count(element: &AxElement) -> Option<CFIndex> {
+        attr_number(element, kAXNumberOfCharactersAttribute)
+            .map(|n| n.max(0.0) as CFIndex)
+            .or_else(|| {
+                attr_string(element, kAXValueAttribute)
+                    .map(|value| value.chars().count() as CFIndex)
+            })
     }
 
     fn attr_settable(element: &AxElement, attr: &str) -> bool {
@@ -1356,24 +1543,65 @@ mod macos {
         err == kAXErrorSuccess && settable != 0
     }
 
-    fn post_unicode_text(pid: i32, text: &str) -> std::result::Result<(), ActionFailure> {
-        ensure_user_idle_action("type_into key fallback")?;
-        let source = event_source("create keyboard CGEventSource")?;
-        for ch in text.chars() {
-            let s = ch.to_string();
-            let down = CGEvent::new_keyboard_event(source.clone(), 0, true).map_err(|err| {
-                ActionFailure::Execution(format!("create key down CGEvent: {err:?}"))
-            })?;
-            down.set_string(&s);
-            down.post_to_pid(pid);
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TextInputAtom {
+        Char(char),
+        Return,
+    }
 
-            let up = CGEvent::new_keyboard_event(source.clone(), 0, false).map_err(|err| {
-                ActionFailure::Execution(format!("create key up CGEvent: {err:?}"))
-            })?;
-            up.set_string(&s);
-            up.post_to_pid(pid);
+    fn for_text_input_atoms<F>(text: &str, mut f: F) -> std::result::Result<(), ActionFailure>
+    where
+        F: FnMut(TextInputAtom) -> std::result::Result<(), ActionFailure>,
+    {
+        let mut previous_was_cr = false;
+        for ch in text.chars() {
+            match ch {
+                '\r' => {
+                    f(TextInputAtom::Return)?;
+                    previous_was_cr = true;
+                }
+                '\n' if previous_was_cr => {
+                    previous_was_cr = false;
+                }
+                '\n' => {
+                    f(TextInputAtom::Return)?;
+                    previous_was_cr = false;
+                }
+                ch => {
+                    f(TextInputAtom::Char(ch))?;
+                    previous_was_cr = false;
+                }
+            }
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{for_text_input_atoms, ActionFailure, TextInputAtom};
+
+        #[test]
+        fn text_input_atoms_map_line_endings_to_return_keypresses() {
+            let mut atoms = Vec::new();
+            let result = for_text_input_atoms("a\nb\r\nc\rd", |atom| {
+                atoms.push(atom);
+                Ok::<_, ActionFailure>(())
+            });
+            assert!(result.is_ok());
+
+            assert_eq!(
+                atoms,
+                vec![
+                    TextInputAtom::Char('a'),
+                    TextInputAtom::Return,
+                    TextInputAtom::Char('b'),
+                    TextInputAtom::Return,
+                    TextInputAtom::Char('c'),
+                    TextInputAtom::Return,
+                    TextInputAtom::Char('d'),
+                ]
+            );
+        }
     }
 
     fn hover(pid: i32, node: &SceneNode) -> std::result::Result<(), ActionFailure> {
@@ -1968,6 +2196,64 @@ mod macos {
         post(&u)
     }
 
+    /// Background web hover via SkyLight. Unlike `hover_at_point_impl`, this
+    /// never warps the real cursor; it is the default hover path for target-window
+    /// probes. Callers that need a real OS cursor hover must opt into the cursor
+    /// borrow path explicitly.
+    pub fn hover_web_background(
+        pid: i32,
+        window_id: u32,
+        sx: f64,
+        sy: f64,
+        ox: f64,
+        oy: f64,
+    ) -> Result<()> {
+        hover_web_background_impl(pid, window_id, sx, sy, ox, oy).map_err(ActionFailure::into)
+    }
+
+    fn hover_web_background_impl(
+        pid: i32,
+        window_id: u32,
+        sx: f64,
+        sy: f64,
+        ox: f64,
+        oy: f64,
+    ) -> std::result::Result<(), ActionFailure> {
+        if window_id == 0 || !skylight::mouse_post_available() {
+            return Err(ActionFailure::Execution(
+                "background hover requires the SkyLight backend".into(),
+            ));
+        }
+        ensure_user_idle_action("background hover")?;
+        focus_without_raise(window_id);
+        thread::sleep(Duration::from_millis(40));
+
+        let screen = CGPoint::new(sx, sy);
+        let local = CGPoint::new(sx - ox, sy - oy);
+        let event = cg_event_via_nsevent(CGEventType::MouseMoved, 0, window_id)
+            .ok_or_else(|| ActionFailure::Execution("create background hover NSEvent".into()))?;
+        // SAFETY: `event` is a live CGEventRef; `screen` is a valid CGPoint.
+        unsafe { CGEventSetLocation(event.as_ptr().cast(), screen) };
+        event.set_integer_value_field(EventField::MOUSE_EVENT_SUB_TYPE, 3);
+        event.set_integer_value_field(
+            EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER,
+            window_id as i64,
+        );
+        event.set_integer_value_field(
+            EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER_THAT_CAN_HANDLE_THIS_EVENT,
+            window_id as i64,
+        );
+        event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, pid as i64);
+        skylight::set_window_location(event.as_ptr().cast(), local.x, local.y);
+        if skylight::post_event_to_pid(pid, event.as_ptr().cast()) {
+            Ok(())
+        } else {
+            Err(ActionFailure::Execution(
+                "post background hover via SkyLight".into(),
+            ))
+        }
+    }
+
     /// Type `text` into the focused element of a backgrounded window's (web)
     /// content via SkyLight: focus-without-raise, then per character a key
     /// down/up whose CGEvent carries the typed unicode + the
@@ -1975,35 +2261,78 @@ mod macos {
     /// `SLEventPostToPid`. No cursor, no foreground. Fails if SkyLight is absent
     /// or if any expected key event cannot be created and posted.
     pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> Result<()> {
+        type_text_background_impl(pid, window_id, text).map_err(ActionFailure::into)
+    }
+
+    fn type_text_background_impl(
+        pid: i32,
+        window_id: u32,
+        text: &str,
+    ) -> std::result::Result<(), ActionFailure> {
         if !skylight::mouse_post_available() {
-            return Err(VisualOpsError::Execution(
-                "type_keys requires the SkyLight backend".into(),
+            return Err(ActionFailure::Execution(
+                "background typing requires the SkyLight backend; process-wide keyboard fallback suppressed".into(),
             ));
         }
-        ensure_user_idle("type_keys")?;
-        if window_id != 0 {
-            focus_without_raise(window_id);
-            thread::sleep(Duration::from_millis(50));
+        if window_id == 0 {
+            return Err(ActionFailure::Execution(
+                "background typing requires a target window id".into(),
+            ));
         }
-        for ch in text.chars() {
-            let s = ch.to_string();
-            for down in [true, false] {
-                let source = event_source("skylight key CGEventSource")?;
-                let event = CGEvent::new_keyboard_event(source, 0, down).map_err(|err| {
-                    VisualOpsError::Execution(format!("create background key CGEvent: {err:?}"))
-                })?;
-                event.set_string(&s);
-                event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, pid as i64);
-                skylight::attach_auth_message(event.as_ptr().cast(), pid);
-                if !skylight::post_event_to_pid(pid, event.as_ptr().cast()) {
-                    return Err(VisualOpsError::Execution(
-                        "post background key CGEvent via SkyLight".into(),
-                    ));
-                }
+        ensure_user_idle_action("background type")?;
+        focus_without_raise(window_id);
+        thread::sleep(Duration::from_millis(50));
+        for_text_input_atoms(text, |atom| {
+            match atom {
+                TextInputAtom::Char(ch) => post_background_unicode_char(pid, ch)?,
+                TextInputAtom::Return => post_background_keycode_pair(pid, RETURN_KEYCODE)?,
             }
             thread::sleep(Duration::from_millis(8));
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    fn post_background_unicode_char(pid: i32, ch: char) -> std::result::Result<(), ActionFailure> {
+        let s = ch.to_string();
+        for down in [true, false] {
+            let source = event_source("skylight key CGEventSource")?;
+            let event = CGEvent::new_keyboard_event(source, 0, down).map_err(|err| {
+                ActionFailure::Execution(format!("create background key CGEvent: {err:?}"))
+            })?;
+            event.set_string(&s);
+            post_background_key_event(pid, &event)?;
         }
         Ok(())
+    }
+
+    fn post_background_keycode_pair(
+        pid: i32,
+        keycode: CGKeyCode,
+    ) -> std::result::Result<(), ActionFailure> {
+        for down in [true, false] {
+            let source = event_source("skylight key CGEventSource")?;
+            let event = CGEvent::new_keyboard_event(source, keycode, down).map_err(|err| {
+                ActionFailure::Execution(format!("create background key CGEvent: {err:?}"))
+            })?;
+            post_background_key_event(pid, &event)?;
+        }
+        Ok(())
+    }
+
+    fn post_background_key_event(
+        pid: i32,
+        event: &CGEvent,
+    ) -> std::result::Result<(), ActionFailure> {
+        event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, pid as i64);
+        skylight::attach_auth_message(event.as_ptr().cast(), pid);
+        if skylight::post_event_to_pid(pid, event.as_ptr().cast()) {
+            Ok(())
+        } else {
+            Err(ActionFailure::Execution(
+                "post background key CGEvent via SkyLight".into(),
+            ))
+        }
     }
 
     /// Post a single named keycode (down+up) to a backgrounded window's (web)
@@ -2041,15 +2370,9 @@ mod macos {
         Ok(())
     }
 
-    pub fn press_key(pid: i32, key: &str) -> Result<()> {
-        press_key_impl(pid, key).map_err(ActionFailure::into)
-    }
-
-    fn press_key_impl(pid: i32, key: &str) -> std::result::Result<(), ActionFailure> {
-        ensure_user_idle_action("press_key")?;
-        let keycode = named_keycode(key)?;
-        let source = event_source("create keyboard CGEventSource")?;
-        post_keycode(source, pid, keycode)
+    pub fn press_key(pid: i32, window_id: u32, key: &str) -> Result<()> {
+        let keycode = named_keycode(key).map_err(VisualOpsError::from)?;
+        key_web_background(pid, window_id, keycode, 0)
     }
 
     fn named_keycode(key: &str) -> std::result::Result<CGKeyCode, ActionFailure> {
@@ -2063,25 +2386,14 @@ mod macos {
             "down" | "arrowdown" | "down_arrow" => Ok(KeyCode::DOWN_ARROW),
             "left" | "arrowleft" | "left_arrow" => Ok(KeyCode::LEFT_ARROW),
             "right" | "arrowright" | "right_arrow" => Ok(KeyCode::RIGHT_ARROW),
+            "home" => Ok(0x73),
+            "end" => Ok(0x77),
+            "pageup" | "page_up" => Ok(0x74),
+            "pagedown" | "page_down" => Ok(0x79),
             other => Err(ActionFailure::Execution(format!(
-                "unsupported key {other:?}; expected return|enter, tab, escape, space, delete, up/down/left/right"
+                "unsupported key {other:?}; expected return|enter, tab, escape, space, delete, up/down/left/right, pageup/pagedown, home/end"
             ))),
         }
-    }
-
-    fn post_keycode(
-        source: CGEventSource,
-        pid: i32,
-        keycode: CGKeyCode,
-    ) -> std::result::Result<(), ActionFailure> {
-        let down = CGEvent::new_keyboard_event(source.clone(), keycode, true)
-            .map_err(|err| ActionFailure::Execution(format!("create key down CGEvent: {err:?}")))?;
-        down.post_to_pid(pid);
-
-        let up = CGEvent::new_keyboard_event(source, keycode, false)
-            .map_err(|err| ActionFailure::Execution(format!("create key up CGEvent: {err:?}")))?;
-        up.post_to_pid(pid);
-        Ok(())
     }
 
     /// Union of every active display's bounds (the full virtual desktop). Cursor
@@ -2181,6 +2493,11 @@ mod macos {
     fn attr_string(element: &AxElement, attr: &str) -> Option<String> {
         let value = attr_value(element, attr)?;
         cf_string(value.as_CFTypeRef())
+    }
+
+    fn attr_value_string(element: &AxElement, attr: &str) -> Option<String> {
+        let value = attr_value(element, attr)?;
+        cf_value_string(value.as_CFTypeRef())
     }
 
     fn attr_label_string(element: &AxElement, attr: &str) -> Option<String> {
@@ -2405,6 +2722,36 @@ mod macos {
         // retains it for this temporary wrapper.
         let value = unsafe { CFType::wrap_under_get_rule(value) };
         value.downcast::<CFString>().map(|s| s.to_string())
+    }
+
+    fn cf_value_string(value: CFTypeRef) -> Option<String> {
+        if let Some(string) = cf_string(value) {
+            return Some(string);
+        }
+
+        // SAFETY: caller passes a valid borrowed CF object; wrap_under_get_rule
+        // retains it for this temporary wrapper.
+        let value = unsafe { CFType::wrap_under_get_rule(value) };
+        // SAFETY: `value` wraps a valid CF object retained for this scope.
+        let value_type = unsafe { CFGetTypeID(value.as_CFTypeRef()) };
+        if value_type == CFBoolean::type_id() {
+            return value
+                .downcast::<CFBoolean>()
+                .map(|boolean| bool::from(boolean).to_string());
+        }
+
+        if value_type == CFNumber::type_id() {
+            // SAFETY: the CFTypeID check above proves this object is a CFNumber.
+            let number = unsafe { CFNumber::wrap_under_get_rule(value.as_CFTypeRef() as _) };
+            let number = number.to_f64()?;
+            if number.fract() == 0.0 {
+                Some(format!("{number:.0}"))
+            } else {
+                Some(number.to_string())
+            }
+        } else {
+            None
+        }
     }
 
     fn cf_label_string(value: CFTypeRef) -> Option<String> {
