@@ -351,6 +351,21 @@ fn tools_list() -> Vec<Value> {
             schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
         ),
         tool(
+            "reveal_hover_click",
+            "Temporarily borrow the target window and real cursor to reveal hover-only controls, click the first visible element matching query by AX id, then restore both cursor and the previously-frontmost app. Use for UIs where edit/delete buttons appear only while the real mouse hovers a card. High-risk: requires approval, mutates UI, and briefly raises the target window. settle_ms is clamped to 50-1500 ms (default 250).",
+            schema(
+                json!({
+                    "x": {"type":"number", "description":"screen x inside the target window/card to hover"},
+                    "y": {"type":"number", "description":"screen y inside the target window/card to hover"},
+                    "query": {"type":"string", "description":"visible button/element text to click after hover reveal, e.g. Modifier cette expérience"},
+                    "settle_ms": {"type":"integer", "description":"hover/render wait before AX refresh; clamped 50-1500 ms, default 250"},
+                    "reasoning": {"type":"string"},
+                    "include_diff": {"type":"boolean"}
+                }),
+                &["x", "y", "query"],
+            ),
+        ),
+        tool(
             "select_file",
             "Select a local file in a native macOS file chooser for browser upload controls. Provide path plus either trigger_id (an existing upload/dropzone/link element to real-click first) or x/y (screen point to real-click first); omit trigger_id/x/y only when the file chooser is already open. High-risk: uses System Events to click inside the target window and drive the chooser. Off-target trigger points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
             schema(
@@ -367,19 +382,19 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "hover_at",
-            "Hover (background mouse-move, no cursor movement) at a raw screen point (x,y) inside the target window so the target reveals a hover state — e.g. a chart crosshair tooltip / value-at-cursor — then read_text it. A probe: no gating, no audit. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
+            "Hover (background mouse-move, no cursor movement) at a raw screen point (x,y) inside the target window so the target reveals a hover state — e.g. a chart crosshair tooltip / value-at-cursor — then read_text it. This does not move the real OS cursor; if a web UI only creates controls on real mouse hover and the target is covered, first check desktop_view.covered_by and make the target visible/raised or use read_at/read_series with borrow_cursor=true on an exposed point. A probe: no gating, no audit. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
             schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
         ),
         tool(
             "read_at",
-            "Read the value at a screen point inside the target window. Defaults to background hover without borrowing the OS cursor; set borrow_cursor=true only when a surface requires a real cursor hover. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
-            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"}, "borrow_cursor": {"type":"boolean","description":"briefly borrow and restore the OS cursor for real-hover-only surfaces (default false)"} }), &["x", "y"]),
+            "Read the value at a screen point inside the target window. Defaults to background hover without borrowing the OS cursor; set borrow_cursor=true only when a surface requires a real cursor hover. With borrow_cursor=true, the composited screen is read at the cursor, so the target must be the visible/topmost window under that point; if OCR returns another app or hover-only buttons do not appear, inspect desktop_view.covered_by and expose/raise/arrange the target before retrying. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
+            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"}, "borrow_cursor": {"type":"boolean","description":"briefly borrow and restore the OS cursor for real-hover-only surfaces; requires the target to be visible/topmost under the point (default false)"} }), &["x", "y"]),
         ),
         tool(
             "read_series",
-            "Read values at SEVERAL screen points inside the target window. Defaults to background hover without borrowing the OS cursor; set borrow_cursor=true to borrow once, warp+OCR each point, then restore. points = [[x,y], ...]; returns one OCR list per point. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
+            "Read values at SEVERAL screen points inside the target window. Defaults to background hover without borrowing the OS cursor; set borrow_cursor=true to borrow once, warp+OCR each point, then restore. With borrow_cursor=true, every point must be visibly occupied by the target window, not a covering app. points = [[x,y], ...]; returns one OCR list per point. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
             schema(
-                json!({ "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "borrow_cursor": {"type":"boolean","description":"borrow and restore the OS cursor for real-hover-only surfaces (default false)"} }),
+                json!({ "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "borrow_cursor": {"type":"boolean","description":"borrow and restore the OS cursor for real-hover-only surfaces; requires visible/topmost target pixels at each point (default false)"} }),
                 &["points"],
             ),
         ),
@@ -1038,6 +1053,24 @@ fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> Value {
                 .map(|e| audit_entry_value(e, arg_bool("include_diff").unwrap_or(false)))
                 .map_err(|e| e.to_string()),
             _ => Err("click_at requires numeric 'x' and 'y'".into()),
+        },
+        "reveal_hover_click" => match (
+            args.get("x").and_then(Value::as_f64),
+            args.get("y").and_then(Value::as_f64),
+            arg("query"),
+        ) {
+            (Some(x), Some(y), Some(query)) => engine
+                .reveal_hover_click(
+                    x,
+                    y,
+                    &query,
+                    args.get("settle_ms").and_then(Value::as_u64).unwrap_or(250),
+                    arg("reasoning").as_deref(),
+                )
+                .map(|e| audit_entry_value(e, arg_bool("include_diff").unwrap_or(false)))
+                .map_err(|e| e.to_string()),
+            _ => Err("reveal_hover_click requires numeric 'x', numeric 'y', and string 'query'"
+                .into()),
         },
         "select_file" => match arg("path") {
             Some(path) => {
@@ -2155,7 +2188,7 @@ mod tests {
     fn tools_list_exposes_read_text_with_object_schema() {
         std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
         let tools = tools_list();
-        assert_eq!(tools.len(), 53, "tool count");
+        assert_eq!(tools.len(), 54, "tool count");
         // Every tool must declare a JSON-Schema object input (the type:object fix).
         for t in &tools {
             assert_eq!(
@@ -2296,6 +2329,16 @@ mod tests {
             .expect("select_file tool present");
         assert_eq!(select_file["inputSchema"]["type"], "object");
         assert_eq!(select_file["inputSchema"]["required"], json!(["path"]));
+
+        let reveal_hover_click = tools
+            .iter()
+            .find(|t| t["name"] == "reveal_hover_click")
+            .expect("reveal_hover_click tool present");
+        assert_eq!(reveal_hover_click["inputSchema"]["type"], "object");
+        assert_eq!(
+            reveal_hover_click["inputSchema"]["required"],
+            json!(["x", "y", "query"])
+        );
 
         let read_at = tools
             .iter()

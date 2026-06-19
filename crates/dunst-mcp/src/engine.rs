@@ -115,6 +115,37 @@ pub struct ScanResult {
     pub samples: Vec<ChartSample>,
 }
 
+#[cfg(target_os = "macos")]
+struct BorrowedHoverUiGuard {
+    saved_cursor: Option<(f64, f64)>,
+    previous_front_pid: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+impl BorrowedHoverUiGuard {
+    fn start(target: &WindowRef, x: f64, y: f64) -> dunst_core::Result<Self> {
+        let previous_front_pid = Engine::borrow_target_frontmost(target)?;
+        std::thread::sleep(Duration::from_millis(120));
+        let saved_cursor = dunst_platform::cursor_borrow_to(x, y)?;
+        Ok(Self {
+            saved_cursor: Some(saved_cursor),
+            previous_front_pid,
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for BorrowedHoverUiGuard {
+    fn drop(&mut self) {
+        if let Some((x, y)) = self.saved_cursor.take() {
+            let _ = dunst_platform::cursor_restore(x, y);
+        }
+        if let Some(pid) = self.previous_front_pid.take() {
+            let _ = Engine::restore_frontmost_pid(&pid);
+        }
+    }
+}
+
 /// One top-level window, for [`Engine::list_windows`] — target discovery.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WindowSummary {
@@ -1942,6 +1973,98 @@ impl Engine {
         self.click_at_button(x, y, 0, "click")
     }
 
+    /// Briefly raise the target window and borrow the real cursor to reveal
+    /// hover-only controls, then click the first visible element matching
+    /// `query` through AX and restore the user's previous frontmost app/cursor.
+    #[cfg(target_os = "macos")]
+    pub fn reveal_hover_click(
+        &mut self,
+        x: f64,
+        y: f64,
+        query: &str,
+        settle_ms: u64,
+        reasoning: Option<&str>,
+    ) -> dunst_core::Result<AuditEntry> {
+        self.ensure_point_in_target_window(x, y, "reveal_hover_click")?;
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(VisualOpsError::Execution(
+                "reveal_hover_click requires a non-empty query".into(),
+            ));
+        }
+        let target_id = format!("hover-reveal@{x:.0},{y:.0}:{query}:click");
+        let risk = Self::raw_input_risk(vec![
+            "temporarily raises the target window".to_string(),
+            "briefly borrows the real OS cursor".to_string(),
+            "clicks a hover-revealed control".to_string(),
+        ]);
+        let argument = Some(format!("hover {x:.1},{y:.1}; click visible {query:?}"));
+        if let Some(entry) = self.gate_raw_input(
+            &target_id,
+            SemanticAction::Click,
+            argument.clone(),
+            reasoning.or(Some("reveal hover-only control and click it")),
+            risk.clone(),
+        ) {
+            return Ok(entry);
+        }
+        self.approvals.remove(&target_id);
+        self.pending_gate_ids.remove(&target_id);
+
+        match self.reveal_hover_click_outcome(x, y, query, settle_ms, reasoning) {
+            Ok(entry) => Ok(entry),
+            Err(err) => {
+                let _ = self.audit_raw_input(
+                    target_id,
+                    SemanticAction::Click,
+                    argument,
+                    reasoning.or(Some("reveal hover-only control and click it")),
+                    risk,
+                    Err(err),
+                );
+                Err(VisualOpsError::Execution(
+                    "reveal_hover_click failed; cursor/window restore was attempted".into(),
+                ))
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn reveal_hover_click_outcome(
+        &mut self,
+        x: f64,
+        y: f64,
+        query: &str,
+        settle_ms: u64,
+        reasoning: Option<&str>,
+    ) -> dunst_core::Result<AuditEntry> {
+        let settle = settle_ms.clamp(50, 1_500);
+        let _guard = BorrowedHoverUiGuard::start(&self.window, x, y)?;
+        std::thread::sleep(Duration::from_millis(settle));
+        self.refresh()?;
+
+        let candidates: Vec<String> = self
+            .find_element_filtered(query, true)
+            .into_iter()
+            .map(|n| n.id.clone())
+            .collect();
+        for id in candidates {
+            if self
+                .resolve_action_target(&id, &[SemanticAction::Click])
+                .is_ok()
+            {
+                return self.click_element(
+                    &id,
+                    reasoning.or(Some("click hover-revealed control by AX id")),
+                );
+            }
+        }
+
+        Err(VisualOpsError::Execution(format!(
+            "no visible clickable element found after hover reveal for query {query:?}"
+        )))
+    }
+
     /// Right-click at a raw screen point (context menus). Background web via SkyLight.
     #[cfg(target_os = "macos")]
     pub fn right_click_at(&mut self, x: f64, y: f64) -> dunst_core::Result<AuditEntry> {
@@ -2044,6 +2167,21 @@ impl Engine {
     pub fn click_at(&mut self, _x: f64, _y: f64) -> dunst_core::Result<AuditEntry> {
         Err(VisualOpsError::Execution(
             "click_at requires a macOS backend".into(),
+        ))
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn reveal_hover_click(
+        &mut self,
+        _x: f64,
+        _y: f64,
+        _query: &str,
+        _settle_ms: u64,
+        _reasoning: Option<&str>,
+    ) -> dunst_core::Result<AuditEntry> {
+        Err(VisualOpsError::Execution(
+            "reveal_hover_click requires a macOS backend".into(),
         ))
     }
 
@@ -2400,6 +2538,13 @@ impl Engine {
     /// a chart crosshair tooltip / value-at-cursor) without moving the visible
     /// cursor. A pure probe — no risk-gating, no audit, **no refresh** — so a
     /// following `read_text` reads the hovered result.
+    ///
+    /// Some web UIs only instantiate controls on a real OS-cursor hover. For
+    /// those, `hover_at` can post successfully while AX stays unchanged. Before
+    /// falling back to `read_at(..., borrow_cursor=true)`, confirm with
+    /// `desktop_view` that the target window is actually visible/topmost under
+    /// the point; borrowed-cursor OCR reads the composited display, not the
+    /// background target capture.
     #[cfg(target_os = "macos")]
     pub fn hover_at(&self, x: f64, y: f64) -> dunst_core::Result<()> {
         self.ensure_point_in_target_window(x, y, "hover_at")?;
@@ -2451,56 +2596,7 @@ impl Engine {
         trigger_point: Option<(f64, f64)>,
     ) -> dunst_core::Result<()> {
         let mut cmd = std::process::Command::new("/usr/bin/osascript");
-        cmd.args([
-            "-e",
-            "on run argv",
-            "-e",
-            "set filePath to item 1 of argv",
-            "-e",
-            "set shouldClick to item 2 of argv",
-            "-e",
-            "tell application \"System Events\"",
-            "-e",
-            "if shouldClick is \"1\" then",
-            "-e",
-            "set px to (item 3 of argv) as integer",
-            "-e",
-            "set py to (item 4 of argv) as integer",
-            "-e",
-            "click at {px, py}",
-            "-e",
-            "delay 0.6",
-            "-e",
-            "end if",
-            "-e",
-            "set chooserOpen to false",
-            "-e",
-            "repeat with p in (every process whose name is \"Open and Save Panel Service\")",
-            "-e",
-            "set chooserOpen to true",
-            "-e",
-            "end repeat",
-            "-e",
-            "if chooserOpen is false then error \"native file chooser did not open\"",
-            "-e",
-            "keystroke \"g\" using {command down, shift down}",
-            "-e",
-            "delay 0.2",
-            "-e",
-            "keystroke filePath",
-            "-e",
-            "delay 0.2",
-            "-e",
-            "key code 36",
-            "-e",
-            "delay 0.5",
-            "-e",
-            "key code 36",
-            "-e",
-            "end tell",
-            "-e",
-            "end run",
-        ]);
+        Self::append_osascript_lines(&mut cmd, Self::select_file_osascript_lines());
         cmd.arg(file.as_os_str());
         match trigger_point {
             Some((x, y)) => {
@@ -2514,6 +2610,7 @@ impl Engine {
                 cmd.arg("0");
             }
         }
+        cmd.arg(self.target.pid.to_string());
         let output = cmd
             .output()
             .map_err(|e| VisualOpsError::Execution(format!("select_file failed: {e}")))?;
@@ -2526,6 +2623,213 @@ impl Engine {
             "select_file failed: {}",
             if stderr.is_empty() { stdout } else { stderr }
         )))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn borrow_target_frontmost(target: &WindowRef) -> dunst_core::Result<Option<String>> {
+        let mut cmd = std::process::Command::new("/usr/bin/osascript");
+        Self::append_osascript_lines(&mut cmd, Self::borrow_target_frontmost_osascript_lines());
+        cmd.arg(target.pid.to_string());
+        cmd.arg(&target.title);
+        let output = cmd
+            .output()
+            .map_err(|e| VisualOpsError::Execution(format!("borrow window failed: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Err(VisualOpsError::Execution(format!(
+                "borrow window failed: {}",
+                if stderr.is_empty() { stdout } else { stderr }
+            )));
+        }
+        let previous = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!previous.is_empty() && previous != "0").then_some(previous))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn restore_frontmost_pid(pid: &str) -> dunst_core::Result<()> {
+        if pid.trim().is_empty() || pid == "0" {
+            return Ok(());
+        }
+        let mut cmd = std::process::Command::new("/usr/bin/osascript");
+        Self::append_osascript_lines(&mut cmd, Self::restore_frontmost_osascript_lines());
+        cmd.arg(pid);
+        let output = cmd
+            .output()
+            .map_err(|e| VisualOpsError::Execution(format!("restore window failed: {e}")))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(VisualOpsError::Execution(format!(
+            "restore window failed: {}",
+            if stderr.is_empty() { stdout } else { stderr }
+        )))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn borrow_target_frontmost_osascript_lines() -> &'static [&'static str] {
+        &[
+            "on run argv",
+            "set targetPid to item 1 of argv",
+            "set targetTitle to item 2 of argv",
+            "set previousFrontPid to \"0\"",
+            "tell application \"System Events\"",
+            "try",
+            "set previousFrontPid to ((unix id of first application process whose frontmost is true) as text)",
+            "end try",
+            "set targetProcess to first application process whose unix id is (targetPid as integer)",
+            "set frontmost of targetProcess to true",
+            "delay 0.05",
+            "try",
+            "repeat with w in windows of targetProcess",
+            "try",
+            "set windowName to (name of w) as text",
+            "if targetTitle is \"\" or windowName contains targetTitle or targetTitle contains windowName then",
+            "perform action \"AXRaise\" of w",
+            "exit repeat",
+            "end if",
+            "end try",
+            "end repeat",
+            "end try",
+            "end tell",
+            "return previousFrontPid",
+            "end run",
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    fn restore_frontmost_osascript_lines() -> &'static [&'static str] {
+        &[
+            "on run argv",
+            "set previousFrontPid to item 1 of argv",
+            "if previousFrontPid is \"0\" then return",
+            "tell application \"System Events\"",
+            "try",
+            "set frontmost of (first application process whose unix id is (previousFrontPid as integer)) to true",
+            "end try",
+            "end tell",
+            "end run",
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    fn select_file_osascript_lines() -> &'static [&'static str] {
+        &[
+            "on hasChooserButton(p)",
+            "set okNames to {\"Open\", \"Ouvrir\", \"Choose\", \"Choisir\", \"Upload\"}",
+            "tell application \"System Events\"",
+            "try",
+            "repeat with w in windows of p",
+            "try",
+            "set panelishWindow to false",
+            "try",
+            "if (name of p) is \"Open and Save Panel Service\" then set panelishWindow to true",
+            "end try",
+            "try",
+            "set wSubrole to subrole of w",
+            "if wSubrole is \"AXDialog\" or wSubrole is \"AXSystemDialog\" or wSubrole is \"AXSheet\" then set panelishWindow to true",
+            "end try",
+            "set controls to entire contents of w",
+            "repeat with c in controls",
+            "try",
+            "set cName to name of c",
+            "if panelishWindow is true then",
+            "if cName is in okNames then return true",
+            "end if",
+            "end try",
+            "try",
+            "if (value of attribute \"AXIdentifier\" of c) is \"OKButton\" then return true",
+            "end try",
+            "end repeat",
+            "end try",
+            "end repeat",
+            "end try",
+            "end tell",
+            "return false",
+            "end hasChooserButton",
+            "on firstOpenPanelProcess(targetPid)",
+            "tell application \"System Events\"",
+            "repeat with p in application processes",
+            "try",
+            "if (name of p) is \"Open and Save Panel Service\" then",
+            "if my hasChooserButton(p) then return p",
+            "end if",
+            "end try",
+            "end repeat",
+            "if targetPid is not \"0\" then",
+            "repeat with p in application processes",
+            "try",
+            "if ((unix id of p) as text) is targetPid then",
+            "if my hasChooserButton(p) then return p",
+            "end if",
+            "end try",
+            "end repeat",
+            "end if",
+            "repeat with p in application processes",
+            "try",
+            "if frontmost of p is true then",
+            "if my hasChooserButton(p) then return p",
+            "end if",
+            "end try",
+            "end repeat",
+            "end tell",
+            "return missing value",
+            "end firstOpenPanelProcess",
+            "on run argv",
+            "set filePath to item 1 of argv",
+            "set shouldClick to item 2 of argv",
+            "set targetPid to item 5 of argv",
+            "tell application \"System Events\"",
+            "set previousFrontPid to \"0\"",
+            "try",
+            "set previousFrontPid to ((unix id of first application process whose frontmost is true) as text)",
+            "end try",
+            "if shouldClick is \"1\" then",
+            "set px to (item 3 of argv) as integer",
+            "set py to (item 4 of argv) as integer",
+            "click at {px, py}",
+            "delay 0.6",
+            "end if",
+            "set panelProcess to missing value",
+            "repeat 20 times",
+            "set panelProcess to my firstOpenPanelProcess(targetPid)",
+            "if panelProcess is not missing value then exit repeat",
+            "delay 0.1",
+            "end repeat",
+            "if panelProcess is missing value then error \"native file chooser did not open\"",
+            "try",
+            "set frontmost of panelProcess to true",
+            "on error",
+            "try",
+            "set frontmost of (first application process whose unix id is (targetPid as integer)) to true",
+            "end try",
+            "end try",
+            "delay 0.15",
+            "keystroke \"g\" using {command down, shift down}",
+            "delay 0.2",
+            "keystroke filePath",
+            "delay 0.2",
+            "key code 36",
+            "delay 0.5",
+            "key code 36",
+            "delay 0.2",
+            "if previousFrontPid is not \"0\" then",
+            "try",
+            "set frontmost of (first application process whose unix id is (previousFrontPid as integer)) to true",
+            "end try",
+            "end if",
+            "end tell",
+            "end run",
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    fn append_osascript_lines(cmd: &mut std::process::Command, lines: &[&str]) {
+        for line in lines {
+            cmd.arg("-e").arg(line);
+        }
     }
 
     /// Read text at **several** screen points. The default path uses background
@@ -5030,11 +5334,11 @@ mod helper_tests {
     use super::{
         base64_encode, char_keycode, is_axis_token, is_press_key_name,
         launchable_app_from_info_json, layout_sensitive_hotkey_message, looks_like_clock,
-        parse_combo, parse_value, typed_target_value_matches_expected,
+        parse_combo, parse_value, typed_target_value_matches_expected, Engine, TEMP_COUNTER,
     };
     use dunst_core::{GraphDiff, NodeChange};
     use serde_json::json;
-    use std::{collections::BTreeSet, path::Path};
+    use std::{collections::BTreeSet, path::Path, sync::atomic::Ordering};
 
     #[test]
     fn base64_matches_known_vectors() {
@@ -5121,6 +5425,52 @@ mod helper_tests {
         assert!(!is_axis_token("À la clôture de 17:35"));
         assert_eq!(parse_value("8 220,00"), Some(8220.0));
         assert_eq!(parse_value("8161,84'"), Some(8161.84));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn select_file_script_handles_native_panel_process_variants() {
+        let script = Engine::select_file_osascript_lines().join("\n");
+
+        assert!(script.contains("Open and Save Panel Service"));
+        assert!(script.contains("targetPid"));
+        assert!(script.contains("frontmost of p is true"));
+        assert!(script.contains("previousFrontPid"));
+        assert!(script.contains("panelishWindow"));
+        assert!(script.contains("AXDialog"));
+        assert!(script.contains("AXIdentifier"));
+        assert!(script.contains("OKButton"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn select_file_script_compiles_as_applescript() {
+        let script = format!("{}\n", Engine::select_file_osascript_lines().join("\n"));
+        let stem = format!(
+            "dunst_select_file_{}_{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let source = std::env::temp_dir().join(format!("{stem}.applescript"));
+        let compiled = std::env::temp_dir().join(format!("{stem}.scpt"));
+        std::fs::write(&source, script).expect("write temporary AppleScript source");
+
+        let output = std::process::Command::new("/usr/bin/osacompile")
+            .arg("-o")
+            .arg(&compiled)
+            .arg(&source)
+            .output()
+            .expect("run osacompile");
+
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&compiled);
+
+        assert!(
+            output.status.success(),
+            "select_file AppleScript must compile:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
