@@ -30,6 +30,8 @@ const OCR_CACHE_TTL: Duration = Duration::from_millis(250);
 const SCREENSHOT_CACHE_TTL: Duration = Duration::from_millis(250);
 const TYPE_VERIFY_SETTLE_TIMEOUT: Duration = Duration::from_millis(1_000);
 const TYPE_VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(80);
+#[cfg(target_os = "macos")]
+const SELECT_FILE_OSASCRIPT_TIMEOUT: Duration = Duration::from_secs(12);
 
 fn unique_png_path(prefix: &str) -> PathBuf {
     let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -2611,9 +2613,8 @@ impl Engine {
             }
         }
         cmd.arg(self.target.pid.to_string());
-        let output = cmd
-            .output()
-            .map_err(|e| VisualOpsError::Execution(format!("select_file failed: {e}")))?;
+        let output =
+            Self::command_output_with_timeout(cmd, SELECT_FILE_OSASCRIPT_TIMEOUT, "select_file")?;
         if output.status.success() {
             return Ok(());
         }
@@ -2718,7 +2719,7 @@ impl Engine {
     fn select_file_osascript_lines() -> &'static [&'static str] {
         &[
             "on hasChooserButton(p)",
-            "set okNames to {\"Open\", \"Ouvrir\", \"Choose\", \"Choisir\", \"Upload\"}",
+            "set okNames to {\"Open\", \"Ouvrir\", \"Choose\", \"Choisir\", \"Upload\", \"Envoi\"}",
             "tell application \"System Events\"",
             "try",
             "repeat with w in windows of p",
@@ -2728,16 +2729,19 @@ impl Engine {
             "if (name of p) is \"Open and Save Panel Service\" then set panelishWindow to true",
             "end try",
             "try",
+            "set wName to (name of w) as text",
+            "if wName contains \"Envoi du fichier\" then set panelishWindow to true",
+            "end try",
+            "try",
             "set wSubrole to subrole of w",
             "if wSubrole is \"AXDialog\" or wSubrole is \"AXSystemDialog\" or wSubrole is \"AXSheet\" then set panelishWindow to true",
             "end try",
+            "if panelishWindow is false then error \"skip non-panel window\"",
             "set controls to entire contents of w",
             "repeat with c in controls",
             "try",
             "set cName to name of c",
-            "if panelishWindow is true then",
             "if cName is in okNames then return true",
-            "end if",
             "end try",
             "try",
             "if (value of attribute \"AXIdentifier\" of c) is \"OKButton\" then return true",
@@ -2749,6 +2753,51 @@ impl Engine {
             "end tell",
             "return false",
             "end hasChooserButton",
+            "on pressChooserButton(p)",
+            "set okNames to {\"Open\", \"Ouvrir\", \"Choose\", \"Choisir\", \"Upload\", \"Envoi\"}",
+            "tell application \"System Events\"",
+            "try",
+            "repeat with w in windows of p",
+            "try",
+            "set panelishWindow to false",
+            "try",
+            "if (name of p) is \"Open and Save Panel Service\" then set panelishWindow to true",
+            "end try",
+            "try",
+            "set wName to (name of w) as text",
+            "if wName contains \"Envoi du fichier\" then set panelishWindow to true",
+            "end try",
+            "try",
+            "set wSubrole to subrole of w",
+            "if wSubrole is \"AXDialog\" or wSubrole is \"AXSystemDialog\" or wSubrole is \"AXSheet\" then set panelishWindow to true",
+            "end try",
+            "if panelishWindow is false then error \"skip non-panel window\"",
+            "set controls to entire contents of w",
+            "repeat with c in controls",
+            "try",
+            "set cName to name of c",
+            "if cName is in okNames then",
+            "if enabled of c then",
+            "perform action \"AXPress\" of c",
+            "return true",
+            "end if",
+            "end if",
+            "end try",
+            "try",
+            "if (value of attribute \"AXIdentifier\" of c) is \"OKButton\" then",
+            "if enabled of c then",
+            "perform action \"AXPress\" of c",
+            "return true",
+            "end if",
+            "end if",
+            "end try",
+            "end repeat",
+            "end try",
+            "end repeat",
+            "end try",
+            "end tell",
+            "return false",
+            "end pressChooserButton",
             "on firstOpenPanelProcess(targetPid)",
             "tell application \"System Events\"",
             "repeat with p in application processes",
@@ -2812,8 +2861,16 @@ impl Engine {
             "keystroke filePath",
             "delay 0.2",
             "key code 36",
+            "delay 0.4",
+            "set didPressChooserButton to false",
+            "repeat 10 times",
+            "set didPressChooserButton to my pressChooserButton(panelProcess)",
+            "if didPressChooserButton is true then exit repeat",
+            "delay 0.15",
+            "end repeat",
+            "if didPressChooserButton is false then key code 36",
             "delay 0.5",
-            "key code 36",
+            "if my hasChooserButton(panelProcess) then error \"native file chooser stayed open after file selection\"",
             "delay 0.2",
             "if previousFrontPid is not \"0\" then",
             "try",
@@ -2829,6 +2886,55 @@ impl Engine {
     fn append_osascript_lines(cmd: &mut std::process::Command, lines: &[&str]) {
         for line in lines {
             cmd.arg("-e").arg(line);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn command_output_with_timeout(
+        mut cmd: std::process::Command,
+        timeout: Duration,
+        label: &str,
+    ) -> dunst_core::Result<std::process::Output> {
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| VisualOpsError::Execution(format!("{label} failed: {e}")))?;
+        let started = Instant::now();
+
+        loop {
+            if child
+                .try_wait()
+                .map_err(|e| VisualOpsError::Execution(format!("{label} wait failed: {e}")))?
+                .is_some()
+            {
+                return child
+                    .wait_with_output()
+                    .map_err(|e| VisualOpsError::Execution(format!("{label} failed: {e}")));
+            }
+            if started.elapsed() >= timeout {
+                let _ = child.kill();
+                let output = child.wait_with_output().map_err(|e| {
+                    VisualOpsError::Execution(format!("{label} timeout cleanup failed: {e}"))
+                })?;
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                return Err(VisualOpsError::Execution(format!(
+                    "{label} timed out after {} ms{}{}",
+                    timeout.as_millis(),
+                    if stdout.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; stdout: {stdout}")
+                    },
+                    if stderr.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; stderr: {stderr}")
+                    }
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 
@@ -5438,8 +5544,12 @@ mod helper_tests {
         assert!(script.contains("previousFrontPid"));
         assert!(script.contains("panelishWindow"));
         assert!(script.contains("AXDialog"));
+        assert!(script.contains("Envoi du fichier"));
         assert!(script.contains("AXIdentifier"));
         assert!(script.contains("OKButton"));
+        assert!(script.contains("skip non-panel window"));
+        assert!(script.contains("pressChooserButton"));
+        assert!(script.contains("native file chooser stayed open after file selection"));
     }
 
     #[cfg(target_os = "macos")]
