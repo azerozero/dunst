@@ -1,7 +1,19 @@
 use super::*;
 
 pub(super) fn tools_list() -> Vec<Value> {
-    let mut tools = vec![
+    let mut tools = Vec::new();
+    tools.extend(state_tools());
+    tools.extend(query_tools());
+    tools.extend(element_tools());
+    tools.extend(pointer_and_chart_tools());
+    tools.extend(window_app_tools());
+    tools.extend(keyboard_menu_tools());
+    tools.extend(approval_tools());
+    tools
+}
+
+fn state_tools() -> Vec<Value> {
+    vec![
         tool(
             "version",
             "Return the running dunst-mcp build identity: package version, git commit, dirty flag, build timestamp, and protocol version. Use this after restart to confirm the active server binary.",
@@ -119,6 +131,11 @@ pub(super) fn tools_list() -> Vec<Value> {
                 &[],
             ),
         ),
+    ]
+}
+
+fn query_tools() -> Vec<Value> {
+    vec![
         tool(
             "analyze_region_ax",
             "Analyze only a screen region through AX hit-tests on a spaced grid. Returns unique shallow AX elements under the sampled points; this is targeted region analysis, not a full AX subtree refresh.",
@@ -210,6 +227,11 @@ pub(super) fn tools_list() -> Vec<Value> {
                 &["action"],
             ),
         ),
+    ]
+}
+
+fn element_tools() -> Vec<Value> {
+    vec![
         tool(
             "click_element",
             "Click an element by id. High-risk elements return pending_approval until approve() is called. Action responses are compact by default; set include_diff=true for the full scene diff.",
@@ -286,6 +308,11 @@ pub(super) fn tools_list() -> Vec<Value> {
                 &["path"],
             ),
         ),
+    ]
+}
+
+fn pointer_and_chart_tools() -> Vec<Value> {
+    vec![
         tool(
             "hover_at",
             "Hover (background mouse-move, no cursor movement) at a raw screen point (x,y) inside the target window so the target reveals a hover state — e.g. a chart crosshair tooltip / value-at-cursor — then read_text it. This does not move the real OS cursor; if a web UI only creates controls on real mouse hover and the target is covered, first check desktop_view.covered_by and make the target visible/raised or use read_at/read_series with borrow_cursor=true on an exposed point. A probe: no gating, no audit. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
@@ -314,6 +341,11 @@ pub(super) fn tools_list() -> Vec<Value> {
             "Make the target window AppKit-active WITHOUT raising it or switching Spaces (SkyLight focus-without-raise) so a backgrounded web canvas (e.g. a chart) paints, without foregrounding. Returns true if the SkyLight SPIs applied.",
             json!({}),
         ),
+    ]
+}
+
+fn window_app_tools() -> Vec<Value> {
+    vec![
         tool(
             "list_windows",
             "Enumerate REAL, drivable windows (sizeable + titled; tab-strip/shadow/menubar fragments dropped) — window_id, pid, app, title, bounds, on_screen — to pick a target. Pass all:true for every layer-0 window. The daemon's own discovery (no external tool).",
@@ -404,6 +436,11 @@ pub(super) fn tools_list() -> Vec<Value> {
             "Composited PNG of the target window, returned as an image — lets you SEE the pixels directly (multimodal) alongside OCR/CV. Works backgrounded.",
             json!({}),
         ),
+    ]
+}
+
+fn keyboard_menu_tools() -> Vec<Value> {
+    vec![
         tool(
             "right_click_at",
             "Right-click at a raw screen point (x,y) — context menus. Background web via SkyLight (no cursor, no foreground). Raw input is high-risk; if approval is unavailable or denied, switch to ui_fallback_hint and prefer element-bound actions. If the user-active guard blocks it, wait until the operator is idle and retry once.",
@@ -455,13 +492,17 @@ pub(super) fn tools_list() -> Vec<Value> {
             schema(json!({ "summary": {"type":"boolean"}, "limit": {"type":"integer"} }), &[]),
         ),
         tool("export_trace", "Export the audit trail (every attempted action) as JSON.", json!({})),
-    ];
+    ]
+}
+
+fn approval_tools() -> Vec<Value> {
     if approval_tool_enabled() {
-        tools.push(tool(
+        vec![tool(
             "approve",
             "Operator-side escape hatch: approve a gated element or raw target so the next action on it proceeds. Disabled by default; set DUNST_MCP_ENABLE_APPROVE_TOOL=1 for controlled local sessions.",
             schema(json!({ "id": {"type":"string"} }), &["id"]),
-        ));
+        )]
+    } else {
+        Vec::new()
     }
-    tools
 }
