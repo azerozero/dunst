@@ -1,0 +1,118 @@
+use super::*;
+
+pub(super) fn dispatch(
+    engine: &mut Engine,
+    name: &str,
+    args: &Value,
+) -> Option<Result<Value, String>> {
+    Some(match name {
+        "click_at" => match point(args) {
+            Some((x, y)) => engine
+                .click_at(x, y)
+                .map(|entry| {
+                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
+                })
+                .map_err(|e| e.to_string()),
+            None => Err("click_at requires numeric 'x' and 'y'".into()),
+        },
+        "reveal_hover_click" => match (point(args), arg(args, "query")) {
+            (Some((x, y)), Some(query)) => engine
+                .reveal_hover_click(
+                    x,
+                    y,
+                    &query,
+                    args.get("settle_ms").and_then(Value::as_u64).unwrap_or(250),
+                    arg(args, "reasoning").as_deref(),
+                )
+                .map(|entry| {
+                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
+                })
+                .map_err(|e| e.to_string()),
+            _ => Err(
+                "reveal_hover_click requires numeric 'x', numeric 'y', and string 'query'".into(),
+            ),
+        },
+        "hover_at" => match point(args) {
+            Some((x, y)) => engine
+                .hover_at(x, y)
+                .map(|()| json!("ok"))
+                .map_err(|e| e.to_string()),
+            None => Err("hover_at requires numeric 'x' and 'y'".into()),
+        },
+        "focus_window" => Ok(json!({ "focused": engine.focus_window() })),
+        "right_click_at" => match point(args) {
+            Some((x, y)) => engine
+                .right_click_at(x, y)
+                .map(|entry| {
+                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
+                })
+                .map_err(|e| e.to_string()),
+            None => Err("right_click_at requires numeric 'x' and 'y'".into()),
+        },
+        "double_click_at" => match point(args) {
+            Some((x, y)) => engine
+                .double_click_at(x, y)
+                .map(|entry| {
+                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
+                })
+                .map_err(|e| e.to_string()),
+            None => Err("double_click_at requires numeric 'x' and 'y'".into()),
+        },
+        "open_menu" => match arg(args, "name") {
+            Some(name) => engine
+                .open_menu(&name)
+                .map(|entry| {
+                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
+                })
+                .map_err(|e| e.to_string()),
+            None => Err("open_menu requires 'name'".into()),
+        },
+        "press_key" => match arg(args, "key") {
+            Some(key) => engine
+                .press_key(&key)
+                .map(|entry| {
+                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
+                })
+                .map_err(|e| e.to_string()),
+            None => Err("missing 'key'".into()),
+        },
+        "type_keys" => match arg(args, "text") {
+            Some(text) => engine
+                .type_keys(&text)
+                .map(|entry| {
+                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
+                })
+                .map_err(|e| e.to_string()),
+            None => Err("missing 'text'".into()),
+        },
+        "scroll" => engine
+            .scroll(
+                arg(args, "direction").as_deref().unwrap_or("down"),
+                args.get("pages").and_then(Value::as_u64).unwrap_or(3) as usize,
+                arg(args, "id").as_deref(),
+            )
+            .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
+            .map_err(|e| e.to_string()),
+        "zoom" => engine
+            .zoom(arg(args, "direction").as_deref().unwrap_or("in"))
+            .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
+            .map_err(|e| e.to_string()),
+        "hotkey" => match arg(args, "combo") {
+            Some(combo) => engine
+                .hotkey(&combo)
+                .map(|entry| {
+                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
+                })
+                .map_err(|e| e.to_string()),
+            None => Err("missing 'combo'".into()),
+        },
+        _ => return None,
+    })
+}
+
+fn point(args: &Value) -> Option<(f64, f64)> {
+    Some((
+        args.get("x").and_then(Value::as_f64)?,
+        args.get("y").and_then(Value::as_f64)?,
+    ))
+}
