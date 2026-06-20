@@ -24,11 +24,24 @@ use dunst_graph::{audit, derive_affordances, scene, RiskEngine};
 use serde_json::{json, Value};
 
 mod action;
+mod apps;
+mod chart;
+mod input;
 mod types;
 
 #[cfg(test)]
 use action::typed_target_value_matches_expected;
 use action::CoTarget;
+#[cfg(test)]
+use apps::launchable_app_from_info_json;
+#[cfg(target_os = "macos")]
+use apps::{app_search_roots, collect_app_bundles, launchable_app_from_bundle};
+use chart::{build_y_calibration, nearest_time_label, region_from_axis};
+#[cfg(test)]
+use chart::{is_axis_token, looks_like_clock, parse_value};
+#[cfg(test)]
+use input::char_keycode;
+use input::{is_press_key_name, layout_sensitive_hotkey_message, parse_combo};
 pub use types::*;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -148,23 +161,6 @@ struct VisualProbeCacheEntry {
     signature: Vec<u8>,
 }
 
-/// Parse a (possibly French-formatted) numeric label like `"8 220,00"` or
-/// `"8161,84'"` into a value. Space = thousands, comma = decimal; trailing OCR
-/// junk is dropped.
-fn parse_value(s: &str) -> Option<f64> {
-    let kept: String = s
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == ',')
-        .collect();
-    if kept.is_empty() {
-        return None;
-    }
-    kept.replacen(',', ".", 1)
-        .replace(',', "")
-        .parse::<f64>()
-        .ok()
-}
-
 /// Standard base64 of `data` (for returning a screenshot PNG as MCP image data).
 fn base64_encode(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -187,284 +183,6 @@ fn base64_encode(data: &[u8]) -> String {
         });
     }
     out
-}
-
-/// Parse a hotkey combo like `"cmd+l"` into `(modifier flags, keycode)`.
-fn parse_combo(combo: &str) -> Option<(u64, u16)> {
-    let mut flags = 0u64;
-    let mut key = None;
-    for part in combo.split('+') {
-        match part.trim().to_ascii_lowercase().as_str() {
-            "cmd" | "command" | "meta" => flags |= 0x0010_0000,
-            "shift" => flags |= 0x0002_0000,
-            "opt" | "option" | "alt" => flags |= 0x0008_0000,
-            "ctrl" | "control" => flags |= 0x0004_0000,
-            other => key = keycode_for(other),
-        }
-    }
-    Some((flags, key?))
-}
-
-fn layout_sensitive_hotkey_message(combo: &str) -> Option<String> {
-    let mut has_cmd = false;
-    let mut has_non_cmd_modifier = false;
-    let mut key = None;
-
-    for part in combo.split('+') {
-        match part.trim().to_ascii_lowercase().as_str() {
-            "cmd" | "command" | "meta" => has_cmd = true,
-            "shift" | "opt" | "option" | "alt" | "ctrl" | "control" => has_non_cmd_modifier = true,
-            other => key = Some(other.to_string()),
-        }
-    }
-
-    match (has_cmd, has_non_cmd_modifier, key.as_deref()) {
-        (true, false, Some("a")) => Some(
-            "hotkey \"cmd+a\" is keyboard-layout sensitive on macOS and can hit the wrong Command shortcut on non-US layouts; use type_into on a text element instead"
-                .into(),
-        ),
-        _ => None,
-    }
-}
-
-/// macOS virtual keycode for a key name or single character (US ANSI layout).
-fn keycode_for(k: &str) -> Option<u16> {
-    Some(match k {
-        "enter" | "return" => 0x24,
-        "tab" => 0x30,
-        "escape" | "esc" => 0x35,
-        "space" => 0x31,
-        "delete" | "backspace" => 0x33,
-        "left" => 0x7B,
-        "right" => 0x7C,
-        "down" => 0x7D,
-        "up" => 0x7E,
-        "pagedown" => 0x79,
-        "pageup" => 0x74,
-        "home" => 0x73,
-        "end" => 0x77,
-        "plus" => 0x18,
-        "minus" => 0x1B,
-        s if s.chars().count() == 1 => char_keycode(s.chars().next()?)?,
-        _ => return None,
-    })
-}
-
-fn is_press_key_name(key: &str) -> bool {
-    matches!(
-        key.trim().to_ascii_lowercase().as_str(),
-        "return"
-            | "enter"
-            | "tab"
-            | "escape"
-            | "esc"
-            | "space"
-            | "spacebar"
-            | "delete"
-            | "backspace"
-            | "up"
-            | "arrowup"
-            | "up_arrow"
-            | "down"
-            | "arrowdown"
-            | "down_arrow"
-            | "left"
-            | "arrowleft"
-            | "left_arrow"
-            | "right"
-            | "arrowright"
-            | "right_arrow"
-            | "pageup"
-            | "page_up"
-            | "pagedown"
-            | "page_down"
-            | "home"
-            | "end"
-    )
-}
-
-/// macOS virtual keycode for a single character (US ANSI layout).
-fn char_keycode(c: char) -> Option<u16> {
-    Some(match c.to_ascii_lowercase() {
-        'a' => 0x00,
-        'b' => 0x0B,
-        'c' => 0x08,
-        'd' => 0x02,
-        'e' => 0x0E,
-        'f' => 0x03,
-        'g' => 0x05,
-        'h' => 0x04,
-        'i' => 0x22,
-        'j' => 0x26,
-        'k' => 0x28,
-        'l' => 0x25,
-        'm' => 0x2E,
-        'n' => 0x2D,
-        'o' => 0x1F,
-        'p' => 0x23,
-        'q' => 0x0C,
-        'r' => 0x0F,
-        's' => 0x01,
-        't' => 0x11,
-        'u' => 0x20,
-        'v' => 0x09,
-        'w' => 0x0D,
-        'x' => 0x07,
-        'y' => 0x10,
-        'z' => 0x06,
-        '0' => 0x1D,
-        '1' => 0x12,
-        '2' => 0x13,
-        '3' => 0x14,
-        '4' => 0x15,
-        '5' => 0x17,
-        '6' => 0x16,
-        '7' => 0x1A,
-        '8' => 0x1C,
-        '9' => 0x19,
-        '=' => 0x18,
-        '-' => 0x1B,
-        _ => return None,
-    })
-}
-
-/// Heuristic: contains a clock time like `HH:MM`.
-fn looks_like_clock(s: &str) -> bool {
-    let b = s.as_bytes();
-    (1..b.len().saturating_sub(2)).any(|i| {
-        b[i] == b':'
-            && b[i - 1].is_ascii_digit()
-            && b[i + 1].is_ascii_digit()
-            && b[i + 2].is_ascii_digit()
-    })
-}
-
-/// Linear map from a screen-y (pixels, down-positive) to a chart value, fit from
-/// two OCR'd Y-axis price labels.
-struct YCalibration {
-    y_ref: f64,
-    v_ref: f64,
-    slope: f64,
-}
-
-impl YCalibration {
-    fn value_at(&self, screen_y: f64) -> f64 {
-        self.v_ref + (screen_y - self.y_ref) * self.slope
-    }
-}
-
-/// Y-axis price labels `(screen_y, value)` right of `min_cx`, filtered to the
-/// **densest value cluster** — the gridlines cluster tightly (e.g. 8140..8220)
-/// while header values and performance percentages are spread out and dropped.
-fn yaxis_points(hits: &[TextHit], min_cx: f64) -> Vec<(f64, f64)> {
-    let cands: Vec<(f64, f64)> = hits
-        .iter()
-        .filter_map(|h| {
-            let cx = h.bbox.x + h.bbox.w / 2.0;
-            if cx < min_cx {
-                return None;
-            }
-            let v = parse_value(&h.text)?;
-            (v >= 1.0).then_some((h.bbox.y + h.bbox.h / 2.0, v))
-        })
-        .collect();
-    if cands.len() < 2 {
-        return cands;
-    }
-    let center = cands.iter().map(|&(_, v)| v).max_by_key(|&v| {
-        cands
-            .iter()
-            .filter(|&&(_, u)| (u - v).abs() <= v * 0.05)
-            .count()
-    });
-    match center {
-        Some(c) => cands
-            .into_iter()
-            .filter(|&(_, v)| (v - c).abs() <= c * 0.05)
-            .collect(),
-        None => cands,
-    }
-}
-
-/// Build a Y-axis calibration from the gridline price labels, using the two with
-/// the largest vertical separation.
-fn build_y_calibration(hits: &[TextHit], region: &Bbox) -> Option<YCalibration> {
-    let mut pts = yaxis_points(hits, region.x + region.w * 0.82);
-    if pts.len() < 2 {
-        return None;
-    }
-    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let (y_a, v_a) = pts[0];
-    let (y_b, v_b) = pts[pts.len() - 1];
-    if (y_b - y_a).abs() < 1.0 {
-        return None;
-    }
-    Some(YCalibration {
-        y_ref: y_a,
-        v_ref: v_a,
-        slope: (v_b - v_a) / (y_b - y_a),
-    })
-}
-
-/// Derive the plot rectangle from the OCR'd axis labels: x-range from the time
-/// labels (`HH:MM`) along the bottom, y-range from the price labels down the
-/// right-hand Y axis. Robust where a thin-curve / pale-fill chart defeats blob
-/// detection.
-fn region_from_axis(hits: &[TextHit]) -> Option<Bbox> {
-    let time_xs: Vec<f64> = hits
-        .iter()
-        .filter(|h| looks_like_clock(&h.text))
-        .map(|h| h.bbox.x + h.bbox.w / 2.0)
-        .collect();
-    if time_xs.len() < 3 {
-        return None;
-    }
-    let x_min = time_xs.iter().copied().fold(f64::MAX, f64::min);
-    let x_max = time_xs.iter().copied().fold(f64::MIN, f64::max);
-    let price_pts = yaxis_points(hits, x_max - 40.0);
-    if price_pts.len() < 2 {
-        return None;
-    }
-    let y_top = price_pts.iter().map(|p| p.0).fold(f64::MAX, f64::min);
-    let y_bot = price_pts.iter().map(|p| p.0).fold(f64::MIN, f64::max);
-    if x_max - x_min < 50.0 || y_bot - y_top < 30.0 {
-        return None;
-    }
-    Some(Bbox {
-        x: x_min,
-        y: y_top,
-        w: x_max - x_min,
-        h: y_bot - y_top,
-    })
-}
-
-/// The X-axis time/date label nearest `x`, restricted to the axis row at the
-/// BOTTOM of `region` so a header timestamp (e.g. "à la clôture de 17:35") can't
-/// masquerade as the axis. A clock OR a short token (a day-date like "09 Juin").
-fn nearest_time_label(hits: &[TextHit], x: f64, region: &Bbox) -> Option<String> {
-    // axis band: from just below mid-plot to a little under the plot bottom.
-    let y_lo = region.y + region.h * 0.6;
-    let y_hi = region.y + region.h + 60.0;
-    hits.iter()
-        .filter(|h| {
-            let cy = h.bbox.y + h.bbox.h / 2.0;
-            cy >= y_lo && cy <= y_hi && (looks_like_clock(&h.text) || is_axis_token(&h.text))
-        })
-        .min_by(|a, b| {
-            let da = (a.bbox.x + a.bbox.w / 2.0 - x).abs();
-            let db = (b.bbox.x + b.bbox.w / 2.0 - x).abs();
-            da.total_cmp(&db)
-        })
-        .map(|h| h.text.trim().to_string())
-}
-
-/// A short axis tick token: a clock, a bare day-number, or a `<num> <month>` date.
-fn is_axis_token(s: &str) -> bool {
-    let t = s.trim();
-    !t.is_empty()
-        && t.len() <= 12
-        && t.chars().next().is_some_and(|c| c.is_ascii_digit())
-        && t.chars().filter(char::is_ascii_digit).count() <= 4
 }
 
 #[cfg(target_os = "macos")]
@@ -4304,111 +4022,6 @@ fn is_terminal_app_name(value: &str) -> bool {
     ]
     .iter()
     .any(|needle| app.contains(needle))
-}
-
-#[cfg(target_os = "macos")]
-fn app_search_roots() -> Vec<PathBuf> {
-    let mut roots = vec![
-        PathBuf::from("/Applications"),
-        PathBuf::from("/Applications/Utilities"),
-        PathBuf::from("/System/Applications"),
-        PathBuf::from("/System/Applications/Utilities"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        roots.push(PathBuf::from(home).join("Applications"));
-    }
-    roots
-}
-
-#[cfg(target_os = "macos")]
-fn collect_app_bundles(
-    dir: &Path,
-    depth: usize,
-    seen: &mut BTreeSet<String>,
-    out: &mut Vec<PathBuf>,
-    max: usize,
-) {
-    if depth > 3 || out.len() >= max {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if out.len() >= max {
-            break;
-        }
-        let path = entry.path();
-        let is_app = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("app"));
-        if is_app {
-            let key = path.to_string_lossy().to_string();
-            if seen.insert(key) {
-                out.push(path);
-            }
-            continue;
-        }
-        if path.is_dir() {
-            collect_app_bundles(&path, depth + 1, seen, out, max);
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn launchable_app_from_bundle(path: &Path, running: &BTreeSet<String>) -> Option<LaunchableApp> {
-    let info_path = path.join("Contents/Info.plist");
-    let output = std::process::Command::new("/usr/bin/plutil")
-        .args(["-convert", "json", "-o", "-"])
-        .arg(&info_path)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let info: Value = serde_json::from_slice(&output.stdout).ok()?;
-    launchable_app_from_info_json(path, &info, running)
-}
-
-fn launchable_app_from_info_json(
-    path: &Path,
-    info: &Value,
-    running: &BTreeSet<String>,
-) -> Option<LaunchableApp> {
-    let bundle_name = path.file_stem()?.to_string_lossy().to_string();
-    let display_name = info_string(info, "CFBundleDisplayName")
-        .or_else(|| info_string(info, "CFBundleName"))
-        .unwrap_or_else(|| bundle_name.clone());
-    let executable = info_string(info, "CFBundleExecutable").map(|exe| {
-        path.join("Contents/MacOS")
-            .join(exe)
-            .to_string_lossy()
-            .to_string()
-    });
-    let running = running.contains(&normalize_match(&display_name))
-        || running.contains(&normalize_match(&bundle_name));
-    Some(LaunchableApp {
-        name: bundle_name,
-        display_name,
-        bundle_id: info_string(info, "CFBundleIdentifier"),
-        version: info_string(info, "CFBundleShortVersionString")
-            .or_else(|| info_string(info, "CFBundleVersion")),
-        category: info_string(info, "LSApplicationCategoryType"),
-        description: info_string(info, "CFBundleGetInfoString")
-            .or_else(|| info_string(info, "NSHumanReadableCopyright")),
-        path: path.to_string_lossy().to_string(),
-        executable,
-        running,
-    })
-}
-
-fn info_string(info: &Value, key: &str) -> Option<String> {
-    info.get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
 }
 
 /// WP-J/J2 — whether a node has a real on-screen footprint. A node is **latent**
