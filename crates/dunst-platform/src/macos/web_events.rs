@@ -21,21 +21,17 @@ pub(super) fn cg_event_via_nsevent(
         CGEventType::MouseMoved => NSEventType::MouseMoved,
         _ => return None,
     };
-    // SAFETY: standard AppKit class-method; a nil graphics context is allowed
-    // and all scalar arguments are valid.
-    let ns = unsafe {
-        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-            ns_type,
-            NSPoint { x: 0.0, y: 0.0 },
-            NSEventModifierFlags(0),
-            0.0,
-            window_id as isize,
-            None,
-            0,
-            click_count,
-            1.0,
-        )
-    }?;
+    let ns = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+        ns_type,
+        NSPoint { x: 0.0, y: 0.0 },
+        NSEventModifierFlags(0),
+        0.0,
+        window_id as isize,
+        None,
+        0,
+        click_count,
+        1.0,
+    )?;
     // `-[NSEvent CGEvent]` returns a `CGEventRef` (`^{__CGEvent=}`); objc2
     // checks the return encoding, so name it via an opaque struct rather than
     // a bare `void*`.
