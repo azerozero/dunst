@@ -86,6 +86,7 @@ fn scene_node(raw: &RawAxNode) -> SceneNode {
         ax_actions: raw.ax_actions.clone(),
         ax_identifier: raw.ax_identifier.clone(),
         last_seen_ms: 0,
+        path: Vec::new(),
         parent: None,
         children: Vec::new(),
     }

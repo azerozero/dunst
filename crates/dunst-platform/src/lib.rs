@@ -552,7 +552,9 @@ mod macos {
                 .map_err(ActionFailure::into);
         }
 
-        if env::var_os("VO_ACTION_DISABLE_CACHE").is_none() {
+        let use_cache =
+            env::var_os("VO_ACTION_DISABLE_CACHE").is_none() && !collision_suffix_id(&node.id);
+        if use_cache {
             if let Some(element) = cached_element(key) {
                 if !cached_element_matches_target(&element, target) {
                     remove_cached_element(key);
@@ -1046,29 +1048,49 @@ mod macos {
     }
 
     fn find_element(root: AxElement, wanted: &SceneNode) -> Result<Option<AxElement>> {
-        let mut stack = vec![(root, 0usize)];
+        let has_path = !wanted.path.is_empty();
+        let require_path = has_path && collision_suffix_id(&wanted.id);
+        let mut path_mismatch = false;
+        let mut stack = vec![(root, 0usize, vec![0usize])];
         let mut seen = 0usize;
 
-        while let Some((element, depth)) = stack.pop() {
+        while let Some((element, depth, path)) = stack.pop() {
             seen += 1;
             if seen > max_nodes() || depth > max_depth() {
                 eprintln!("dunst-platform: live element search capped");
                 break;
             }
 
-            if element_matches(&element, wanted) {
+            if has_path && path == wanted.path {
+                if element_matches(&element, wanted) {
+                    return Ok(Some(element));
+                }
+                path_mismatch = true;
+                if require_path {
+                    break;
+                }
+            }
+
+            if !require_path && element_matches(&element, wanted) {
                 return Ok(Some(element));
             }
 
             if let Some(children) = attr_array(&element, kAXChildrenAttribute) {
-                let mut child_elements = ax_elements(&children);
-                child_elements.reverse();
-                for child in child_elements {
-                    stack.push((child, depth + 1));
+                let child_elements = ax_elements(&children);
+                for (idx, child) in child_elements.into_iter().enumerate().rev() {
+                    let mut child_path = path.clone();
+                    child_path.push(idx);
+                    stack.push((child, depth + 1, child_path));
                 }
             }
         }
 
+        if require_path && path_mismatch {
+            return Err(VisualOpsError::ElementNotFound(format!(
+                "id={} path={:?} resolved to a different live AX element",
+                wanted.id, wanted.path
+            )));
+        }
         Ok(None)
     }
 
@@ -1076,6 +1098,13 @@ mod macos {
         element_key(element)
             .map(|key| key == ElementKey::from_scene(wanted))
             .unwrap_or(false)
+    }
+
+    fn collision_suffix_id(id: &str) -> bool {
+        let Some((_, suffix)) = id.rsplit_once('_') else {
+            return false;
+        };
+        suffix.len() <= 3 && suffix.parse::<u32>().map(|n| n >= 2).unwrap_or(false)
     }
 
     fn clear_cache() {

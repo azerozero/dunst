@@ -30,6 +30,8 @@ const OCR_CACHE_TTL: Duration = Duration::from_millis(250);
 const SCREENSHOT_CACHE_TTL: Duration = Duration::from_millis(250);
 const TYPE_VERIFY_SETTLE_TIMEOUT: Duration = Duration::from_millis(1_000);
 const TYPE_VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(80);
+const CLICK_VERIFY_SETTLE_TIMEOUT: Duration = Duration::from_millis(1_000);
+const CLICK_VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(80);
 #[cfg(target_os = "macos")]
 const SELECT_FILE_OSASCRIPT_TIMEOUT: Duration = Duration::from_secs(12);
 
@@ -1184,15 +1186,25 @@ impl Engine {
             .filter(|n| !visible_only || node_visible_or_menu(n, window_rect, menubar))
             .collect();
         let mut seen: BTreeSet<String> = matches.iter().map(|node| node.id.clone()).collect();
+        let mut associated_controls: BTreeSet<String> = BTreeSet::new();
         for label in matches.clone() {
             if let Some(control) = associated_control_for_label(label, graph, window_rect, menubar)
             {
+                associated_controls.insert(control.id.clone());
                 if seen.insert(control.id.clone()) {
                     matches.push(control);
                 }
             }
         }
-        matches.sort_by_key(|n| find_rank(n, window_rect, menubar));
+        matches.sort_by_key(|n| {
+            find_rank(
+                n,
+                &q,
+                window_rect,
+                menubar,
+                associated_controls.contains(&n.id),
+            )
+        });
         matches
     }
 
@@ -4292,10 +4304,11 @@ impl Engine {
     }
 
     /// Compute an action's **effective risk** and the set of ids whose approval
-    /// clears its gate. Folds a composite drag's drop target (audit #3) and a
-    /// destructive typed payload (audit #13) into the source element's own risk via
-    /// [`merge_risk`]. Pure over its inputs and `self.risk` — no scene mutation — so
-    /// it is unit-testable in isolation (the `effective_risk_*` tests).
+    /// clears its gate. Folds a composite drag's drop target (audit #3), a
+    /// destructive typed payload (audit #13), and foreground-affecting action
+    /// side effects into the source element's own risk via [`merge_risk`]. Pure
+    /// over its inputs and `self.risk` — no scene mutation — so it is
+    /// unit-testable in isolation (the `effective_risk_*` tests).
     ///
     /// Returns `(effective, gated_ids)`: `effective.requires_approval` decides
     /// whether the gate fires; `gated_ids` lists every high-risk participant that
@@ -4325,9 +4338,13 @@ impl Engine {
         if let Some(tr) = &text_risk {
             effective = merge_risk(&effective, tr, "typed text");
         }
+        if let Some(ar) = action_side_effect_risk(action) {
+            effective = merge_risk(&effective, &ar, "action");
+        }
 
         // Every high-risk participant must be approved to clear the gate: the
-        // element itself, a composite drag's drop target, or the typed-into field.
+        // element itself, a composite drag's drop target, the typed-into field, or
+        // the element whose action has an intrinsic side effect such as foregrounding.
         let mut gated_ids: Vec<String> = Vec::new();
         if source_risk.requires_approval {
             gated_ids.push(id.to_string());
@@ -4338,6 +4355,14 @@ impl Engine {
             }
         }
         if text_risk
+            .as_ref()
+            .map(|r| r.requires_approval)
+            .unwrap_or(false)
+            && !gated_ids.iter().any(|g| g == id)
+        {
+            gated_ids.push(id.to_string());
+        }
+        if action_side_effect_risk(action)
             .as_ref()
             .map(|r| r.requires_approval)
             .unwrap_or(false)
@@ -4436,6 +4461,9 @@ impl Engine {
             return Ok(self.push_entry(base));
         }
 
+        let removal_expectation = removal_expectation(action, &node, self.scene_graph());
+        let checkbox_expectation = checkbox_expectation(action, &node);
+
         // Execute, then re-perceive and diff.
         let executor_result = match retry_user_active_guard(|| {
             self.executor.perform(&self.target, &node, action, argument)
@@ -4463,6 +4491,39 @@ impl Engine {
             &graph_diff,
             self.scene_graph().get(id),
         );
+        if executor_result == ActionResult::Success
+            && result == ActionResult::Success
+            && removal_expectation.as_ref().is_some_and(|expectation| {
+                !removal_expectation_satisfied(expectation, &graph_diff, self.scene_graph())
+            })
+        {
+            result = ActionResult::Failed;
+        }
+        if executor_result == ActionResult::Success
+            && result == ActionResult::Success
+            && checkbox_expectation.as_ref().is_some_and(|expectation| {
+                !checkbox_expectation_satisfied(expectation, self.scene_graph())
+            })
+        {
+            let started = Instant::now();
+            while started.elapsed() < CLICK_VERIFY_SETTLE_TIMEOUT {
+                std::thread::sleep(CLICK_VERIFY_POLL_INTERVAL);
+                if self.refresh().is_err() {
+                    break;
+                }
+                graph_diff = self.diff_since();
+                if checkbox_expectation.as_ref().is_some_and(|expectation| {
+                    checkbox_expectation_satisfied(expectation, self.scene_graph())
+                }) {
+                    break;
+                }
+            }
+            if checkbox_expectation.as_ref().is_some_and(|expectation| {
+                !checkbox_expectation_satisfied(expectation, self.scene_graph())
+            }) {
+                result = ActionResult::Failed;
+            }
+        }
         if executor_result == ActionResult::Success
             && result == ActionResult::Failed
             && matches!(action, SemanticAction::Type)
@@ -5218,14 +5279,17 @@ fn node_actionable(
     node.enabled && node_visible_or_menu(node, window_rect, menubar_root)
 }
 
-/// Ranking for search results: page-visible enabled targets first, then visible
-/// disabled/read-only nodes, then latent/off-window noise. The final tie-breakers
-/// keep output deterministic without changing the underlying scene graph.
+/// Ranking for search results: exact label/value/id matches first, then prefix
+/// and containment matches. Within the same textual quality, page-visible
+/// enabled targets outrank visible disabled/read-only nodes, then latent noise.
+/// The final tie-breakers keep output deterministic without changing the graph.
 fn find_rank(
     node: &SceneNode,
+    query: &str,
     window_rect: Option<Bbox>,
     menubar_root: Option<&str>,
-) -> (u8, u8, &'static str, String) {
+    associated_control: bool,
+) -> (u8, u8, u8, &'static str, String) {
     let tier = if node_actionable(node, window_rect, menubar_root) {
         0
     } else if node_visible_or_menu(node, window_rect, menubar_root) {
@@ -5236,11 +5300,38 @@ fn find_rank(
         3
     };
     (
+        find_match_priority(node, query, associated_control),
         tier,
         find_role_priority(node.role),
         node.role.as_str(),
         node.id.clone(),
     )
+}
+
+fn find_match_priority(node: &SceneNode, query: &str, associated_control: bool) -> u8 {
+    if associated_control {
+        return 0;
+    }
+    let id = normalize_match(&node.id);
+    let mut texts = Vec::new();
+    if let Some(label) = node.label.as_deref() {
+        texts.push(normalize_match(label));
+    }
+    if let Some(value) = node.value.as_deref() {
+        texts.push(normalize_match(value));
+    }
+    texts.push(id);
+
+    if texts.iter().any(|text| text == query) {
+        return 0;
+    }
+    if texts.iter().any(|text| text.starts_with(query)) {
+        return 1;
+    }
+    if texts.iter().any(|text| text.contains(query)) {
+        return 2;
+    }
+    3
 }
 
 fn find_role_priority(role: Role) -> u8 {
@@ -5364,6 +5455,19 @@ struct CoTarget {
     risk: RiskAssessment,
 }
 
+#[derive(Clone, Debug)]
+struct RemovalExpectation {
+    label: Option<String>,
+    id: String,
+    before_count: usize,
+}
+
+#[derive(Clone, Debug)]
+struct CheckboxExpectation {
+    id: String,
+    before_value: Option<String>,
+}
+
 struct OptionCandidate {
     matched_id: String,
     action_id: String,
@@ -5385,6 +5489,17 @@ fn merge_risk(base: &RiskAssessment, extra: &RiskAssessment, label: &str) -> Ris
             .cloned()
             .chain(extra.reasons.iter().map(|r| format!("{label}: {r}")))
             .collect(),
+    }
+}
+
+fn action_side_effect_risk(action: SemanticAction) -> Option<RiskAssessment> {
+    match action {
+        SemanticAction::Raise => Some(RiskAssessment {
+            level: RiskLevel::High,
+            requires_approval: true,
+            reasons: vec!["raises target window to the foreground".to_string()],
+        }),
+        _ => None,
     }
 }
 
@@ -5415,6 +5530,83 @@ fn verified_action_result(
         }
         _ => ActionResult::Success,
     }
+}
+
+fn removal_expectation(
+    action: SemanticAction,
+    node: &SceneNode,
+    graph: &SceneGraph,
+) -> Option<RemovalExpectation> {
+    if action != SemanticAction::Click || !click_should_remove_target(node) {
+        return None;
+    }
+
+    let before_count = node
+        .label
+        .as_deref()
+        .map(|label| count_nodes_with_label(graph, label))
+        .unwrap_or(usize::from(graph.get(&node.id).is_some()));
+
+    Some(RemovalExpectation {
+        label: node.label.clone(),
+        id: node.id.clone(),
+        before_count,
+    })
+}
+
+fn click_should_remove_target(node: &SceneNode) -> bool {
+    if node.id.starts_with("btn_remove_") {
+        return true;
+    }
+    node.label
+        .as_deref()
+        .map(normalize_match)
+        .is_some_and(|label| label.starts_with("remove "))
+}
+
+fn removal_expectation_satisfied(
+    expectation: &RemovalExpectation,
+    graph_diff: &GraphDiff,
+    graph: &SceneGraph,
+) -> bool {
+    if graph_diff.changes.iter().any(|change| {
+        matches!(
+            change,
+            dunst_core::NodeChange::Removed { id, .. } if id == &expectation.id
+        )
+    }) {
+        return true;
+    }
+
+    match expectation.label.as_deref() {
+        Some(label) => count_nodes_with_label(graph, label) < expectation.before_count,
+        None => graph.get(&expectation.id).is_none(),
+    }
+}
+
+fn count_nodes_with_label(graph: &SceneGraph, label: &str) -> usize {
+    graph
+        .nodes
+        .values()
+        .filter(|node| node.label.as_deref() == Some(label))
+        .count()
+}
+
+fn checkbox_expectation(action: SemanticAction, node: &SceneNode) -> Option<CheckboxExpectation> {
+    if action != SemanticAction::Click || node.role != Role::Checkbox {
+        return None;
+    }
+    Some(CheckboxExpectation {
+        id: node.id.clone(),
+        before_value: node.value.clone(),
+    })
+}
+
+fn checkbox_expectation_satisfied(expectation: &CheckboxExpectation, graph: &SceneGraph) -> bool {
+    graph
+        .get(&expectation.id)
+        .map(|node| node.value != expectation.before_value)
+        .unwrap_or(false)
 }
 
 fn typed_target_value_matches_expected(
@@ -5793,6 +5985,75 @@ mod tests {
         (eng, calls)
     }
 
+    fn engine_from_sequence(
+        captures: Vec<Vec<dunst_core::RawAxNode>>,
+        app_name: &str,
+        title: &str,
+    ) -> (Engine, Arc<Mutex<Vec<RecordedCall>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let perceptor = Box::new(SequencePerceptor::new(
+            captures,
+            WindowRef {
+                pid: 1,
+                window_id: 1,
+                app_name: app_name.into(),
+                title: title.into(),
+            },
+        ));
+        let exec = Box::new(RecordingExecutor(calls.clone()));
+        let eng = Engine::new(
+            perceptor,
+            exec,
+            Target {
+                pid: 1,
+                window_id: 1,
+            },
+        )
+        .unwrap();
+        (eng, calls)
+    }
+
+    fn remove_tag_roots(count: usize) -> Vec<dunst_core::RawAxNode> {
+        let children = (0..count)
+            .map(|idx| {
+                raw_node(
+                    "AXButton",
+                    Some("remove Platform Engineering"),
+                    None,
+                    test_bbox(20.0 + (idx as f64 * 32.0), 80.0, 24.0, 24.0),
+                    &["press"],
+                    vec![],
+                )
+            })
+            .collect();
+        vec![raw_node(
+            "AXWindow",
+            Some("Expertises"),
+            None,
+            test_bbox(0.0, 0.0, 700.0, 500.0),
+            &[],
+            children,
+        )]
+    }
+
+    fn checkbox_roots(value: &str) -> Vec<dunst_core::RawAxNode> {
+        vec![raw_node(
+            "AXWindow",
+            Some("Expertises"),
+            None,
+            test_bbox(0.0, 0.0, 700.0, 500.0),
+            &[],
+            vec![raw_node(
+                "AXCheckBox",
+                Some("DevOps"),
+                Some(value),
+                test_bbox(40.0, 80.0, 24.0, 24.0),
+                &["press"],
+                vec![],
+            )],
+        )]
+    }
+
     struct SequencePerceptor {
         captures: Mutex<Vec<Vec<dunst_core::RawAxNode>>>,
         last: Mutex<Vec<dunst_core::RawAxNode>>,
@@ -5901,6 +6162,83 @@ mod tests {
     }
 
     #[test]
+    fn find_element_prefers_exact_button_label_over_containing_help_text() {
+        let mut publish = raw_node(
+            "AXButton",
+            Some("Publier"),
+            None,
+            test_bbox(520.0, 120.0, 110.0, 32.0),
+            &["press"],
+            vec![],
+        );
+        publish.enabled = false;
+        let (eng, _) = engine_from_roots(
+            vec![raw_node(
+                "AXWindow",
+                Some("Collective"),
+                None,
+                test_bbox(0.0, 0.0, 700.0, 500.0),
+                &[],
+                vec![
+                    raw_node(
+                        "AXStaticText",
+                        Some(
+                            "Écrivez la description de la réalisation, les informations à publier",
+                        ),
+                        None,
+                        test_bbox(80.0, 80.0, 500.0, 36.0),
+                        &[],
+                        vec![],
+                    ),
+                    publish,
+                ],
+            )],
+            "Firefox",
+            "Collective",
+        );
+
+        let matches = eng.find_element_filtered("publier", false);
+
+        assert_eq!(
+            matches.first().map(|node| node.id.as_str()),
+            Some("btn_publier"),
+            "exact button label should outrank explanatory text containing the query: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn disabled_button_click_is_unavailable() {
+        let mut publish = raw_node(
+            "AXButton",
+            Some("Publier"),
+            None,
+            test_bbox(520.0, 120.0, 110.0, 32.0),
+            &["press"],
+            vec![],
+        );
+        publish.enabled = false;
+        let (mut eng, calls) = engine_from_roots(
+            vec![raw_node(
+                "AXWindow",
+                Some("Collective"),
+                None,
+                test_bbox(0.0, 0.0, 700.0, 500.0),
+                &[],
+                vec![publish],
+            )],
+            "Firefox",
+            "Collective",
+        );
+
+        let err = eng
+            .click_element("btn_publier", Some("publish disabled draft"))
+            .unwrap_err();
+
+        assert!(matches!(err, VisualOpsError::ActionUnavailable { .. }));
+        assert_eq!(calls.lock().unwrap().len(), 0);
+    }
+
+    #[test]
     fn type_into_waits_for_ax_value_to_settle() {
         let expected =
             "Freelance — Architecte DevSecOps & Platform Engineering | Mission Défense air-gapped";
@@ -5982,6 +6320,75 @@ mod tests {
         let e2 = eng.click_element(&id, Some("approved")).unwrap();
         assert_eq!(e2.result, ActionResult::Success);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn remove_click_fails_when_target_count_does_not_decrease() {
+        let roots = remove_tag_roots(2);
+        let (mut eng, calls) =
+            engine_from_sequence(vec![roots.clone(), roots], "Firefox", "Expertises");
+        let id = "btn_remove_platform_engineering_2";
+
+        eng.approve(id).unwrap();
+        let entry = eng.click_element(id, Some("remove duplicate")).unwrap();
+
+        assert_eq!(entry.result, ActionResult::Failed);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(
+            eng.find_element_filtered("remove Platform Engineering", false)
+                .len(),
+            2,
+            "unchanged remove-label count should be treated as failed"
+        );
+    }
+
+    #[test]
+    fn remove_click_succeeds_when_target_count_decreases() {
+        let (mut eng, calls) = engine_from_sequence(
+            vec![remove_tag_roots(2), remove_tag_roots(1)],
+            "Firefox",
+            "Expertises",
+        );
+        let id = "btn_remove_platform_engineering_2";
+
+        eng.approve(id).unwrap();
+        let entry = eng.click_element(id, Some("remove duplicate")).unwrap();
+
+        assert_eq!(entry.result, ActionResult::Success);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(
+            eng.find_element_filtered("remove Platform Engineering", false)
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn checkbox_click_fails_when_value_does_not_change() {
+        let roots = checkbox_roots("0");
+        let (mut eng, calls) =
+            engine_from_sequence(vec![roots.clone(), roots], "Firefox", "Expertises");
+        let id = id_for(&eng, "DevOps");
+
+        let entry = eng.click_element(&id, Some("toggle checkbox")).unwrap();
+
+        assert_eq!(entry.result, ActionResult::Failed);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn checkbox_click_succeeds_when_value_changes() {
+        let (mut eng, calls) = engine_from_sequence(
+            vec![checkbox_roots("0"), checkbox_roots("1")],
+            "Firefox",
+            "Expertises",
+        );
+        let id = id_for(&eng, "DevOps");
+
+        let entry = eng.click_element(&id, Some("toggle checkbox")).unwrap();
+
+        assert_eq!(entry.result, ActionResult::Success);
+        assert_eq!(calls.lock().unwrap().len(), 1);
     }
 
     // --- Audit #2: validated, one-shot, refresh-invalidated approvals --------
@@ -6380,6 +6787,13 @@ mod tests {
         assert!(!eff3.requires_approval);
         assert_eq!(eff3.level, RiskLevel::Low);
         assert!(gated3.is_empty());
+
+        // Foreground-affecting action: raising a low-risk window still gates.
+        let (eff4, gated4) = eng.effective_risk("win", SemanticAction::Raise, None, &low, None);
+        assert_eq!(eff4.level, RiskLevel::High);
+        assert!(eff4.requires_approval);
+        assert_eq!(gated4, vec!["win".to_string()]);
+        assert!(eff4.reasons.iter().any(|r| r.contains("foreground")));
     }
 
     #[test]
@@ -6826,8 +7240,16 @@ mod tests {
         let (mut eng, calls) = engine_from_roots(vec![window], "Firefox", "Collective");
         let id = id_for(&eng, "Collective");
 
-        let entry = eng
+        let pending = eng
             .raise_element(&id, Some("bring target window forward"))
+            .unwrap();
+        assert_eq!(pending.result, ActionResult::PendingApproval);
+        assert!(pending.risk.requires_approval);
+        assert_eq!(calls.lock().unwrap().len(), 0);
+
+        eng.approve(&id).unwrap();
+        let entry = eng
+            .raise_element(&id, Some("approved foreground raise"))
             .unwrap();
         assert_eq!(entry.result, ActionResult::Success);
         let recorded = calls.lock().unwrap();

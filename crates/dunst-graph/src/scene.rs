@@ -227,6 +227,7 @@ fn flatten(
             ax_actions: node.ax_actions.clone(),
             ax_identifier: node.ax_identifier.clone(),
             last_seen_ms: now_ms,
+            path: path.clone(),
             parent,
             children: child_ids,
         },

@@ -200,6 +200,13 @@ pub struct SceneNode {
     pub ax_identifier: Option<String>,
     /// Wall-clock (`now_ms`) at which this node was last observed.
     pub last_seen_ms: u64,
+    /// Structural child-index path from the capture root to this node.
+    ///
+    /// Human-readable ids stay stable for agents, but duplicate controls can
+    /// share the same role/label/identifier. The path lets platform backends
+    /// re-resolve the exact occurrence instead of falling back to first match.
+    #[serde(default)]
+    pub path: Vec<usize>,
     #[serde(default)]
     pub parent: Option<String>,
     #[serde(default)]

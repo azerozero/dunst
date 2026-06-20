@@ -33,34 +33,37 @@ pub fn derive_affordances(graph: &SceneGraph, risk: &RiskEngine) -> AffordanceGr
 
     for (id, node) in &graph.nodes {
         let mut actions: Vec<SemanticAction> = Vec::new();
+        let mut drag_targets: Vec<String> = Vec::new();
 
-        // 1. Native AX verbs -> semantic actions (deduped, stable order).
-        for verb in &node.ax_actions {
-            if let Some(action) = map_action(verb) {
-                push_unique(&mut actions, action);
+        if node.enabled {
+            // 1. Native AX verbs -> semantic actions (deduped, stable order).
+            for verb in &node.ax_actions {
+                if let Some(action) = map_action(verb) {
+                    push_unique(&mut actions, action);
+                }
             }
-        }
 
-        // 2. Text roles can be typed into and focused.
-        if matches!(node.role, Role::TextField | Role::TextArea) {
-            push_unique(&mut actions, SemanticAction::Type);
-            push_unique(&mut actions, SemanticAction::Focus);
-        }
+            // 2. Text roles can be typed into and focused.
+            if matches!(node.role, Role::TextField | Role::TextArea) {
+                push_unique(&mut actions, SemanticAction::Type);
+                push_unique(&mut actions, SemanticAction::Focus);
+            }
 
-        // 2b. Scrollable roles / native AX scroll areas can be scrolled directly
-        // through the platform backend when the app exposes an AX scrollbar.
-        if matches!(
-            node.role,
-            Role::List | Role::Table | Role::Outline | Role::TextArea
-        ) || node.ax_role == "AXScrollArea"
-        {
-            push_unique(&mut actions, SemanticAction::Scroll);
-        }
+            // 2b. Scrollable roles / native AX scroll areas can be scrolled directly
+            // through the platform backend when the app exposes an AX scrollbar.
+            if matches!(
+                node.role,
+                Role::List | Role::Table | Role::Outline | Role::TextArea
+            ) || node.ax_role == "AXScrollArea"
+            {
+                push_unique(&mut actions, SemanticAction::Scroll);
+            }
 
-        // 3. Drag targets (rows/cells only); a non-empty list exposes `Drag`.
-        let drag_targets = drag_targets_for(graph, node);
-        if !drag_targets.is_empty() {
-            push_unique(&mut actions, SemanticAction::Drag);
+            // 3. Drag targets (rows/cells only); a non-empty list exposes `Drag`.
+            drag_targets = drag_targets_for(graph, node);
+            if !drag_targets.is_empty() {
+                push_unique(&mut actions, SemanticAction::Drag);
+            }
         }
 
         affordances.insert(

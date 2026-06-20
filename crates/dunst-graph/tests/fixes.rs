@@ -193,6 +193,53 @@ fn cell_drag_targets_include_sibling_rows() {
     assert_eq!(unique.len(), ta.drag_targets.len());
 }
 
+#[test]
+fn disabled_nodes_do_not_expose_actions_or_drag_targets() {
+    let mut disabled_button = raw("AXButton", Some("Publier"), vec![]);
+    disabled_button.enabled = false;
+    disabled_button.ax_actions = vec!["press".to_string()];
+
+    let mut disabled_cell = raw("AXCell", Some("Alpha"), vec![]);
+    disabled_cell.enabled = false;
+    let table = raw(
+        "AXTable",
+        None,
+        vec![raw("AXRow", None, vec![disabled_cell])],
+    );
+
+    let graph = build_scene_graph(
+        vec![raw(
+            "AXWindow",
+            Some("Collective"),
+            vec![disabled_button, table],
+        )],
+        WindowRef::default(),
+        0,
+    );
+    let affordances = derive_affordances(&graph, &RiskEngine::new());
+
+    let publish = affordances
+        .affordances
+        .get("btn_publier")
+        .expect("disabled publish button");
+    assert!(
+        publish.actions.is_empty(),
+        "disabled button must not keep native AX press: {:?}",
+        publish.actions
+    );
+
+    let cell = graph.get("cell_alpha").expect("disabled cell");
+    let cell_affordance = affordances.affordances.get(&cell.id).unwrap();
+    assert!(
+        cell_affordance.actions.is_empty(),
+        "disabled draggable cell must not expose drag"
+    );
+    assert!(
+        cell_affordance.drag_targets.is_empty(),
+        "disabled draggable cell must not list drop targets"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // G2 — diff reports parent / children / roots changes
 // ---------------------------------------------------------------------------

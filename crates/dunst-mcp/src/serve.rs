@@ -6,7 +6,9 @@
 //! engine is driven from the CLI demo or a real MCP client.
 
 use std::{
+    any::Any,
     io::{self, BufRead, Write},
+    panic::{catch_unwind, AssertUnwindSafe},
     time::{Duration, Instant},
 };
 
@@ -64,7 +66,7 @@ pub fn serve(mut engine: Engine) -> i32 {
             "ping" => send(&mut out, result_obj(id, json!({}))),
             "tools/list" => send(&mut out, result_obj(id, json!({ "tools": tools_list() }))),
             "tools/call" => {
-                let resp = handle_tool_call(&mut engine, id, &req);
+                let resp = handle_tool_call_safely(&mut engine, id, &req);
                 send(&mut out, resp);
             }
             other => {
@@ -78,6 +80,57 @@ pub fn serve(mut engine: Engine) -> i32 {
         }
     }
     0
+}
+
+fn handle_tool_call_safely(engine: &mut Engine, id: Value, req: &Value) -> Value {
+    let started = Instant::now();
+    let tool_name = req
+        .get("params")
+        .and_then(|p| p.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("<unknown>")
+        .to_string();
+
+    match catch_unwind(AssertUnwindSafe(|| {
+        handle_tool_call(engine, id.clone(), req)
+    })) {
+        Ok(resp) => resp,
+        Err(payload) => panic_tool_response(id, &tool_name, started, payload),
+    }
+}
+
+fn panic_tool_response(
+    id: Value,
+    tool_name: &str,
+    started: Instant,
+    payload: Box<dyn Any + Send>,
+) -> Value {
+    let msg = panic_payload_message(payload.as_ref());
+    eprintln!("dunst-mcp: recovered panic in tools/call {tool_name}: {msg}");
+    result_obj(
+        id,
+        add_timing_meta(
+            json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!("tool call panicked in {tool_name}: {msg}")
+                }],
+                "isError": true
+            }),
+            tool_name,
+            started,
+        ),
+    )
+}
+
+fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(msg) = payload.downcast_ref::<&str>() {
+        return (*msg).to_string();
+    }
+    if let Some(msg) = payload.downcast_ref::<String>() {
+        return msg.clone();
+    }
+    "<non-string panic payload>".to_string()
 }
 
 fn initialize_result() -> Value {
@@ -311,7 +364,7 @@ fn tools_list() -> Vec<Value> {
         ),
         tool(
             "raise_element",
-            "Raise an element by id when its affordance exposes the semantic raise action, typically a window root such as win_collective. Use this instead of click_element when click_element reports Click is unavailable on a window.",
+            "Raise an element by id when its affordance exposes the semantic raise action, typically a window root such as win_collective. Foreground-affecting: this is high-risk and requires explicit operator approval; prefer focus_window or element-bound actions when possible.",
             schema(json!({ "id": {"type":"string"}, "reasoning": {"type":"string"}, "include_diff": {"type":"boolean"} }), &["id"]),
         ),
         tool(
@@ -1414,6 +1467,11 @@ fn audit_entry_value(entry: AuditEntry, include_diff: bool) -> Value {
                 obj.insert("failure_hint".into(), hint);
             }
         }
+        if entry.result == ActionResult::Success {
+            if let Some(hint) = success_action_hint(&entry) {
+                obj.insert("verification_hint".into(), hint);
+            }
+        }
     }
     value
 }
@@ -1485,23 +1543,52 @@ fn failed_action_hint(entry: &AuditEntry) -> Option<Value> {
         })),
         SemanticAction::OpenMenu => Some(json!({
             "reason": "The requested menu did not expose usable menu items after the AX open-menu attempt.",
-            "next_step": "Check desktop_view/window_view for whether another window of the same app is frontmost. If the target window root exposes raise, use raise_element on that window id before retrying."
+            "next_step": "Check desktop_view/window_view for whether another window of the same app is frontmost. Try focus_window/open_menu again only if the target remains background-safe; use raise_element only after explicit operator approval."
         })),
         SemanticAction::Click if entry.target_id.starts_with("menubar_") => Some(json!({
             "reason": "The menu-bar item was visible in AX but pressing it did not open the menu.",
-            "next_step": "Use open_menu with the exact localized label, or raise the target window first if another window of the same app is frontmost."
+            "next_step": "Use open_menu with the exact localized label and verify the menu opened. If another window of the same app is frontmost, raise only after explicit operator approval."
         })),
         SemanticAction::Click
             if entry.target_id.starts_with("field_") || entry.target_id.starts_with("text_") =>
         {
             Some(json!({
                 "reason": "The text-field click did not produce a verified focus/caret placement.",
-                "next_step": "Do not type yet. Re-read the field with find_element or verify_state focused=true. If it is still false, raise/focus the target window and retry the element click; use raw click only after explicit operator authorization.",
+                "next_step": "Do not type yet. Re-read the field with find_element or verify_state focused=true. If it is still false, try focus_window and retry the element-bound click; use raise_element or raw click only after explicit operator authorization.",
                 "verification": "verify_state(field='focused', expected='true') should pass before typing"
             }))
         }
+        SemanticAction::Click if entry.target_id.starts_with("btn_remove_") => Some(json!({
+            "reason": "The element-bound click completed at the platform layer, but the requested removal was not observed after re-perception.",
+            "next_step": "Do not click save/submit. Re-read the matching labels with find_element visible_only=false and retry only if a stable element id can be resolved; otherwise cancel the edit session.",
+            "verification": "the target id must disappear or the count of elements with the same remove label must decrease"
+        })),
+        SemanticAction::Click if entry.target_id.starts_with("chk_") => Some(json!({
+            "reason": "The element-bound checkbox click completed at the platform layer, but the checkbox value did not change after re-perception.",
+            "next_step": "Do not save yet. Re-read the checkbox with find_element visible_only=false. If the value is still unchanged, expose the checkbox in the viewport or retry only through a stable element id.",
+            "verification": "the target checkbox value should change between 0/1 or false/true after the click"
+        })),
         _ => None,
     }
+}
+
+fn success_action_hint(entry: &AuditEntry) -> Option<Value> {
+    if entry.action != SemanticAction::Click
+        || raw_input_target(&entry.target_id)
+        || entry
+            .graph_diff
+            .changes
+            .iter()
+            .any(|change| !low_signal_diff_change(change))
+    {
+        return None;
+    }
+
+    Some(json!({
+        "reason": "The platform click returned success, but no meaningful AX graph change was observed afterward.",
+        "next_step": "Treat this as unverified. Re-read the target UI before taking the next mutating step; do not assume that a modal opened, a form saved, or a disabled control changed.",
+        "verification": "use page_state, find_element, verify_state, or wait_for_text_stable to confirm the intended state change"
+    }))
 }
 
 fn option_pick_value(result: OptionPickResult, include_diff: bool) -> Value {
@@ -1593,7 +1680,18 @@ fn compact_node_change(change: &NodeChange) -> Value {
 }
 
 fn low_signal_diff_change(change: &NodeChange) -> bool {
-    diff_change_id(change).starts_with("mi_menuitemhit_")
+    let id = diff_change_id(change);
+    if id.starts_with("mi_menuitemhit_") || id.contains("intercom") {
+        return true;
+    }
+    matches!(
+        change,
+        NodeChange::Changed { id, field, .. }
+            if field == "bbox"
+                && (id.starts_with("grp_")
+                    || id.starts_with("el_")
+                    || id.starts_with("img_"))
+    )
 }
 
 fn diff_change_id(change: &NodeChange) -> &str {
@@ -1753,7 +1851,7 @@ mod tests {
             "method": "tools/call",
             "params": { "name": name, "arguments": arguments },
         });
-        handle_tool_call(engine, json!(1), &req)
+        handle_tool_call_safely(engine, json!(1), &req)
     }
 
     fn is_error(resp: &Value) -> bool {
@@ -1797,6 +1895,22 @@ mod tests {
             assert_eq!(resp["jsonrpc"], "2.0");
             assert_eq!(resp["id"], json!(1));
         }
+    }
+
+    #[test]
+    fn tool_panic_becomes_mcp_error_response() {
+        let resp = panic_tool_response(
+            json!(7),
+            "click_element",
+            Instant::now(),
+            Box::new("simulated panic"),
+        );
+
+        assert_eq!(resp["jsonrpc"], "2.0");
+        assert_eq!(resp["id"], json!(7));
+        assert!(is_error(&resp), "panic response must be isError: {resp}");
+        assert!(text(&resp).contains("tool call panicked in click_element"));
+        assert_eq!(resp["result"]["_meta"]["dunst"]["tool"], "click_element");
     }
 
     #[test]
@@ -2018,6 +2132,38 @@ mod tests {
     }
 
     #[test]
+    fn diff_summary_suppresses_intercom_and_generated_bbox_noise() {
+        let diff = GraphDiff {
+            changes: vec![
+                NodeChange::Changed {
+                    id: "el_fermer_le_messenger_intercom".into(),
+                    field: "parent".into(),
+                    before: "grp_ddaf9baef4f8ba43".into(),
+                    after: "grp_a01b7a48660490e2".into(),
+                },
+                NodeChange::Changed {
+                    id: "grp_a450dc4b5a2179a1".into(),
+                    field: "bbox".into(),
+                    before: "Some(Bbox { x: 720.5, y: 946.0, w: 63.0, h: 63.0 })".into(),
+                    after: "Some(Bbox { x: 721.5, y: 947.0, w: 61.0, h: 61.0 })".into(),
+                },
+                NodeChange::Added {
+                    id: "btn_publier".into(),
+                    label: Some("Publier".into()),
+                },
+            ],
+        };
+
+        let summary = diff_summary_value(&diff, 5);
+        let sample = summary["sample"].as_array().unwrap();
+
+        assert_eq!(summary["meaningful_changes"], 1);
+        assert_eq!(summary["low_signal_suppressed"], 2);
+        assert_eq!(sample.len(), 1);
+        assert_eq!(sample[0]["id"], "btn_publier");
+    }
+
+    #[test]
     fn audit_entry_full_diff_also_reports_meaningful_summary() {
         let entry = AuditEntry {
             ts_ms: 42,
@@ -2045,6 +2191,35 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn bbox_only_generated_wrapper_click_gets_verification_hint() {
+        let entry = AuditEntry {
+            ts_ms: 43,
+            target_id: "btn_modifier".into(),
+            action: SemanticAction::Click,
+            argument: None,
+            risk: dunst_core::RiskAssessment::low(),
+            reasoning: Some("open modal".into()),
+            result: ActionResult::Success,
+            graph_diff: GraphDiff {
+                changes: vec![NodeChange::Changed {
+                    id: "grp_a450dc4b5a2179a1".into(),
+                    field: "bbox".into(),
+                    before: "Some(Bbox { x: 720.5, y: 946.0, w: 63.0, h: 63.0 })".into(),
+                    after: "Some(Bbox { x: 721.5, y: 947.0, w: 61.0, h: 61.0 })".into(),
+                }],
+            },
+        };
+
+        let value = audit_entry_value(entry, false);
+
+        assert_eq!(value["graph_diff_summary"]["meaningful_changes"], 0);
+        assert!(value["verification_hint"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no meaningful AX graph change"));
     }
 
     #[test]
@@ -2161,6 +2336,46 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Do not click save"));
+    }
+
+    #[test]
+    fn failed_checkbox_click_includes_toggle_hint() {
+        let entry = AuditEntry {
+            ts_ms: 45,
+            target_id: "chk_devops".into(),
+            action: SemanticAction::Click,
+            argument: None,
+            risk: dunst_core::RiskAssessment::low(),
+            reasoning: None,
+            result: ActionResult::Failed,
+            graph_diff: GraphDiff::default(),
+        };
+
+        let value = audit_entry_value(entry, false);
+        assert!(value["failure_hint"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("checkbox value did not change"));
+    }
+
+    #[test]
+    fn successful_click_without_meaningful_diff_includes_verification_hint() {
+        let entry = AuditEntry {
+            ts_ms: 46,
+            target_id: "btn_modifier".into(),
+            action: SemanticAction::Click,
+            argument: None,
+            risk: dunst_core::RiskAssessment::low(),
+            reasoning: None,
+            result: ActionResult::Success,
+            graph_diff: GraphDiff::default(),
+        };
+
+        let value = audit_entry_value(entry, false);
+        assert!(value["verification_hint"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no meaningful AX graph change"));
     }
 
     #[test]
