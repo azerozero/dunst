@@ -1,0 +1,181 @@
+use super::*;
+
+#[test]
+fn tools_list_exposes_read_text_with_object_schema() {
+    std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
+    let tools = tools_list();
+    assert_eq!(tools.len(), 54, "tool count");
+    // Every tool must declare a JSON-Schema object input (the type:object fix).
+    for t in &tools {
+        assert_eq!(
+            t["inputSchema"]["type"], "object",
+            "tool {} has a non-object inputSchema: {}",
+            t["name"], t["inputSchema"]
+        );
+    }
+    let read_text = tools
+        .iter()
+        .find(|t| t["name"] == "read_text")
+        .expect("read_text tool present");
+    assert_eq!(read_text["inputSchema"]["type"], "object");
+    // `region` is optional → it must not be in `required`.
+    assert_eq!(read_text["inputSchema"]["required"], json!([]));
+    assert!(
+        tools.iter().any(|t| t["name"] == "list_launchable_apps"),
+        "installed-app catalogue tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "app_info"),
+        "single app info tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "list_displays"),
+        "display topology tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "list_browser_tabs"),
+        "browser tab listing tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "wait_for_element"),
+        "async element wait tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "pick_option"),
+        "popover/list/radio option helper present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "raise_element"),
+        "raise action helper present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "text_snapshot"),
+        "AX text snapshot tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "wait_for_text_stable"),
+        "AX text stability wait tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "window_view"),
+        "scoped window view tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "desktop_view"),
+        "desktop topology tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "visual_change_probe"),
+        "visual change probe tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "analyze_region_ax"),
+        "region AX analysis tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "move_window_to_display"),
+        "display move tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "move_app_to_display"),
+        "app display move tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "arrange_windows"),
+        "window arrangement tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "version"),
+        "runtime version tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "select_file"),
+        "native file selection tool present"
+    );
+}
+
+#[test]
+fn read_text_without_live_window_is_a_clean_error() {
+    // An invalid window id → no live macOS window → a clean Err, never a panic.
+    // (Off macOS, the stub returns the same class of error.)
+    let mut e = engine_with_window(u32::MAX);
+
+    // Direct engine call carries the "live macOS window" message.
+    let err = e.read_text(None, false).unwrap_err();
+    assert!(
+        err.to_string().contains("live macOS window"),
+        "unexpected error: {err}"
+    );
+
+    // Through the dispatcher: a well-formed isError result, not a crash.
+    let resp = call(&mut e, "read_text", json!({}));
+    assert!(
+        is_error(&resp),
+        "read_text without a live window must be isError: {resp}"
+    );
+    assert_eq!(resp["jsonrpc"], "2.0");
+
+    // A malformed region is rejected before any capture is attempted.
+    let bad = call(&mut e, "read_text", json!({ "region": { "x": 1.0 } }));
+    assert!(is_error(&bad));
+    assert!(text(&bad).contains("region"), "got: {}", text(&bad));
+}
+
+#[test]
+fn tools_list_exposes_click_at_and_press_key() {
+    std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
+    let tools = tools_list();
+    let click = tools
+        .iter()
+        .find(|t| t["name"] == "click_at")
+        .expect("click_at tool present");
+    assert_eq!(click["inputSchema"]["type"], "object");
+    assert_eq!(click["inputSchema"]["required"], json!(["x", "y"]));
+
+    let press = tools
+        .iter()
+        .find(|t| t["name"] == "press_key")
+        .expect("press_key tool present");
+    assert_eq!(press["inputSchema"]["type"], "object");
+    assert_eq!(press["inputSchema"]["required"], json!(["key"]));
+
+    let select_file = tools
+        .iter()
+        .find(|t| t["name"] == "select_file")
+        .expect("select_file tool present");
+    assert_eq!(select_file["inputSchema"]["type"], "object");
+    assert_eq!(select_file["inputSchema"]["required"], json!(["path"]));
+
+    let reveal_hover_click = tools
+        .iter()
+        .find(|t| t["name"] == "reveal_hover_click")
+        .expect("reveal_hover_click tool present");
+    assert_eq!(reveal_hover_click["inputSchema"]["type"], "object");
+    assert_eq!(
+        reveal_hover_click["inputSchema"]["required"],
+        json!(["x", "y", "query"])
+    );
+
+    let read_at = tools
+        .iter()
+        .find(|t| t["name"] == "read_at")
+        .expect("read_at tool present");
+    assert_eq!(read_at["inputSchema"]["required"], json!(["x", "y"]));
+    assert_eq!(
+        read_at["inputSchema"]["properties"]["borrow_cursor"]["type"],
+        "boolean"
+    );
+
+    let read_series = tools
+        .iter()
+        .find(|t| t["name"] == "read_series")
+        .expect("read_series tool present");
+    assert_eq!(
+        read_series["inputSchema"]["properties"]["borrow_cursor"]["type"],
+        "boolean"
+    );
+    assert!(
+        tools.iter().all(|t| t["name"] != "approve"),
+        "approve is an operator-side escape hatch and is not advertised by default"
+    );
+}
