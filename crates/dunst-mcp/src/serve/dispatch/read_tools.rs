@@ -5,6 +5,19 @@ pub(super) fn dispatch(
     name: &str,
     args: &Value,
 ) -> Option<Result<Value, String>> {
+    dispatch_state_tools(engine, name, args)
+        .or_else(|| dispatch_snapshot_tools(engine, name, args))
+        .or_else(|| dispatch_wait_tools(engine, name, args))
+        .or_else(|| dispatch_vision_tools(engine, name, args))
+        .or_else(|| dispatch_probe_tools(engine, name, args))
+        .or_else(|| dispatch_trace_tools(engine, name, args))
+}
+
+fn dispatch_state_tools(
+    engine: &mut Engine,
+    name: &str,
+    args: &Value,
+) -> Option<Result<Value, String>> {
     Some(match name {
         "version" => Ok(build_info()),
         "refresh" => engine
@@ -22,6 +35,27 @@ pub(super) fn dispatch(
                 Some(None) => Err("invalid 'view' (expected compact|full|summary)".into()),
             }
         }
+        "list_displays" => Ok(serde_json::to_value(engine.list_displays()).unwrap_or(Value::Null)),
+        "get_affordances" => {
+            Ok(engine.affordances_view(arg_bool(args, "include_latent").unwrap_or(false)))
+        }
+        "query_affordances" => match arg(args, "action").as_deref().and_then(parse_action) {
+            Some(action) => Ok(json!(engine.query_affordances_filtered(
+                action,
+                arg_bool(args, "include_latent").unwrap_or(false)
+            ))),
+            None => Err("missing/invalid 'action'".into()),
+        },
+        _ => return None,
+    })
+}
+
+fn dispatch_snapshot_tools(
+    engine: &mut Engine,
+    name: &str,
+    args: &Value,
+) -> Option<Result<Value, String>> {
+    Some(match name {
         "page_state" => {
             if let Err(err) = ensure_recent_graph(
                 engine,
@@ -55,7 +89,6 @@ pub(super) fn dispatch(
                 .unwrap_or(Value::Null))
             }
         }
-        "list_displays" => Ok(serde_json::to_value(engine.list_displays()).unwrap_or(Value::Null)),
         "list_browser_tabs" => {
             if let Err(err) = ensure_recent_graph(
                 engine,
@@ -91,40 +124,6 @@ pub(super) fn dispatch(
             engine.desktop_view(arg_bool(args, "all").unwrap_or(false)),
         )
         .unwrap_or(Value::Null)),
-        "visual_change_probe" => {
-            let region = match parse_region(args) {
-                Ok(region) => region,
-                Err(err) => return Some(Err(err)),
-            };
-            engine
-                .visual_change_probe(
-                    region,
-                    args.get("columns").and_then(Value::as_u64).unwrap_or(16) as usize,
-                    args.get("rows").and_then(Value::as_u64).unwrap_or(12) as usize,
-                    args.get("threshold")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(12)
-                        .min(255) as u8,
-                    arg_bool(args, "refresh_on_change").unwrap_or(false),
-                )
-                .map(|probe| serde_json::to_value(probe).unwrap_or(Value::Null))
-                .map_err(|e| e.to_string())
-        }
-        "analyze_region_ax" => {
-            let region = match parse_region(args) {
-                Ok(region) => region,
-                Err(err) => return Some(Err(err)),
-            };
-            Ok(serde_json::to_value(engine.analyze_region_ax(
-                region,
-                args.get("columns").and_then(Value::as_u64).unwrap_or(8) as usize,
-                args.get("rows").and_then(Value::as_u64).unwrap_or(6) as usize,
-            ))
-            .unwrap_or(Value::Null))
-        }
-        "get_affordances" => {
-            Ok(engine.affordances_view(arg_bool(args, "include_latent").unwrap_or(false)))
-        }
         "find_element" => match arg(args, "query") {
             Some(query) => find_element_value(
                 engine,
@@ -135,6 +134,16 @@ pub(super) fn dispatch(
             ),
             None => Err("missing 'query'".into()),
         },
+        _ => return None,
+    })
+}
+
+fn dispatch_wait_tools(
+    engine: &mut Engine,
+    name: &str,
+    args: &Value,
+) -> Option<Result<Value, String>> {
+    Some(match name {
         "wait_for_element" => match arg(args, "query") {
             Some(query) => wait_for_element_value(
                 engine,
@@ -168,6 +177,16 @@ pub(super) fn dispatch(
                 args.get("limit").and_then(Value::as_u64).unwrap_or(120) as usize,
             )
         }
+        _ => return None,
+    })
+}
+
+fn dispatch_vision_tools(
+    engine: &mut Engine,
+    name: &str,
+    args: &Value,
+) -> Option<Result<Value, String>> {
+    Some(match name {
         "read_text" => {
             let region = match parse_region(args) {
                 Ok(region) => region,
@@ -182,13 +201,6 @@ pub(super) fn dispatch(
             .read_shapes()
             .map(|shapes| serde_json::to_value(shapes).unwrap_or(Value::Null))
             .map_err(|e| e.to_string()),
-        "query_affordances" => match arg(args, "action").as_deref().and_then(parse_action) {
-            Some(action) => Ok(json!(engine.query_affordances_filtered(
-                action,
-                arg_bool(args, "include_latent").unwrap_or(false)
-            ))),
-            None => Err("missing/invalid 'action'".into()),
-        },
         "read_at" => match (
             args.get("x").and_then(Value::as_f64),
             args.get("y").and_then(Value::as_f64),
@@ -214,6 +226,57 @@ pub(super) fn dispatch(
                 .map(|result| serde_json::to_value(result).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string())
         }
+        _ => return None,
+    })
+}
+
+fn dispatch_probe_tools(
+    engine: &mut Engine,
+    name: &str,
+    args: &Value,
+) -> Option<Result<Value, String>> {
+    Some(match name {
+        "visual_change_probe" => {
+            let region = match parse_region(args) {
+                Ok(region) => region,
+                Err(err) => return Some(Err(err)),
+            };
+            engine
+                .visual_change_probe(
+                    region,
+                    args.get("columns").and_then(Value::as_u64).unwrap_or(16) as usize,
+                    args.get("rows").and_then(Value::as_u64).unwrap_or(12) as usize,
+                    args.get("threshold")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(12)
+                        .min(255) as u8,
+                    arg_bool(args, "refresh_on_change").unwrap_or(false),
+                )
+                .map(|probe| serde_json::to_value(probe).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string())
+        }
+        "analyze_region_ax" => {
+            let region = match parse_region(args) {
+                Ok(region) => region,
+                Err(err) => return Some(Err(err)),
+            };
+            Ok(serde_json::to_value(engine.analyze_region_ax(
+                region,
+                args.get("columns").and_then(Value::as_u64).unwrap_or(8) as usize,
+                args.get("rows").and_then(Value::as_u64).unwrap_or(6) as usize,
+            ))
+            .unwrap_or(Value::Null))
+        }
+        _ => return None,
+    })
+}
+
+fn dispatch_trace_tools(
+    engine: &mut Engine,
+    name: &str,
+    args: &Value,
+) -> Option<Result<Value, String>> {
+    Some(match name {
         "diff_since" => {
             let diff = engine.diff_since();
             if arg_bool(args, "summary").unwrap_or(false) {

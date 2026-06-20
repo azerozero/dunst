@@ -6,6 +6,7 @@ notes from the VisualOps-to-Dunst bring-up. Treat this file as the routing map.
 ## Current
 
 - `ARCHITECTURE.md` - current Dunst crate architecture and dataflow.
+- `CODE_NAVIGATION.md` - short reading path, module map, and edit zones.
 - `CONTRACTS.md` - load-bearing behavioral invariants tied to tests.
 - `DISTRIBUTION_READINESS_PLAN.md` - distribution and release hardening plan.
 - `BINARY_USAGE_REX.md` - return on experience for binary and live MCP usage.
