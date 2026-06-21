@@ -65,7 +65,7 @@ full logic/coords suite everywhere, and the macOS-only backends compile on macOS
 ## Prerequisites
 
 - macOS for live AX automation. Fixture/demo mode works without a live target.
-- Rust 1.80, matching the workspace `rust-version`.
+- Rust 1.85, matching the workspace `rust-version`.
 - Accessibility permission for the terminal or MCP host when using live mode.
 - Screen Recording permission when using screenshot/OCR tools.
 

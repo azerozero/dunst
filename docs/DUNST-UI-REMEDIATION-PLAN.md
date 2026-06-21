@@ -18,6 +18,20 @@ Dunst only, without browser cookie/API fallbacks.
 - Retry the user-active guard internally once, then return a clear failure only
   when the target is still busy.
 
+Status: mostly implemented in `13d522b`; follow-up is to keep the contract text
+and deterministic expiry tests aligned with the scoped-grant policy.
+
+## P0 - Setup And Contract Correctness
+
+- Fix installed `dunst-mcp setup` snippets so MCP clients run `dunst-mcp serve`
+  instead of launching the fixture demo.
+- Add CLI tests for Codex and Claude setup snippets, including the repo wrapper
+  case where `scripts/mcp-dunst.sh` owns its own `serve --live` arguments.
+- Keep `docs/CONTRACTS.md` explicit about the difference between one-shot
+  element approvals and scoped raw input grants.
+- Add deterministic tests for raw grant expiry and restore-on-user-active-guard
+  behavior before splitting the grant policy further.
+
 ## P1 - Reliable Web Scrolling
 
 - Add a wheel-based `scroll_at` path for browser content and use it as the
@@ -26,6 +40,8 @@ Dunst only, without browser cookie/API fallbacks.
   scrollable even if AX does not expose `AXVerticalScrollBar`.
 - Return `visual_changed` beside `graph_diff_summary` so a successful scroll with
   no visible movement is treated as unverified.
+- Batch repeated key operations through `press_key.repeat` from the tool layer,
+  not by issuing parallel raw keyboard calls.
 
 ## P1 - Browser Chrome Versus Page Scope
 
@@ -35,6 +51,22 @@ Dunst only, without browser cookie/API fallbacks.
   without raw coordinate guessing.
 - Add an `open_url_and_attach_tab` flow that opens a URL, selects the matching
   tab, and refreshes the target state.
+- Add stale-target detection for SPA/tab navigation: when URL or browser tab
+  state changes but the page graph remains the previous view, surface that as a
+  targeting problem instead of continuing raw probing.
+
+## P1 - Engine And Approval Architecture
+
+- Phase-split `Engine::act` into prepare, gate, execute, observe, verify, and
+  audit phases without changing the externally visible `ActionResult` contract.
+- Centralize grant policy as typed variants: element, contextual synthetic, and
+  raw scoped grants.
+- Extract post-action verification for removal, checkbox, and typed-value
+  postconditions so retry and refresh behavior is testable outside the main
+  action function.
+- Rename or split `is_raw_input_target_id`; it currently names only
+  `keyboard@`/`screen@`, while the gate also handles `file@` and
+  `hover-reveal@` synthetic targets.
 
 ## P2 - OCR Guided UI Actions
 
@@ -54,3 +86,15 @@ Dunst only, without browser cookie/API fallbacks.
   unsuccessful path.
 - Batch simple text-editing operations and verify the visible field after the
   batch before saving.
+
+## P2 - Documentation, CI, And Repo Gates
+
+- Fix README/toolchain drift whenever `Cargo.toml` changes `rust-version`.
+- Add hotspot diagrams for `Engine::act`, MCP tool dispatch ownership, macOS
+  backend routing, and perception/cache lifecycle.
+- Add a root `CONTRIBUTING.md` covering local hooks, contract/test update rules,
+  and commit workflow.
+- Decide branch protection or ruleset strategy for `main`; GitHub currently
+  reports `main` as unprotected, with CI green but not enforceably required.
+- Add CI coverage and dependency/security gates once the fast docs/Rust gates
+  stay stable.

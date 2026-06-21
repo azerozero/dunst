@@ -18,11 +18,12 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   a plain low-risk id is rejected.
   — `engine::tests::approve_rejects_unknown_and_non_gated_ids`,
   `engine::tests::raw_input_gate_requires_pending_synthetic_approval`.
-- **Approvals are one-shot.** A grant authorises exactly one successful action; a
-  second high-risk action on the same id re-gates.
+- **Element/contextual approvals are one-shot.** A grant authorises exactly one
+  successful element-bound action; a second high-risk action on the same id
+  re-gates.
   — `engine::tests::approval_is_one_shot_consumed_by_act`.
-- **Approvals never survive a re-perception.** Every `refresh()` clears all grants
-  and pending-gate markers.
+- **Element/contextual approvals never survive a re-perception.** Every
+  `refresh()` clears element-bound grants and pending-gate markers.
   — `engine::tests::approval_is_invalidated_by_refresh`.
 - **Composite drag risk.** A drag gates on `max(risk(source), risk(target))`: a
   high-risk drop target forces approval even when the source is low-risk.
@@ -32,9 +33,17 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   — `engine::tests::destructive_typed_text_gates_low_risk_field_and_is_approvable`.
 - **Raw mutating input risk.** Raw coordinate/key tools that can mutate UI state
   are high-risk because they are not bound to a scene element. The first call
-  records `PendingApproval` and does not execute the platform input path; approval
-  is one-shot for the synthetic raw target id.
-  — `engine::tests::raw_input_gate_requires_pending_synthetic_approval`.
+  records `PendingApproval` and does not execute the platform input path.
+  Approved raw grants are scoped, count-limited, and TTL-limited: exact pointer
+  and text-entry targets stay one-shot, repeated `press_key` approvals cover a
+  short same-key burst, same-direction scroll approvals tolerate page-count
+  changes, and hotkeys are limited to a short retry window. Raw grants survive
+  ordinary `refresh()` calls but are cleared by `attach`, expiry, or grant
+  exhaustion.
+  — `engine::tests::raw_input_gate_requires_pending_synthetic_approval`,
+  `engine::tests::raw_key_approval_allows_short_repeated_same_key_burst`,
+  `engine::tests::raw_scroll_approval_covers_same_direction_count_change`,
+  `engine::tests::attach_clears_raw_approval_grants`.
 - **Approval transport boundary.** `approve` is an operator-side interlock, not a
   default agent affordance. The MCP server does not advertise or execute the
   `approve` tool unless `DUNST_MCP_ENABLE_APPROVE_TOOL=1` is set for a controlled
