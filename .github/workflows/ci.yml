@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, poc/visualops, phoenix/convergence-20260614]
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -32,7 +32,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.80
           components: clippy, rustfmt
 
       - name: Cache cargo
@@ -76,8 +75,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.80
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -129,8 +126,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.80
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -157,8 +152,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.80
 
       - name: Run live smoke
         run: scripts/smoke-live.sh "${{ inputs.live_smoke_app || 'Notes' }}"

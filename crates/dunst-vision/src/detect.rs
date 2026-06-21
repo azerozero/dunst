@@ -135,7 +135,7 @@ fn largest_blob(w: usize, h: usize, data: &[u8]) -> Option<Blob> {
                     push(x, y + 1, &mut stack);
                 }
             }
-            if best.map_or(true, |b| pixels > b.pixels) {
+            if best.is_none_or(|b| pixels > b.pixels) {
                 best = Some(Blob {
                     minx,
                     miny,

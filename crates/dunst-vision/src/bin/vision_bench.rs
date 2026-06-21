@@ -1,21 +1,38 @@
+#[cfg(target_os = "macos")]
 use std::{
     env,
     error::Error,
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "macos")]
 use dunst_core::Bbox;
+#[cfg(target_os = "macos")]
 use dunst_vision::{
     capture::{capture_window, CapturedWindow},
     ocr::ocr_region,
     CaptureGeometry,
 };
 
+#[cfg(target_os = "macos")]
 const DEFAULT_RUNS: usize = 15;
+#[cfg(target_os = "macos")]
 const FOVEA_W_PT: f64 = 600.0;
+#[cfg(target_os = "macos")]
 const FOVEA_H_PT: f64 = 400.0;
 
+#[cfg(target_os = "macos")]
 fn main() -> Result<(), Box<dyn Error>> {
+    run()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("vision_bench is macOS-only");
+}
+
+#[cfg(target_os = "macos")]
+fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().skip(1);
     let window_id = args
         .next()
@@ -74,11 +91,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 struct BenchOcrResult {
     stats: Stats,
     lines: usize,
 }
 
+#[cfg(target_os = "macos")]
 fn bench_ocr(
     captured: &CapturedWindow,
     region: Option<Bbox>,
@@ -101,6 +120,7 @@ fn bench_ocr(
     })
 }
 
+#[cfg(target_os = "macos")]
 fn centered_fovea(geometry: &CaptureGeometry) -> Bbox {
     let (origin_x, origin_y) = geometry.window_origin_pt;
     let (win_w, win_h) = geometry.window_size_pt;
@@ -115,6 +135,7 @@ fn centered_fovea(geometry: &CaptureGeometry) -> Bbox {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn print_geometry(geometry: &CaptureGeometry) {
     println!(
         "geometry: origin_pt=({:.1},{:.1}) window_pt=({:.1}x{:.1}) image_px=({:.0}x{:.0}) scale={:.2}",
@@ -128,12 +149,14 @@ fn print_geometry(geometry: &CaptureGeometry) {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy)]
 struct Stats {
     p50: f64,
     p95: f64,
 }
 
+#[cfg(target_os = "macos")]
 fn stats_ms(mut samples: Vec<Duration>) -> Stats {
     samples.sort_unstable();
     let p50 = percentile_ms(&samples, 0.50);
@@ -141,6 +164,7 @@ fn stats_ms(mut samples: Vec<Duration>) -> Stats {
     Stats { p50, p95 }
 }
 
+#[cfg(target_os = "macos")]
 fn percentile_ms(samples: &[Duration], percentile: f64) -> f64 {
     let idx = ((samples.len() as f64 * percentile).ceil() as usize).saturating_sub(1);
     samples[idx.min(samples.len() - 1)].as_secs_f64() * 1000.0

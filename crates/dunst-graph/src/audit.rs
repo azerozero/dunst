@@ -69,7 +69,7 @@ pub fn diff(before: &SceneGraph, after: &SceneGraph) -> GraphDiff {
                 debug_assert!(
                     a.ax_identifier
                         .as_deref()
-                        .map_or(true, |id| !crate::scene::is_stable_identifier(id)),
+                        .is_none_or(|id| !crate::scene::is_stable_identifier(id)),
                     "identifier-backed node {} kept a label-unstable id; reconciliation should be unreachable",
                     a.id
                 );

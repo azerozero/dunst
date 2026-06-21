@@ -287,8 +287,6 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "dunst-core",
- "serde",
- "serde_json",
 ]
 
 [[package]]
