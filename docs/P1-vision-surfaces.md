@@ -42,6 +42,7 @@ Per incremental (dirty-region) refresh, not cold full-frame:
 | **Total (steady-state)** | | **~40–95 ms** |
 
 ### Measured on this Mac (2026-06-08, Codex — Apple Vision, 10 warm runs)
+
 | Case | `.fast` p95 | `.accurate` p95 |
 |---|---|---|
 | Full window (Retina 2000×1320 px) | **16.5 ms** | 90 ms |
@@ -251,6 +252,6 @@ below; proper SCK capture is ~3–12 ms (P1b).
 ScreenCaptureKit delivers via XPC to a dispatch queue needing a running CFRunLoop —
 a headless Rust `main()` has none, so it **blocks forever, before the geometry**.
 And `screencapturekit` drags in `libswift_Concurrency` → the whole crate **fails to
-link** (Swift runtime). Both vanish with pure Core Graphics (`CGWindowListCopyWindowInfo`
-+ `CGWindowListCreateImage`, synchronous, no run loop, no Swift). SCK is a P1b task
-(async runtime + run loop), not a P1a blocker.
+link** (Swift runtime). Both vanish with pure Core Graphics
+(`CGWindowListCopyWindowInfo` + `CGWindowListCreateImage`, synchronous, no run loop,
+no Swift). SCK is a P1b task (async runtime + run loop), not a P1a blocker.

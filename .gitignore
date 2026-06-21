@@ -8,3 +8,4 @@ AGENTS.md
 /100
 *.trace
 /traces
+.lycheecache

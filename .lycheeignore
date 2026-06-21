@@ -1,0 +1,4 @@
+^https?://(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(:\d+)?(/.*)?$
+^https?://[^/]+\.example\.(com|org|net)(/.*)?$
+^https?://.*\.internal(/.*)?$
+^https?://github\.com/azerozero/dunst/actions/workflows/ci\.yml(/badge\.svg)?$
