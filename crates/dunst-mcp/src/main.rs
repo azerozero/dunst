@@ -372,12 +372,17 @@ fn run_setup(args: SetupArgs) -> i32 {
     } else {
         "dunst-mcp"
     };
+    let command_args = if args.dev_wrapper {
+        "[]"
+    } else {
+        "[\"serve\"]"
+    };
     match args.client {
         SetupClient::Codex => {
             println!("# Add to .codex/config.toml or $CODEX_HOME/config.toml");
             println!("[mcp_servers.dunst]");
             println!("command = \"{command}\"");
-            println!("args = []");
+            println!("args = {command_args}");
             println!("startup_timeout_sec = 120");
         }
         SetupClient::Claude => {
@@ -385,7 +390,7 @@ fn run_setup(args: SetupArgs) -> i32 {
             println!("  \"mcpServers\": {{");
             println!("    \"dunst\": {{");
             println!("      \"command\": \"{command}\",");
-            println!("      \"args\": []");
+            println!("      \"args\": {command_args}");
             println!("    }}");
             println!("  }}");
             println!("}}");

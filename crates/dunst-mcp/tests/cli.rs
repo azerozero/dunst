@@ -58,3 +58,55 @@ fn subcommand_help_lists_live_and_setup_options() {
         );
     }
 }
+
+#[test]
+fn setup_installed_configs_start_the_server() {
+    let codex = dunst_mcp()
+        .args(["setup", "--client", "codex"])
+        .output()
+        .expect("run codex setup");
+    assert!(codex.status.success(), "codex setup should exit 0");
+    let codex_out = String::from_utf8(codex.stdout).expect("utf8 codex setup");
+    assert!(
+        codex_out.contains("command = \"dunst-mcp\""),
+        "installed codex setup should use the binary:\n{codex_out}"
+    );
+    assert!(
+        codex_out.contains("args = [\"serve\"]"),
+        "installed codex setup must start the MCP server, not demo:\n{codex_out}"
+    );
+
+    let claude = dunst_mcp()
+        .args(["setup", "--client", "claude"])
+        .output()
+        .expect("run claude setup");
+    assert!(claude.status.success(), "claude setup should exit 0");
+    let claude_out = String::from_utf8(claude.stdout).expect("utf8 claude setup");
+    assert!(
+        claude_out.contains("\"command\": \"dunst-mcp\""),
+        "installed claude setup should use the binary:\n{claude_out}"
+    );
+    assert!(
+        claude_out.contains("\"args\": [\"serve\"]"),
+        "installed claude setup must start the MCP server, not demo:\n{claude_out}"
+    );
+}
+
+#[test]
+fn setup_dev_wrapper_keeps_wrapper_owned_args_empty() {
+    let output = dunst_mcp()
+        .args(["setup", "--client", "codex", "--dev-wrapper"])
+        .output()
+        .expect("run codex dev-wrapper setup");
+    assert!(output.status.success(), "dev wrapper setup should exit 0");
+    let stdout = String::from_utf8(output.stdout).expect("utf8 dev-wrapper setup");
+
+    assert!(
+        stdout.contains("command = \"scripts/mcp-dunst.sh\""),
+        "dev wrapper setup should use the repo wrapper:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("args = []"),
+        "dev wrapper already starts serve --live and should not get duplicate args:\n{stdout}"
+    );
+}
