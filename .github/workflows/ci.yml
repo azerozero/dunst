@@ -104,17 +104,6 @@ jobs:
       - name: ShellCheck
         run: shellcheck scripts/*.sh
 
-  docs:
-    name: Documentation checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Check local Markdown links
-        run: python3 scripts/check-doc-links.py
-
   benchmarks:
     name: Benchmarks
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

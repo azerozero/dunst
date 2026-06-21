@@ -1,8 +1,7 @@
 # Docs lint pipeline: markdownlint + lychee.
 #
-# The local Python checker stays in the main CI as a fast offline guard for
-# repo-local links. This workflow adds prose-shape checks and live link
-# validation for documentation changes.
+# Scoped to docs/** and README.md so broken links and Markdown regressions are
+# caught before merge. Rust doctests (`cargo test --doc`) stay in the main CI.
 
 name: Docs Lint
 
