@@ -191,6 +191,94 @@ fn raw_point_guard_rejects_off_target_points() {
 }
 
 #[test]
+fn raw_key_approval_allows_short_repeated_same_key_burst() {
+    let (mut eng, _) = engine_with_counter();
+    let target_id = "keyboard@press:Backspace";
+    let risk = Engine::raw_input_risk(Vec::new());
+
+    let first = eng
+        .gate_raw_input(
+            target_id,
+            SemanticAction::KeyPress,
+            Some("Backspace".into()),
+            Some("raw key press"),
+            risk.clone(),
+        )
+        .expect("first keypress should gate");
+    assert_eq!(first.result, ActionResult::PendingApproval);
+
+    eng.approve(target_id).unwrap();
+    assert!(
+        eng.gate_raw_input(
+            target_id,
+            SemanticAction::KeyPress,
+            Some("Backspace".into()),
+            Some("raw key press"),
+            risk.clone(),
+        )
+        .is_none(),
+        "approved key should pass"
+    );
+    assert!(
+        eng.gate_raw_input(
+            target_id,
+            SemanticAction::KeyPress,
+            Some("Backspace".into()),
+            Some("raw key press"),
+            risk,
+        )
+        .is_none(),
+        "same key should remain approved for a short burst"
+    );
+}
+
+#[test]
+fn raw_scroll_approval_covers_same_direction_count_change() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+
+    let gated = eng
+        .gate_raw_input(
+            "keyboard@scroll:up:1",
+            SemanticAction::Scroll,
+            Some("scroll up x1".into()),
+            Some("background web scroll"),
+            risk.clone(),
+        )
+        .expect("first scroll should gate");
+    assert_eq!(gated.result, ActionResult::PendingApproval);
+
+    eng.approve("keyboard@scroll:up:1").unwrap();
+    assert!(
+        eng.gate_raw_input(
+            "keyboard@scroll:up:2",
+            SemanticAction::Scroll,
+            Some("scroll up x2".into()),
+            Some("background web scroll"),
+            risk,
+        )
+        .is_none(),
+        "same-direction scroll should not ask for another approval solely because pages changed"
+    );
+}
+
+#[test]
+fn attach_clears_raw_approval_grants() {
+    let (mut eng, _) = engine_with_counter();
+    let target_id = "keyboard@press:Backspace";
+
+    eng.pending_gate_ids.insert(target_id.to_string());
+    eng.approve(target_id).unwrap();
+    assert!(eng.raw_approval_available_for_test(target_id));
+
+    eng.attach(99, 199).unwrap();
+    assert!(
+        !eng.raw_approval_available_for_test(target_id),
+        "raw grants are scoped to the attached window"
+    );
+}
+
+#[test]
 fn raw_region_guard_rejects_off_target_regions() {
     let old = std::env::var("DUNST_MCP_ALLOW_OFF_TARGET_RAW").ok();
     std::env::remove_var("DUNST_MCP_ALLOW_OFF_TARGET_RAW");

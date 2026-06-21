@@ -458,8 +458,8 @@ fn keyboard_menu_tools() -> Vec<Value> {
         ),
         tool(
             "press_key",
-            "Press a named key on the target (e.g. \"Return\"/\"Enter\", \"Tab\", \"Escape\", arrows, \"Home\", \"End\", \"PageUp\", \"PageDown\"). Raw mutating keyboard input is high-risk: approve only after explicit operator authorization. If approval is unavailable or denied, switch to ui_fallback_hint and drive the UI through mapped element ids instead. If the user-active guard blocks it, wait until the operator is idle and retry once.",
-            schema(json!({ "key": {"type":"string"} }), &["key"]),
+            "Press a named key on the target (e.g. \"Return\"/\"Enter\", \"Tab\", \"Escape\", arrows, \"Home\", \"End\", \"PageUp\", \"PageDown\"). Optional repeat batches simple repeated edits such as Backspace. Raw mutating keyboard input is high-risk: approve only after explicit operator authorization. If approval is unavailable or denied, switch to ui_fallback_hint and drive the UI through mapped element ids instead. If the user-active guard blocks it, wait until the operator is idle and retry once.",
+            schema(json!({ "key": {"type":"string"}, "repeat": {"type":"integer"} }), &["key"]),
         ),
         tool(
             "type_keys",

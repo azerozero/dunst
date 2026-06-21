@@ -411,7 +411,18 @@ fn raw_user_active_failure_preserves_approval_for_retry() {
 
     eng.pending_gate_ids.insert(target.to_string());
     eng.approve(target).unwrap();
-    assert!(eng.approvals.contains(target));
+    assert!(eng.raw_approval_available_for_test(target));
+    assert!(
+        eng.gate_raw_input(
+            target,
+            SemanticAction::Scroll,
+            Some("scroll down x2".to_string()),
+            Some("background web scroll"),
+            Engine::raw_input_risk(Vec::new()),
+        )
+        .is_none(),
+        "approved scroll should pass the raw gate"
+    );
 
     let outcome = Err(VisualOpsError::Execution(
             "user-active guard blocked background key: last keyboard/mouse input was 244 ms ago (< 300 ms)".into(),
@@ -419,7 +430,7 @@ fn raw_user_active_failure_preserves_approval_for_retry() {
     let err = eng
         .audit_raw_input(
             target.to_string(),
-            SemanticAction::Type,
+            SemanticAction::Scroll,
             Some("scroll down x2".to_string()),
             Some("background web scroll"),
             Engine::raw_input_risk(Vec::new()),
@@ -428,7 +439,7 @@ fn raw_user_active_failure_preserves_approval_for_retry() {
         .unwrap_err();
     assert!(err.to_string().contains("user-active guard blocked"));
     assert!(
-        eng.approvals.contains(target),
+        eng.raw_approval_available_for_test(target),
         "user-active guard should not consume an already approved raw action"
     );
 }

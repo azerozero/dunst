@@ -27,29 +27,42 @@ impl Engine {
     /// Press a named key (e.g. `"Return"`/`"Enter"` to submit a typed URL).
     /// Raw keyboard input is high-risk because it is not tied to a scene element.
     #[cfg(target_os = "macos")]
-    pub fn press_key(&mut self, key: &str) -> dunst_core::Result<AuditEntry> {
+    pub fn press_key(&mut self, key: &str, repeat: usize) -> dunst_core::Result<AuditEntry> {
         if !is_press_key_name(key) {
             return Err(VisualOpsError::Execution(format!(
                 "unsupported key {key:?}; expected return|enter, tab, escape, space, delete, up/down/left/right, pageup/pagedown, home/end"
             )));
         }
+        let repeat = repeat.clamp(1, 20);
         let target_id = format!("keyboard@press:{key}");
+        let argument = if repeat == 1 {
+            key.to_string()
+        } else {
+            format!("{key} x{repeat}")
+        };
         if let Some(entry) = self.gate_raw_input(
             &target_id,
-            SemanticAction::Type,
-            Some(key.to_string()),
+            SemanticAction::KeyPress,
+            Some(argument.clone()),
             Some("raw key press"),
             Self::raw_input_risk(Vec::new()),
         ) {
             return Ok(entry);
         }
-        let outcome = retry_user_active_guard(|| {
-            dunst_platform::press_key(self.target.pid, self.target.window_id, key)
-        });
+        let mut outcome = Ok(());
+        for _ in 0..repeat {
+            outcome = retry_user_active_guard(|| {
+                dunst_platform::press_key(self.target.pid, self.target.window_id, key)
+            });
+            if outcome.is_err() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
         self.audit_raw_input(
             target_id,
-            SemanticAction::Type,
-            Some(key.to_string()),
+            SemanticAction::KeyPress,
+            Some(argument),
             Some("raw key press"),
             Self::raw_input_risk(Vec::new()),
             outcome,
@@ -58,7 +71,7 @@ impl Engine {
 
     /// Non-macOS stub: raw CGEvent input needs the macOS backend.
     #[cfg(not(target_os = "macos"))]
-    pub fn press_key(&mut self, _key: &str) -> dunst_core::Result<AuditEntry> {
+    pub fn press_key(&mut self, _key: &str, _repeat: usize) -> dunst_core::Result<AuditEntry> {
         Err(VisualOpsError::Execution(
             "press_key requires a macOS backend".into(),
         ))
@@ -144,7 +157,7 @@ impl Engine {
         let target_id = format!("keyboard@scroll:{direction}:{count}");
         if let Some(entry) = self.gate_raw_input(
             &target_id,
-            SemanticAction::Type,
+            SemanticAction::Scroll,
             Some(format!("scroll {direction} x{count}")),
             Some("background web scroll"),
             Self::raw_input_risk(Vec::new()),
@@ -168,7 +181,7 @@ impl Engine {
         }
         self.audit_raw_input(
             target_id,
-            SemanticAction::Type,
+            SemanticAction::Scroll,
             Some(format!("scroll {direction} x{count}")),
             Some("background web scroll (Page/Home/End keys, auth-signed)"),
             Self::raw_input_risk(Vec::new()),
@@ -203,7 +216,7 @@ impl Engine {
         let target_id = format!("keyboard@zoom:{direction}");
         if let Some(entry) = self.gate_raw_input(
             &target_id,
-            SemanticAction::Type,
+            SemanticAction::Hotkey,
             Some(format!("zoom {direction}")),
             Some("background zoom"),
             Self::raw_input_risk(Vec::new()),
@@ -215,7 +228,7 @@ impl Engine {
         });
         self.audit_raw_input(
             target_id,
-            SemanticAction::Type,
+            SemanticAction::Hotkey,
             Some(format!("zoom {direction}")),
             Some("background zoom (Cmd =/-/0, auth-signed)"),
             Self::raw_input_risk(Vec::new()),
@@ -247,7 +260,7 @@ impl Engine {
         let target_id = format!("keyboard@hotkey:{combo}");
         if let Some(entry) = self.gate_raw_input(
             &target_id,
-            SemanticAction::Type,
+            SemanticAction::Hotkey,
             Some(combo.to_string()),
             Some("background hotkey"),
             Self::raw_input_risk(Vec::new()),
@@ -264,7 +277,7 @@ impl Engine {
         });
         self.audit_raw_input(
             target_id,
-            SemanticAction::Type,
+            SemanticAction::Hotkey,
             Some(combo.to_string()),
             Some("background hotkey (modifier combo, auth-signed)"),
             Self::raw_input_risk(Vec::new()),

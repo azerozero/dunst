@@ -247,6 +247,8 @@ pub enum SemanticAction {
     Click,
     Hover,
     Type,
+    KeyPress,
+    Hotkey,
     OpenMenu,
     Pick,
     Toggle,

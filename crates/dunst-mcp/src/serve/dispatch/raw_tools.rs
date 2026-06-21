@@ -69,7 +69,10 @@ pub(super) fn dispatch(
         },
         "press_key" => match arg(args, "key") {
             Some(key) => engine
-                .press_key(&key)
+                .press_key(
+                    &key,
+                    args.get("repeat").and_then(Value::as_u64).unwrap_or(1) as usize,
+                )
                 .map(|entry| {
                     audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
                 })

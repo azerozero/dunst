@@ -93,7 +93,7 @@ impl Engine {
         reasoning: Option<&str>,
         risk: RiskAssessment,
     ) -> Option<AuditEntry> {
-        if self.approvals.contains(target_id) {
+        if self.consume_raw_approval(target_id) || self.approvals.contains(target_id) {
             return None;
         }
         self.pending_gate_ids.insert(target_id.to_string());
@@ -107,6 +107,78 @@ impl Engine {
             result: ActionResult::PendingApproval,
             graph_diff: GraphDiff::default(),
         }))
+    }
+
+    pub(super) fn approve_raw_input(&mut self, target_id: &str) {
+        let expires_at = Instant::now() + Duration::from_secs(30);
+        for (key, remaining) in raw_approval_keys(target_id) {
+            self.raw_approvals.insert(
+                key,
+                RawApprovalGrant {
+                    remaining,
+                    expires_at,
+                },
+            );
+        }
+    }
+
+    fn consume_raw_approval(&mut self, target_id: &str) -> bool {
+        let now = Instant::now();
+        self.raw_approvals
+            .retain(|_, grant| grant.remaining > 0 && grant.expires_at > now);
+
+        for (key, _) in raw_approval_keys(target_id) {
+            let Some(grant) = self.raw_approvals.get_mut(&key) else {
+                continue;
+            };
+            if grant.remaining == 0 || grant.expires_at <= now {
+                continue;
+            }
+            grant.remaining -= 1;
+            let consumed = RawApprovalGrant {
+                remaining: 1,
+                expires_at: grant.expires_at,
+            };
+            if grant.remaining == 0 {
+                self.raw_approvals.remove(&key);
+            }
+            self.raw_approval_inflight
+                .insert(target_id.to_string(), consumed);
+            return true;
+        }
+        false
+    }
+
+    fn restore_inflight_raw_approval(&mut self, target_id: &str) {
+        let Some(grant) = self.raw_approval_inflight.remove(target_id) else {
+            return;
+        };
+        if grant.expires_at <= Instant::now() {
+            return;
+        }
+        for (key, _) in raw_approval_keys(target_id) {
+            self.raw_approvals
+                .entry(key)
+                .and_modify(|existing| {
+                    existing.remaining += grant.remaining;
+                    existing.expires_at = existing.expires_at.max(grant.expires_at);
+                })
+                .or_insert_with(|| grant.clone());
+        }
+    }
+
+    fn clear_inflight_raw_approval(&mut self, target_id: &str) {
+        self.raw_approval_inflight.remove(target_id);
+    }
+
+    #[cfg(test)]
+    pub(super) fn raw_approval_available_for_test(&mut self, target_id: &str) -> bool {
+        let now = Instant::now();
+        self.raw_approvals
+            .retain(|_, grant| grant.remaining > 0 && grant.expires_at > now);
+        raw_approval_keys(target_id)
+            .into_iter()
+            .any(|(key, _)| self.raw_approvals.contains_key(&key))
     }
 
     /// Record a raw input attempt. The attempt is always written to the trace; on
@@ -134,13 +206,16 @@ impl Engine {
             ActionResult::Failed
         };
         let graph_diff = if result == ActionResult::Success {
+            self.clear_inflight_raw_approval(&target_id);
             self.approvals.remove(&target_id);
             self.pending_gate_ids.remove(&target_id);
             let _ = self.refresh();
             self.diff_since()
         } else if user_active_blocked {
+            self.restore_inflight_raw_approval(&target_id);
             GraphDiff::default()
         } else {
+            self.clear_inflight_raw_approval(&target_id);
             self.approvals.remove(&target_id);
             self.pending_gate_ids.remove(&target_id);
             let _ = self.refresh();
@@ -158,4 +233,26 @@ impl Engine {
         });
         outcome.map(|()| entry)
     }
+}
+
+pub(super) fn is_raw_input_target_id(target_id: &str) -> bool {
+    target_id.starts_with("keyboard@") || target_id.starts_with("screen@")
+}
+
+fn raw_approval_keys(target_id: &str) -> Vec<(String, usize)> {
+    if let Some(key) = target_id.strip_prefix("keyboard@press:") {
+        return vec![(format!("keyboard@press:{key}"), 10)];
+    }
+    if let Some(rest) = target_id.strip_prefix("keyboard@scroll:") {
+        let mut parts = rest.split(':');
+        let direction = parts.next().unwrap_or("down");
+        return vec![(format!("keyboard@scroll:{direction}"), 5)];
+    }
+    if target_id.starts_with("keyboard@hotkey:") {
+        return vec![(target_id.to_string(), 2)];
+    }
+    if target_id == "keyboard@type_keys" {
+        return vec![(target_id.to_string(), 1)];
+    }
+    vec![(target_id.to_string(), 1)]
 }

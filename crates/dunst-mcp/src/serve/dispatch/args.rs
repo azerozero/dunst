@@ -27,6 +27,8 @@ pub(super) fn parse_action(action: &str) -> Option<SemanticAction> {
         "click" => SemanticAction::Click,
         "hover" => SemanticAction::Hover,
         "type" => SemanticAction::Type,
+        "key_press" => SemanticAction::KeyPress,
+        "hotkey" => SemanticAction::Hotkey,
         "open_menu" => SemanticAction::OpenMenu,
         "pick" => SemanticAction::Pick,
         "toggle" => SemanticAction::Toggle,

@@ -58,6 +58,7 @@ use chart::{is_axis_token, looks_like_clock, parse_value};
 use input::char_keycode;
 use input::{is_press_key_name, layout_sensitive_hotkey_message, parse_combo};
 use query_support::*;
+use raw_input_gate::is_raw_input_target_id;
 use runtime_support::*;
 use scene_query::*;
 use window_geometry::*;
@@ -83,6 +84,15 @@ pub struct Engine {
     affordances: Option<AffordanceGraph>,
     /// Element IDs that have been explicitly approved for high-risk actions.
     approvals: BTreeSet<String>,
+    /// Synthetic raw-input grants keyed by a scoped target id. Unlike
+    /// element-bound approvals, these are count-limited instead of consumed by
+    /// every refresh, so repeated keypresses can complete without approval
+    /// churn after the operator has approved that exact raw input family.
+    raw_approvals: BTreeMap<String, RawApprovalGrant>,
+    /// Raw approval grant consumed by an in-flight raw action. If the platform
+    /// rejects the action only because the operator is active, the grant is
+    /// restored so the automatic retry path does not ask for approval again.
+    raw_approval_inflight: BTreeMap<String, RawApprovalGrant>,
     /// IDs currently awaiting approval — the gated participants of the actions that
     /// returned `PendingApproval` since the last refresh. Lets [`approve`](Self::approve)
     /// accept an element whose danger is *contextual* (a destructive value typed into
@@ -120,6 +130,8 @@ impl Engine {
             previous: None,
             affordances: None,
             approvals: BTreeSet::new(),
+            raw_approvals: BTreeMap::new(),
+            raw_approval_inflight: BTreeMap::new(),
             pending_gate_ids: BTreeSet::new(),
             cached_window_rect: None,
             cached_menubar_root: None,
@@ -190,6 +202,10 @@ impl Engine {
     /// picks one from `list_windows` and attaches, so the server has no fixed,
     /// hardcoded target. Re-perceives the new window.
     pub fn attach(&mut self, pid: i32, window_id: u32) -> dunst_core::Result<()> {
+        self.approvals.clear();
+        self.raw_approvals.clear();
+        self.raw_approval_inflight.clear();
+        self.pending_gate_ids.clear();
         self.target = Target { pid, window_id };
         self.window = self.perceptor.window_ref(&self.target)?;
         self.refresh()
@@ -347,9 +363,19 @@ impl Engine {
                 "{id} is not gated; no approval required"
             )));
         }
-        self.approvals.insert(id.to_string());
+        if is_raw_input_target_id(id) {
+            self.approve_raw_input(id);
+        } else {
+            self.approvals.insert(id.to_string());
+        }
         Ok(())
     }
+}
+
+#[derive(Clone)]
+struct RawApprovalGrant {
+    remaining: usize,
+    expires_at: Instant,
 }
 
 #[cfg(test)]
