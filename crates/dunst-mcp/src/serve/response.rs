@@ -3,7 +3,7 @@ use std::time::Instant;
 use dunst_core::{ActionResult, AuditEntry, GraphDiff, NodeChange, SemanticAction};
 use serde_json::{json, Value};
 
-use crate::engine::OptionPickResult;
+use crate::engine::{ModalDismissResult, OcrClickResult, OptionPickResult};
 
 use super::{
     build_git_dirty, build_git_sha, build_time_unix, server_version_label,
@@ -180,6 +180,13 @@ fn failed_action_hint(entry: &AuditEntry) -> Option<Value> {
 }
 
 fn success_action_hint(entry: &AuditEntry) -> Option<Value> {
+    if entry.action == SemanticAction::Raise {
+        return Some(json!({
+            "reason": "The platform raise action returned success, but foreground/window stacking can still be stale or blocked by another same-app/frontmost window.",
+            "next_step": "Call target_visibility or expose_target_window to verify that covered_by is empty before OCR, screenshots, or raw pointer input.",
+            "verification": "target_visibility.status should be frontmost or visible_background with an empty covered_by list"
+        }));
+    }
     if entry.action == SemanticAction::Scroll
         && entry.graph_diff.changes.iter().all(low_signal_diff_change)
     {
@@ -219,6 +226,30 @@ pub(super) fn option_pick_value(result: OptionPickResult, include_diff: bool) ->
         "selected_after": result.selected_after,
         "closed_after": result.closed_after,
         "audit": audit,
+    })
+}
+
+pub(super) fn ocr_click_value(result: OcrClickResult, include_diff: bool) -> Value {
+    let audit = audit_entry_value(result.audit, include_diff);
+    json!({
+        "query": result.query,
+        "hit": result.hit,
+        "audit": audit,
+        "expected_text": result.expected_text,
+        "expected_text_found": result.expected_text_found,
+        "verification_hint": result.verification_hint,
+    })
+}
+
+pub(super) fn modal_dismiss_value(result: ModalDismissResult, include_diff: bool) -> Value {
+    let audit = audit_entry_value(result.audit, include_diff);
+    json!({
+        "modal_before": result.modal_before,
+        "clicked": result.clicked,
+        "audit": audit,
+        "modal_after": result.modal_after,
+        "dismissed": result.dismissed,
+        "verification_hint": result.verification_hint,
     })
 }
 

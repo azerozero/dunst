@@ -21,6 +21,17 @@ impl Engine {
         {
             reasons.push("raw point is outside the target window".to_string());
         } else {
+            let visibility = self.target_visibility();
+            if !visibility.covered_by.is_empty() {
+                reasons.push(format!(
+                    "target window is covered by {:?}; verify OCR/screenshot came from the target before using visible coordinates",
+                    visibility
+                        .covered_by
+                        .iter()
+                        .map(|window| window.window_id)
+                        .collect::<Vec<_>>()
+                ));
+            }
             let menubar = self.cached_menubar_root.as_deref();
             let hits_visible_node = self.scene_graph().nodes.values().any(|node| {
                 !matches!(node.role, Role::Window | Role::MenuBar | Role::Toolbar)

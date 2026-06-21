@@ -84,6 +84,117 @@ pub(super) fn desktop_view_from_windows(
     }
 }
 
+pub(super) fn target_visibility_from_desktop(
+    target_window_id: u32,
+    target_title: String,
+    fallback_bounds: Bbox,
+    view: &DesktopView,
+) -> TargetVisibility {
+    let Some(target) = view
+        .windows
+        .iter()
+        .find(|window| window.window_id == target_window_id)
+    else {
+        let warning = format!(
+            "target window {target_window_id} was not present in desktop_view; visibility cannot be verified"
+        );
+        return TargetVisibility {
+            target_window_id,
+            target_title,
+            found_in_desktop: false,
+            degraded: true,
+            reason: view.reason.clone().or(Some(warning.clone())),
+            is_frontmost: false,
+            covered_by: Vec::new(),
+            covers: Vec::new(),
+            visible_fraction: 0.0,
+            status: "unknown".into(),
+            warnings: vec![warning],
+            fallback_hint: Some(
+                "Call list_windows, attach the intended window_id, then use expose_target_window or arrange_windows before OCR/raw clicks."
+                    .into(),
+            ),
+        };
+    };
+
+    let covered_by: Vec<DesktopWindow> = target
+        .covered_by
+        .iter()
+        .filter_map(|id| {
+            view.windows
+                .iter()
+                .find(|window| window.window_id == *id)
+                .cloned()
+        })
+        .collect();
+    let bounds = if target.bounds.w > 0.0 && target.bounds.h > 0.0 {
+        target.bounds
+    } else {
+        fallback_bounds
+    };
+    let visible_fraction = visible_fraction(bounds, &covered_by);
+    let mut warnings = Vec::new();
+    let mut status = if target.is_frontmost {
+        "frontmost"
+    } else if !covered_by.is_empty() {
+        "covered"
+    } else {
+        "visible_background"
+    }
+    .to_string();
+    if visible_fraction <= 0.05 {
+        status = "fully_covered".into();
+        warnings.push(format!(
+            "target window {target_window_id} appears fully covered by windows {:?}",
+            target.covered_by
+        ));
+    } else if !covered_by.is_empty() {
+        warnings.push(format!(
+            "target window {target_window_id} is partially covered by windows {:?}",
+            target.covered_by
+        ));
+    }
+    if view.degraded {
+        warnings.push(
+            view.reason
+                .clone()
+                .unwrap_or_else(|| "desktop topology is degraded".into()),
+        );
+    }
+    let fallback_hint = (!covered_by.is_empty() || view.degraded).then(|| {
+        "Use expose_target_window, move_window_to_display, or arrange_windows before relying on OCR, screenshots, or raw clicks."
+            .to_string()
+    });
+
+    TargetVisibility {
+        target_window_id,
+        target_title,
+        found_in_desktop: true,
+        degraded: view.degraded,
+        reason: view.reason.clone(),
+        is_frontmost: target.is_frontmost,
+        covered_by,
+        covers: target.covers.clone(),
+        visible_fraction,
+        status,
+        warnings,
+        fallback_hint,
+    }
+}
+
+pub(super) fn visible_fraction(bounds: Bbox, covered_by: &[DesktopWindow]) -> f64 {
+    let area = bounds.w.max(0.0) * bounds.h.max(0.0);
+    if area <= 0.0 {
+        return 0.0;
+    }
+    let covered_area: f64 = covered_by
+        .iter()
+        .map(|window| rect_intersection_area(bounds, window.bounds))
+        .sum::<f64>()
+        .min(area);
+    ((area - covered_area) / area).clamp(0.0, 1.0)
+}
+
 pub(super) fn layout_frames(
     count: usize,
     display: &Bbox,

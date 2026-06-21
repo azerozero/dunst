@@ -49,12 +49,25 @@ impl Engine {
             title: page.title,
             url: page.url,
             browser_tab: page.browser_tab,
+            target_visibility: page.target_visibility,
             window,
             display,
             window_in_display,
             visible_text: page.visible_text,
             key_elements: page.key_elements,
         }
+    }
+
+    /// Current target's visibility in the desktop stack. Read-only; callers use
+    /// this to decide whether OCR/screenshot/raw pointer actions are trustworthy.
+    pub fn target_visibility(&self) -> TargetVisibility {
+        let view = self.desktop_view(false);
+        target_visibility_from_desktop(
+            self.target.window_id,
+            self.scene_graph().window.title.clone(),
+            self.current_window_bounds(),
+            &view,
+        )
     }
 
     /// Move the target window to the display index returned by `list_displays`.
@@ -312,6 +325,100 @@ impl Engine {
         })
     }
 
+    /// Try to expose the attached target window and verify whether the desktop
+    /// stack now makes it visible. This is deliberately narrower than arranging
+    /// every app window: it first raises only the target, then optionally moves
+    /// covering windows into a side-by-side layout on the target display.
+    #[cfg(target_os = "macos")]
+    pub fn expose_target_window(
+        &mut self,
+        arrange_if_needed: bool,
+    ) -> dunst_core::Result<ExposeTargetWindowResult> {
+        let before = self.target_visibility();
+        let mut raised = false;
+        let mut arranged = false;
+        let mut raise_audit = None;
+
+        if !before.is_frontmost || !before.covered_by.is_empty() {
+            let node_id = self
+                .scene_graph()
+                .nodes
+                .values()
+                .find(|node| node.role == Role::Window)
+                .map(|node| node.id.clone())
+                .unwrap_or_else(|| format!("win_{}", self.target.window_id));
+            match self.raise_element(
+                &node_id,
+                Some("expose target window before visual interaction"),
+            ) {
+                Ok(entry) => {
+                    raised = entry.result == ActionResult::Success;
+                    raise_audit = Some(entry);
+                }
+                Err(_) => {
+                    raised = false;
+                }
+            }
+        }
+
+        *self.desktop_cache.borrow_mut() = None;
+        let mut after = self.target_visibility();
+        if arrange_if_needed && raised && !after.covered_by.is_empty() {
+            let mut ids = vec![self.target.window_id];
+            ids.extend(after.covered_by.iter().map(|window| window.window_id));
+            ids.sort_unstable();
+            ids.dedup();
+            let display = after
+                .covered_by
+                .iter()
+                .find_map(|window| window.display.as_ref().map(|d| d.index))
+                .or_else(|| {
+                    self.display_for_window(self.current_window_bounds())
+                        .map(|d| d.index)
+                })
+                .unwrap_or(1);
+            let _ = self.arrange_windows(display, "columns", None, &ids, false);
+            arranged = true;
+            *self.desktop_cache.borrow_mut() = None;
+            after = self.target_visibility();
+        }
+
+        let verification_hint = if raise_audit
+            .as_ref()
+            .is_some_and(|entry| entry.result == ActionResult::PendingApproval)
+        {
+            Some("Target expose is pending approval; approve the raise_audit.target_id, then retry expose_target_window.".into())
+        } else if !after.covered_by.is_empty() {
+            Some("Target remains covered after expose_target_window; use desktop_view to choose the covering window or move the target to another display.".into())
+        } else {
+            None
+        };
+        Ok(ExposeTargetWindowResult {
+            before,
+            after,
+            raise_audit,
+            raised,
+            arranged,
+            verification_hint,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn expose_target_window(
+        &mut self,
+        _arrange_if_needed: bool,
+    ) -> dunst_core::Result<ExposeTargetWindowResult> {
+        let before = self.target_visibility();
+        Ok(ExposeTargetWindowResult {
+            after: before.clone(),
+            before,
+            raise_audit: None,
+            raised: false,
+            arranged: false,
+            verification_hint: Some("expose_target_window requires a macOS backend".into()),
+        })
+    }
+
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
     pub fn arrange_windows(
@@ -362,14 +469,24 @@ impl Engine {
     /// Composited screenshot of the target window as base64 PNG — lets the agent
     /// SEE the pixels directly (multimodal), alongside OCR/CV. Works backgrounded.
     #[cfg(target_os = "macos")]
-    pub fn screenshot(&self) -> Option<String> {
+    pub fn screenshot(&self) -> Option<ScreenshotResult> {
         if let Some(cached) = self
             .screenshot_cache
             .borrow()
             .as_ref()
             .and_then(|c| c.fresh(SCREENSHOT_CACHE_TTL))
         {
-            return Some(cached);
+            let target_visibility = self.target_visibility();
+            return Some(ScreenshotResult {
+                png_base64: cached,
+                warnings: target_visibility.warnings.clone(),
+                recommended_next_steps: target_visibility
+                    .fallback_hint
+                    .clone()
+                    .into_iter()
+                    .collect(),
+                target_visibility,
+            });
         }
         let path = unique_png_path("dunst_shot");
         let ok = std::process::Command::new("/usr/sbin/screencapture")
@@ -388,12 +505,22 @@ impl Engine {
             captured_at: Instant::now(),
             value: encoded.clone(),
         });
-        Some(encoded)
+        let target_visibility = self.target_visibility();
+        Some(ScreenshotResult {
+            png_base64: encoded,
+            warnings: target_visibility.warnings.clone(),
+            recommended_next_steps: target_visibility
+                .fallback_hint
+                .clone()
+                .into_iter()
+                .collect(),
+            target_visibility,
+        })
     }
 
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
-    pub fn screenshot(&self) -> Option<String> {
+    pub fn screenshot(&self) -> Option<ScreenshotResult> {
         None
     }
 

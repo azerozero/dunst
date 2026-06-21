@@ -4,7 +4,7 @@ use super::*;
 fn tools_list_exposes_read_text_with_object_schema() {
     std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
     let tools = tools_list();
-    assert_eq!(tools.len(), 54, "tool count");
+    assert_eq!(tools.len(), 63, "tool count");
     // Every tool must declare a JSON-Schema object input (the type:object fix).
     for t in &tools {
         assert_eq!(
@@ -65,6 +65,10 @@ fn tools_list_exposes_read_text_with_object_schema() {
         "desktop topology tool present"
     );
     assert!(
+        tools.iter().any(|t| t["name"] == "target_visibility"),
+        "target visibility tool present"
+    );
+    assert!(
         tools.iter().any(|t| t["name"] == "visual_change_probe"),
         "visual change probe tool present"
     );
@@ -83,6 +87,38 @@ fn tools_list_exposes_read_text_with_object_schema() {
     assert!(
         tools.iter().any(|t| t["name"] == "arrange_windows"),
         "window arrangement tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "expose_target_window"),
+        "verified target exposure tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "open_url_and_attach_tab"),
+        "open URL and attach helper present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "read_text_detailed"),
+        "detailed OCR diagnostics tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "find_ocr_text"),
+        "OCR text search tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "click_near_text"),
+        "OCR-bound click tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "detect_modal"),
+        "modal detection tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "dismiss_modal"),
+        "safe modal dismiss tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "extract_ocr_cards"),
+        "OCR card extraction tool present"
     );
     assert!(
         tools.iter().any(|t| t["name"] == "version"),

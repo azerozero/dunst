@@ -50,6 +50,10 @@ pub(super) fn dispatch(
             },
             None => Err("arrange_windows requires integer 'display'".into()),
         },
+        "expose_target_window" => engine
+            .expose_target_window(arg_bool(args, "arrange_if_needed").unwrap_or(false))
+            .map(|result| serde_json::to_value(result).unwrap_or(Value::Null))
+            .map_err(|e| e.to_string()),
         "list_apps" => Ok(
             serde_json::to_value(engine.list_apps(arg(args, "query").as_deref()))
                 .unwrap_or(Value::Null),
@@ -104,6 +108,25 @@ pub(super) fn dispatch(
                 .unwrap_or(Value::Null))
             }
             None => Err("launch_app requires 'app'".into()),
+        },
+        "open_url_and_attach_tab" => match (arg(args, "app"), arg(args, "url")) {
+            (Some(app), Some(url)) => {
+                let extra: Vec<String> = args
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok(
+                    serde_json::to_value(engine.open_url_and_attach_tab(&app, &url, &extra))
+                        .unwrap_or(Value::Null),
+                )
+            }
+            _ => Err("open_url_and_attach_tab requires 'app' and 'url'".into()),
         },
         "close_app" => match arg(args, "app") {
             Some(app) => Ok(json!({ "closed": engine.close_app(&app) })),

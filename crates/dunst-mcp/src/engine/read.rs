@@ -33,6 +33,15 @@ impl Engine {
         action: SemanticAction,
         include_latent: bool,
     ) -> Vec<String> {
+        self.query_affordances_scoped(action, include_latent, "all")
+    }
+
+    pub fn query_affordances_scoped(
+        &self,
+        action: SemanticAction,
+        include_latent: bool,
+        scope: &str,
+    ) -> Vec<String> {
         let window_rect = self.cached_window_rect;
         let menubar = self.cached_menubar_root.as_deref();
         let g = self.scene_graph();
@@ -46,15 +55,31 @@ impl Engine {
                         .map(|n| node_visible_or_menu(n, window_rect, menubar))
                         .unwrap_or(false)
             })
+            .filter(|a| {
+                g.get(&a.id)
+                    .map(|n| node_matches_scope(g, n, window_rect, menubar, scope))
+                    .unwrap_or(false)
+            })
             .map(|a| a.id.clone())
             .collect()
     }
 
     /// WP-J/J2: the affordance graph as JSON, latent nodes omitted unless
     /// `include_latent`. Shape matches [`AffordanceGraph`] (`{ "affordances": … }`).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "compatibility wrapper for tests and internal callers; MCP uses the scoped variant"
+        )
+    )]
     pub fn affordances_view(&self, include_latent: bool) -> Value {
+        self.affordances_view_scoped(include_latent, "all")
+    }
+
+    pub fn affordances_view_scoped(&self, include_latent: bool, scope: &str) -> Value {
         let ag = self.affordance_graph();
-        if include_latent {
+        if include_latent && scope == "all" {
             return serde_json::to_value(ag).unwrap_or(Value::Null);
         }
         let window_rect = self.cached_window_rect;
@@ -62,10 +87,10 @@ impl Engine {
         let g = self.scene_graph();
         let mut map = serde_json::Map::new();
         for (id, aff) in &ag.affordances {
-            if g.get(id)
-                .map(|n| node_visible_or_menu(n, window_rect, menubar))
-                .unwrap_or(false)
-            {
+            if g.get(id).is_some_and(|n| {
+                (include_latent || node_visible_or_menu(n, window_rect, menubar))
+                    && node_matches_scope(g, n, window_rect, menubar, scope)
+            }) {
                 map.insert(id.clone(), serde_json::to_value(aff).unwrap_or(Value::Null));
             }
         }
@@ -288,6 +313,7 @@ impl Engine {
             title: g.window.title.clone(),
             url,
             browser_tab,
+            target_visibility: self.target_visibility(),
             visible_text,
             key_elements,
         }
@@ -443,5 +469,20 @@ impl Engine {
     #[cfg(not(target_os = "macos"))]
     pub(super) fn display_for_window(&self, _window: Bbox) -> Option<DisplaySummary> {
         None
+    }
+}
+
+fn node_matches_scope(
+    graph: &SceneGraph,
+    node: &SceneNode,
+    window_rect: Option<Bbox>,
+    menubar: Option<&str>,
+    scope: &str,
+) -> bool {
+    match scope {
+        "all" | "" => true,
+        "page" => !read_chrome_node(graph, node, window_rect, menubar),
+        "browser_chrome" | "chrome" => read_chrome_node(graph, node, window_rect, menubar),
+        _ => true,
     }
 }

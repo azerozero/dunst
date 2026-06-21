@@ -19,7 +19,10 @@ mod response;
 mod tools;
 
 use dispatch::handle_tool_call;
-use response::{add_timing_meta, audit_entry_value, diff_summary_value, option_pick_value};
+use response::{
+    add_timing_meta, audit_entry_value, diff_summary_value, modal_dismiss_value, ocr_click_value,
+    option_pick_value,
+};
 use tools::tools_list;
 
 use crate::engine::{Engine, SceneView};

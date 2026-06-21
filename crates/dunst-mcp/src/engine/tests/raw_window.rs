@@ -159,6 +159,63 @@ fn desktop_view_renumbers_z_order_after_filtering() {
 }
 
 #[test]
+fn target_visibility_reports_covered_window_and_hint() {
+    let front = DesktopWindow {
+        window_id: 1,
+        pid: 10,
+        app: "Firefox".into(),
+        title: "Google".into(),
+        bounds: Bbox {
+            x: 0.0,
+            y: 0.0,
+            w: 500.0,
+            h: 500.0,
+        },
+        on_screen: true,
+        z_order: 0,
+        is_frontmost: false,
+        display: None,
+        covered_by: Vec::new(),
+        covers: Vec::new(),
+    };
+    let target = DesktopWindow {
+        window_id: 2,
+        pid: 20,
+        app: "Firefox".into(),
+        title: "Uber Eats".into(),
+        bounds: Bbox {
+            x: 50.0,
+            y: 50.0,
+            w: 500.0,
+            h: 500.0,
+        },
+        on_screen: true,
+        z_order: 1,
+        is_frontmost: false,
+        display: None,
+        covered_by: Vec::new(),
+        covers: Vec::new(),
+    };
+    let view = desktop_view_from_windows(Vec::new(), vec![target, front], None);
+    let visibility = target_visibility_from_desktop(
+        2,
+        "Uber Eats".into(),
+        Bbox {
+            x: 50.0,
+            y: 50.0,
+            w: 500.0,
+            h: 500.0,
+        },
+        &view,
+    );
+
+    assert_eq!(visibility.status, "covered");
+    assert_eq!(visibility.covered_by[0].window_id, 1);
+    assert!(visibility.visible_fraction < 1.0);
+    assert!(visibility.fallback_hint.is_some());
+}
+
+#[test]
 fn raw_point_risk_flags_possible_backdrop_clicks() {
     let (eng, _) = engine_with_counter();
     let risk = eng.raw_point_risk(10_000.0, 10_000.0);

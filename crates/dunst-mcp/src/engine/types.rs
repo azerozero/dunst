@@ -37,6 +37,135 @@ pub struct TextHit {
     pub confidence: f32,
 }
 
+/// OCR output plus the window/topology context needed to decide whether the
+/// pixels can be trusted for visible-screen interaction.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReadTextResult {
+    pub target: TargetState,
+    pub window: Bbox,
+    pub target_visibility: TargetVisibility,
+    pub content_only: bool,
+    pub content_region: Option<Bbox>,
+    pub hits: Vec<TextHit>,
+    pub all_hits: Vec<TextHit>,
+    pub warnings: Vec<String>,
+    pub recommended_next_steps: Vec<String>,
+}
+
+/// Visibility/topology snapshot for the current target window.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TargetVisibility {
+    pub target_window_id: u32,
+    pub target_title: String,
+    pub found_in_desktop: bool,
+    pub degraded: bool,
+    pub reason: Option<String>,
+    pub is_frontmost: bool,
+    pub covered_by: Vec<DesktopWindow>,
+    pub covers: Vec<u32>,
+    pub visible_fraction: f64,
+    pub status: String,
+    pub warnings: Vec<String>,
+    pub fallback_hint: Option<String>,
+}
+
+/// A recognized OCR text target suitable for element-free navigation.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OcrTextHit {
+    pub id: String,
+    pub text: String,
+    pub bbox: Bbox,
+    pub confidence: f32,
+    pub center: (f64, f64),
+    pub score: f64,
+}
+
+/// Structured text targets from OCR, with the same visibility diagnostics as
+/// [`ReadTextResult`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OcrTextSearchResult {
+    pub query: String,
+    pub content_only: bool,
+    pub target_visibility: TargetVisibility,
+    pub hits: Vec<OcrTextHit>,
+    pub warnings: Vec<String>,
+    pub recommended_next_steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OcrClickResult {
+    pub query: String,
+    pub hit: OcrTextHit,
+    pub audit: AuditEntry,
+    pub expected_text: Option<String>,
+    pub expected_text_found: Option<bool>,
+    pub verification_hint: Option<String>,
+}
+
+/// OCR-grouped commerce/media card candidate. This is intentionally generic:
+/// Uber Eats, app stores, marketplaces, and search result cards all have the
+/// same operational need: click the card only after its bbox and visible facts
+/// are known.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OcrCard {
+    pub id: String,
+    pub bbox: Bbox,
+    pub title: String,
+    pub lines: Vec<String>,
+    pub rating: Option<String>,
+    pub reviews: Option<String>,
+    pub eta: Option<String>,
+    pub fee: Option<String>,
+    pub promo: Option<String>,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OcrCardsResult {
+    pub target_visibility: TargetVisibility,
+    pub content_region: Option<Bbox>,
+    pub cards: Vec<OcrCard>,
+    pub warnings: Vec<String>,
+    pub recommended_next_steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModalState {
+    pub detected: bool,
+    pub modal_bbox: Option<Bbox>,
+    pub close_candidates: Vec<OcrTextHit>,
+    pub reason: Option<String>,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModalDismissResult {
+    pub modal_before: ModalState,
+    pub clicked: OcrTextHit,
+    pub audit: AuditEntry,
+    pub modal_after: Option<ModalState>,
+    pub dismissed: Option<bool>,
+    pub verification_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExposeTargetWindowResult {
+    pub before: TargetVisibility,
+    pub after: TargetVisibility,
+    pub raise_audit: Option<AuditEntry>,
+    pub raised: bool,
+    pub arranged: bool,
+    pub verification_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScreenshotResult {
+    pub png_base64: String,
+    pub target_visibility: TargetVisibility,
+    pub warnings: Vec<String>,
+    pub recommended_next_steps: Vec<String>,
+}
+
 /// One geometric primitive returned by [`Engine::read_shapes`](super::Engine::read_shapes).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ShapeHit {
@@ -132,6 +261,17 @@ pub struct LaunchAppResult {
     pub verification_hint: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OpenUrlAttachResult {
+    pub launch: LaunchAppResult,
+    pub attached: Option<TargetState>,
+    pub attached_window_title: Option<String>,
+    pub selected_tab: Option<BrowserTab>,
+    pub candidates: Vec<WindowSummary>,
+    pub verified: bool,
+    pub verification_hint: Option<String>,
+}
+
 /// Lightweight page/window state for orientation without a screenshot or full scene graph.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PageState {
@@ -142,6 +282,7 @@ pub struct PageState {
     /// This lets callers detect stale/incoherent browser window titles after
     /// background URL opens or tab switches.
     pub browser_tab: Option<BrowserTab>,
+    pub target_visibility: TargetVisibility,
     pub visible_text: Vec<String>,
     pub key_elements: Vec<KeyElement>,
 }
@@ -212,6 +353,7 @@ pub struct WindowView {
     pub title: String,
     pub url: Option<String>,
     pub browser_tab: Option<BrowserTab>,
+    pub target_visibility: TargetVisibility,
     pub window: Bbox,
     pub display: Option<DisplaySummary>,
     pub window_in_display: Option<Bbox>,

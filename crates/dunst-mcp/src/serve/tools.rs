@@ -108,6 +108,11 @@ fn state_tools() -> Vec<Value> {
             schema(json!({ "all": { "type": "boolean", "description": "include every layer-0 window incl. fragments (default false)" } }), &[]),
         ),
         tool(
+            "target_visibility",
+            "Return whether the attached target window is frontmost, covered, fully covered, or missing from the desktop stack. Use before OCR/screenshot/raw clicks when multiple windows overlap.",
+            json!({}),
+        ),
+        tool(
             "visual_change_probe",
             "Sample a spaced luminance pixel grid over a screen region and compare it with the previous probe for the same region/grid. Can trigger a full AX refresh when pixels changed; AX cannot refresh only a rectangle.",
             schema(
@@ -160,8 +165,8 @@ fn query_tools() -> Vec<Value> {
         ),
         tool(
             "get_affordances",
-            "Return the affordance graph (actions + risk per element). Latent (off-screen / zero-bbox) nodes are omitted unless include_latent is true.",
-            schema(json!({ "include_latent": { "type": "boolean", "description": "include latent/off-screen nodes (default false)" } }), &[]),
+            "Return the affordance graph (actions + risk per element). Latent (off-screen / zero-bbox) nodes are omitted unless include_latent is true. scope can limit results to page or browser_chrome.",
+            schema(json!({ "include_latent": { "type": "boolean", "description": "include latent/off-screen nodes (default false)" }, "scope": { "type": "string", "enum": ["all", "page", "browser_chrome"], "description": "filter browser chrome versus page targets (default all)" } }), &[]),
         ),
         tool(
             "find_element",
@@ -192,7 +197,7 @@ fn query_tools() -> Vec<Value> {
         ),
         tool(
             "read_text",
-            "OCR the target window (or an optional screen-point region x,y,w,h) via Apple Vision; returns recognised text lines with screen bbox + confidence. accurate:true uses the slower, more precise recognition (default fast).",
+            "OCR the target window (or an optional screen-point region x,y,w,h) via Apple Vision; returns recognised text lines with screen bbox + confidence. accurate:true uses the slower, more precise recognition (default fast). content_only:true filters browser chrome/tab-strip noise and low-confidence lines.",
             schema(
                 json!({
                     "region": {
@@ -206,7 +211,30 @@ fn query_tools() -> Vec<Value> {
                         },
                         "required": ["x", "y", "w", "h"]
                     },
-                    "accurate": { "type": "boolean", "description": "slower, higher-accuracy OCR (default false)" }
+                    "accurate": { "type": "boolean", "description": "slower, higher-accuracy OCR (default false)" },
+                    "content_only": { "type": "boolean", "description": "filter browser chrome/tab strip and low-confidence text (default false)" }
+                }),
+                &[],
+            ),
+        ),
+        tool(
+            "read_text_detailed",
+            "OCR with diagnostics: returns target_visibility, warnings, recommended_next_steps, all_hits, and filtered hits. Use this before raw clicks when windows may be covered or browser chrome may pollute OCR.",
+            schema(
+                json!({
+                    "region": {
+                        "type": "object",
+                        "description": "optional screen-point region; omit for the whole window",
+                        "properties": {
+                            "x": { "type": "number" },
+                            "y": { "type": "number" },
+                            "w": { "type": "number" },
+                            "h": { "type": "number" }
+                        },
+                        "required": ["x", "y", "w", "h"]
+                    },
+                    "accurate": { "type": "boolean", "description": "slower, higher-accuracy OCR (default false)" },
+                    "content_only": { "type": "boolean", "description": "filter browser chrome/tab strip and low-confidence text (default false)" }
                 }),
                 &[],
             ),
@@ -217,12 +245,43 @@ fn query_tools() -> Vec<Value> {
             json!({}),
         ),
         tool(
+            "find_ocr_text",
+            "Search target-window OCR for text and return ranked hits with bbox, center point, confidence, target_visibility, and warnings. Use before click_near_text instead of hand-picked coordinates.",
+            schema(
+                json!({
+                    "query": { "type": "string", "description": "text to find in OCR output" },
+                    "content_only": { "type": "boolean", "description": "filter browser chrome/tab strip and low-confidence text (default true)" },
+                    "accurate": { "type": "boolean", "description": "use slower accurate OCR (default true)" },
+                    "limit": { "type": "integer", "description": "max ranked hits, 1-50 (default 20)" }
+                }),
+                &["query"],
+            ),
+        ),
+        tool(
+            "detect_modal",
+            "Detect likely modal/overlay state and safe OCR close/dismiss candidates. Use before clicking behind a popup. If no close candidate is returned, do not guess raw coordinates.",
+            json!({}),
+        ),
+        tool(
+            "extract_ocr_cards",
+            "Group target-window OCR lines into card-like candidates with title, rating/reviews/eta/fee/promo when visible, bbox, and target_visibility. Use for Uber Eats-like grids when AX exposes only a root group.",
+            schema(
+                json!({
+                    "accurate": { "type": "boolean", "description": "use slower accurate OCR (default true)" },
+                    "content_only": { "type": "boolean", "description": "filter browser chrome/tab strip and low-confidence text (default true)" },
+                    "limit": { "type": "integer", "description": "max cards, 1-50 (default 24)" }
+                }),
+                &[],
+            ),
+        ),
+        tool(
             "query_affordances",
-            "List element ids that expose a given semantic action (click|type|hover|open_menu|pick|drag|...). Latent (off-screen / zero-bbox) nodes are omitted unless include_latent is true.",
+            "List element ids that expose a given semantic action (click|type|hover|open_menu|pick|drag|...). Latent (off-screen / zero-bbox) nodes are omitted unless include_latent is true. scope can limit results to page or browser_chrome.",
             schema(
                 json!({
                     "action": { "type": "string", "description": "semantic action" },
-                    "include_latent": { "type": "boolean", "description": "include latent nodes (default false)" }
+                    "include_latent": { "type": "boolean", "description": "include latent nodes (default false)" },
+                    "scope": { "type": "string", "enum": ["all", "page", "browser_chrome"], "description": "filter browser chrome versus page targets (default all)" }
                 }),
                 &["action"],
             ),
@@ -275,8 +334,29 @@ fn element_tools() -> Vec<Value> {
         ),
         tool(
             "click_at",
-            "Click at a raw screen point (x,y) inside the target window. For OCR-driven navigation: read_text a link, then click_at its bbox centre. Raw mutating input is high-risk and requires approval. If pending_approval is not explicitly approved, switch to ui_fallback_hint: map the UI with window_view/get_affordances/find_element, then use click_element/type_into/scroll by id. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1. If the user-active guard blocks it, wait until the operator is idle and retry once.",
-            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
+            "Click at a raw screen point (x,y) inside the target window. Prefer click_near_text or click_element whenever possible. Raw mutating input is high-risk and requires approval. If pending_approval is not explicitly approved, switch to ui_fallback_hint: map the UI with window_view/get_affordances/find_element/find_ocr_text, then use element-bound or OCR-bound actions. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1. If the user-active guard blocks it, wait until the operator is idle and retry once.",
+            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"}, "expected_text": {"type":"string", "description":"optional text expected to be visible after the raw click"}, "include_diff": {"type":"boolean"} }), &["x", "y"]),
+        ),
+        tool(
+            "click_near_text",
+            "OCR the target window, choose a ranked text hit by query, click its bbox centre, and optionally verify expected_text afterward. This is still raw input and approval-gated, but safer than manual click_at because the returned audit includes the OCR hit.",
+            schema(
+                json!({
+                    "query": {"type":"string", "description":"visible OCR text to click"},
+                    "occurrence": {"type":"integer", "description":"1-based ranked hit to click (default 1)"},
+                    "expected_text": {"type":"string", "description":"optional text that should be visible after the click"},
+                    "content_only": {"type":"boolean", "description":"filter browser chrome/tab strip and low-confidence text (default true)"},
+                    "accurate": {"type":"boolean", "description":"use slower accurate OCR (default true)"},
+                    "reasoning": {"type":"string"},
+                    "include_diff": {"type":"boolean"}
+                }),
+                &["query"],
+            ),
+        ),
+        tool(
+            "dismiss_modal",
+            "Safely dismiss a modal only by clicking an OCR-detected close/dismiss candidate. Refuses to click guessed modal corners or backdrop areas. High-risk and approval-gated because it uses raw pointer input.",
+            schema(json!({ "reasoning": {"type":"string"}, "include_diff": {"type":"boolean"} }), &[]),
         ),
         tool(
             "reveal_hover_click",
@@ -389,6 +469,11 @@ fn window_app_tools() -> Vec<Value> {
             ),
         ),
         tool(
+            "expose_target_window",
+            "Try to make the attached target window actually visible, then verify with desktop_view. If the raise action is gated, returns raise_audit with pending_approval; approve that target_id and retry. arrange_if_needed:true may arrange the target plus covering windows in columns after a successful raise.",
+            schema(json!({ "arrange_if_needed": { "type": "boolean", "description": "arrange target plus covering windows if raise leaves it covered (default false)" } }), &[]),
+        ),
+        tool(
             "list_apps",
             "List running GUI apps (those owning a window) — app, pid, windows (count), on_screen — coarser discovery than list_windows: which app to launch_app/attach, and whether it is already running. Optional query filters by case-insensitive name substring (doubles as \"search app\"). Sorted by window count.",
             schema(json!({ "query": { "type": "string", "description": "case-insensitive app-name substring filter (optional)" } }), &[]),
@@ -425,6 +510,11 @@ fn window_app_tools() -> Vec<Value> {
             "launch_app",
             "Launch an app WITHOUT bringing it to the foreground (open -g), optionally opening a url in it. Returns launched plus matching_windows, the current target, and a verification_hint because browsers may reuse another window/tab; after URL opens, call refresh + list_browser_tabs/window_view and attach if needed before acting. args: extra argv passed to the app (only applies when this call actually launches it). To read a Chromium chart in pure background, launch with args [\"--disable-features=CalculateNativeWinOcclusion\",\"--disable-renderer-backgrounding\",\"--disable-background-timer-throttling\",\"--disable-backgrounding-occluded-windows\"] so the <canvas> keeps painting while backgrounded (otherwise scan_chart sees a blank plot).",
             schema(json!({ "app": {"type":"string"}, "url": {"type":"string"}, "args": {"type":"array","items":{"type":"string"},"description":"extra argv for the app (e.g. Chromium background-paint flags)"} }), &["app"]),
+        ),
+        tool(
+            "open_url_and_attach_tab",
+            "Open a URL in an app, then attach Dunst to the best matching browser window and report whether the selected tab/window verifies against the URL. Use this instead of launch_app + manual tab guessing for browser navigation.",
+            schema(json!({ "app": {"type":"string"}, "url": {"type":"string"}, "args": {"type":"array","items":{"type":"string"},"description":"extra argv passed when launching the app"} }), &["app", "url"]),
         ),
         tool(
             "close_app",

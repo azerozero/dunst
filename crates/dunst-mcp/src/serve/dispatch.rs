@@ -31,14 +31,23 @@ pub(super) fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> V
 
 fn screenshot_response(engine: &Engine, id: Value, name: &str, started: Instant) -> Value {
     match engine.screenshot() {
-        Some(b64) => result_obj(
-            id,
-            add_timing_meta(
-                json!({ "content": [{ "type": "image", "data": b64, "mimeType": "image/png" }] }),
-                name,
-                started,
-            ),
-        ),
+        Some(result) => {
+            let mut meta = serde_json::to_value(&result).unwrap_or(Value::Null);
+            if let Value::Object(obj) = &mut meta {
+                obj.remove("png_base64");
+            }
+            result_obj(
+                id,
+                add_timing_meta(
+                    json!({
+                        "content": [{ "type": "image", "data": result.png_base64, "mimeType": "image/png" }],
+                        "diagnostics": meta
+                    }),
+                    name,
+                    started,
+                ),
+            )
+        }
         None => result_obj(
             id,
             add_timing_meta(

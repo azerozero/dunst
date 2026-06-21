@@ -231,6 +231,89 @@ impl Engine {
         }
     }
 
+    /// Open a URL and immediately retarget Dunst to the best matching window.
+    /// This is a conservative helper for browser automation: it does not claim
+    /// success unless the selected tab/window after attach plausibly matches the
+    /// requested URL.
+    #[cfg(target_os = "macos")]
+    pub fn open_url_and_attach_tab(
+        &mut self,
+        app: &str,
+        url: &str,
+        extra_args: &[String],
+    ) -> OpenUrlAttachResult {
+        let launch = self.launch_app(app, Some(url), extra_args);
+        std::thread::sleep(Duration::from_millis(650));
+        let candidates = launch.matching_windows.clone();
+        let terms = url_match_terms(url);
+        let selected = best_window_for_url(&candidates, &terms).or_else(|| {
+            if candidates.len() == 1 {
+                candidates.first().cloned()
+            } else {
+                candidates
+                    .iter()
+                    .find(|window| window.window_id == self.target.window_id)
+                    .cloned()
+            }
+        });
+
+        let mut attached = None;
+        let mut attached_window_title = None;
+        let mut selected_tab = None;
+        let mut verified = false;
+        if let Some(window) = selected {
+            if self.attach_window(window.window_id).is_ok() {
+                let tabs = self.list_browser_tabs(None, true);
+                selected_tab = tabs.into_iter().find(|tab| tab.selected);
+                let title = self.scene_graph().window.title.clone();
+                verified = window_or_tab_matches_terms(&title, selected_tab.as_ref(), &terms);
+                attached_window_title = Some(title);
+                attached = Some(TargetState {
+                    pid: self.target.pid,
+                    window_id: self.target.window_id,
+                    app_name: self.window.app_name.clone(),
+                });
+            }
+        }
+
+        let verification_hint = if verified {
+            None
+        } else if attached.is_some() {
+            Some("URL was opened and a browser window was attached, but the selected tab/window title did not verify against the URL; call list_browser_tabs/window_view before acting.".into())
+        } else {
+            Some("URL was opened but no matching browser window could be attached unambiguously; use list_windows and attach explicitly.".into())
+        };
+
+        OpenUrlAttachResult {
+            launch,
+            attached,
+            attached_window_title,
+            selected_tab,
+            candidates,
+            verified,
+            verification_hint,
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn open_url_and_attach_tab(
+        &mut self,
+        app: &str,
+        url: &str,
+        extra_args: &[String],
+    ) -> OpenUrlAttachResult {
+        let launch = self.launch_app(app, Some(url), extra_args);
+        OpenUrlAttachResult {
+            candidates: launch.matching_windows.clone(),
+            launch,
+            attached: None,
+            attached_window_title: None,
+            selected_tab: None,
+            verified: false,
+            verification_hint: Some("open_url_and_attach_tab requires a macOS backend".into()),
+        }
+    }
+
     /// Quit an app gracefully (no foreground) by name.
     #[cfg(target_os = "macos")]
     pub fn close_app(&self, app: &str) -> bool {
@@ -254,4 +337,53 @@ impl Engine {
     pub fn close_app(&self, _app: &str) -> bool {
         false
     }
+}
+
+fn url_match_terms(url: &str) -> Vec<String> {
+    let normalized = normalize_match(url);
+    let mut terms = Vec::new();
+    if let Some(host) = normalized
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+    {
+        terms.push(host.trim_start_matches("www.").to_string());
+    }
+    for token in normalized
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| token.len() >= 4)
+        .take(8)
+    {
+        if !terms.iter().any(|term| term == token) {
+            terms.push(token.to_string());
+        }
+    }
+    terms
+}
+
+fn best_window_for_url(windows: &[WindowSummary], terms: &[String]) -> Option<WindowSummary> {
+    windows
+        .iter()
+        .filter(|window| {
+            let title = normalize_match(&window.title);
+            terms.iter().any(|term| title.contains(term))
+        })
+        .min_by_key(|window| window.window_id)
+        .cloned()
+}
+
+fn window_or_tab_matches_terms(
+    window_title: &str,
+    selected_tab: Option<&BrowserTab>,
+    terms: &[String],
+) -> bool {
+    let window = normalize_match(window_title);
+    let tab = selected_tab
+        .map(|tab| normalize_match(&tab.title))
+        .unwrap_or_default();
+    terms
+        .iter()
+        .any(|term| window.contains(term) || tab.contains(term))
 }

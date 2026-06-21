@@ -67,12 +67,32 @@ page-level pseudo scroll targets remain open.
   state changes but the page graph remains the previous view, surface that as a
   targeting problem instead of continuing raw probing.
 
-Status: partial. `AXComboBox`/`AXSearchField` browser fields now map to
-typeable text fields, fixing Google/address-bar `type_into` failures.
-`window_view` and `page_state` expose the selected browser tab, and `launch_app`
-returns matching windows plus a verification hint. Explicit tab selection now
-wins over stale window-title matching. A fully atomic `open_url_and_attach_tab`
-flow remains open.
+Status: implemented for the transcript failures. `AXComboBox`/`AXSearchField`
+browser fields now map to typeable text fields, fixing Google/address-bar
+`type_into` failures. `window_view` and `page_state` expose the selected browser
+tab plus `target_visibility`; `get_affordances` and `query_affordances` accept
+`scope=page|browser_chrome|all`; `launch_app` returns matching windows plus a
+verification hint. Explicit tab selection now wins over stale window-title
+matching. `open_url_and_attach_tab` opens a URL, picks a candidate browser
+window, attaches, and reports whether the selected tab/window verifies against
+the URL.
+
+## P1 - Covered Windows And Visual Trust
+
+- Before trusting OCR, screenshots, or borrowed-cursor reads, report whether the
+  target is frontmost, visible, covered, fully covered, or missing from the
+  desktop stack.
+- Add a targeted exposure flow that raises only the target window, verifies the
+  result with `desktop_view`, and optionally arranges the target plus covering
+  windows.
+- Make raw pointer risk reasons include covering-window ids so approval text
+  explains why a visible coordinate is fragile.
+- Refuse borrowed-cursor screen reads when the target is covered; they read
+  composited display pixels, not a background target capture.
+
+Status: implemented. `target_visibility`, `read_text_detailed`, `screenshot`
+diagnostics, and `expose_target_window` now expose coverage state. `read_at` and
+`read_series(borrow_cursor=true)` fail clearly when the target is covered.
 
 ## P1 - Engine And Approval Architecture
 
@@ -99,6 +119,17 @@ from reusable raw approval scopes.
   confidence, and bbox in one ranked list.
 - When AX says a target exists but OCR/screenshot do not confirm it, report a
   stale or chrome-only state instead of asking the agent to keep probing.
+- For card grids such as Uber Eats, group OCR lines into card candidates with
+  title, rating/reviews, ETA, delivery fee, promo, and bbox.
+- Detect modal overlays and close only recognized close/dismiss candidates
+  instead of guessing top-right/backdrop coordinates.
+
+Status: partial but usable. `find_ocr_text` returns ranked OCR hits with bbox and
+target-visibility diagnostics; `click_near_text` clicks the selected OCR hit and
+can verify expected text afterward. `extract_ocr_cards` groups OCR text into
+card-like candidates. `detect_modal` and `dismiss_modal` provide a conservative
+modal path: if no close/dismiss text is recognized, the tool refuses to guess.
+The combined AX/OCR ranked search remains open.
 
 ## P2 - Agent Playbook
 
@@ -109,6 +140,12 @@ from reusable raw approval scopes.
   unsuccessful path.
 - Batch simple text-editing operations and verify the visible field after the
   batch before saving.
+- Prefer `target_visibility`/`expose_target_window` before OCR or raw pointer
+  actions when multiple windows overlap.
+- Prefer `read_text_detailed(content_only=true)`, `find_ocr_text`,
+  `click_near_text`, and `extract_ocr_cards` for web UIs with empty AX trees.
+- Use `detect_modal`/`dismiss_modal` before clicking behind a popup; do not
+  click guessed modal corners or grey backdrops.
 
 ## P2 - Documentation, CI, And Repo Gates
 

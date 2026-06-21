@@ -7,14 +7,52 @@ pub(super) fn dispatch(
 ) -> Option<Result<Value, String>> {
     Some(match name {
         "click_at" => match point(args) {
-            Some((x, y)) => engine
-                .click_at(x, y)
-                .map(|entry| {
-                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
-                })
-                .map_err(|e| e.to_string()),
+            Some((x, y)) => match engine.click_at(x, y) {
+                Ok(entry) => {
+                    let include_diff = arg_bool(args, "include_diff").unwrap_or(false);
+                    let expected = arg(args, "expected_text");
+                    if let Some(expected) = expected {
+                        let found = raw_expected_text_found(engine, &expected);
+                        Ok(json!({
+                            "audit": audit_entry_value(entry, include_diff),
+                            "expected_text": expected,
+                            "expected_text_found": found,
+                            "verification_hint": if found {
+                                Value::Null
+                            } else {
+                                json!("Raw click completed, but expected_text was not visible afterward; treat it as semantically unverified.")
+                            }
+                        }))
+                    } else {
+                        Ok(audit_entry_value(entry, include_diff))
+                    }
+                }
+                Err(err) => Err(err.to_string()),
+            },
             None => Err("click_at requires numeric 'x' and 'y'".into()),
         },
+        "click_near_text" => match arg(args, "query") {
+            Some(query) => engine
+                .click_near_text(
+                    &query,
+                    arg_bool(args, "content_only").unwrap_or(true),
+                    arg_bool(args, "accurate").unwrap_or(true),
+                    args.get("occurrence").and_then(Value::as_u64).unwrap_or(1) as usize,
+                    arg(args, "expected_text").as_deref(),
+                    arg(args, "reasoning").as_deref(),
+                )
+                .map(|result| {
+                    ocr_click_value(result, arg_bool(args, "include_diff").unwrap_or(false))
+                })
+                .map_err(|e| e.to_string()),
+            None => Err("click_near_text requires 'query'".into()),
+        },
+        "dismiss_modal" => engine
+            .dismiss_modal(arg(args, "reasoning").as_deref())
+            .map(|result| {
+                modal_dismiss_value(result, arg_bool(args, "include_diff").unwrap_or(false))
+            })
+            .map_err(|e| e.to_string()),
         "reveal_hover_click" => match (point(args), arg(args, "query")) {
             (Some((x, y)), Some(query)) => engine
                 .reveal_hover_click(
@@ -118,4 +156,17 @@ fn point(args: &Value) -> Option<(f64, f64)> {
         args.get("x").and_then(Value::as_f64)?,
         args.get("y").and_then(Value::as_f64)?,
     ))
+}
+
+fn raw_expected_text_found(engine: &Engine, expected: &str) -> bool {
+    let needle = expected.to_lowercase();
+    engine
+        .read_text_detailed(None, true, true)
+        .map(|result| {
+            result
+                .hits
+                .iter()
+                .any(|hit| hit.text.to_lowercase().contains(&needle))
+        })
+        .unwrap_or(false)
 }

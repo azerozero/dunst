@@ -36,13 +36,15 @@ fn dispatch_state_tools(
             }
         }
         "list_displays" => Ok(serde_json::to_value(engine.list_displays()).unwrap_or(Value::Null)),
-        "get_affordances" => {
-            Ok(engine.affordances_view(arg_bool(args, "include_latent").unwrap_or(false)))
-        }
+        "get_affordances" => Ok(engine.affordances_view_scoped(
+            arg_bool(args, "include_latent").unwrap_or(false),
+            arg(args, "scope").as_deref().unwrap_or("all"),
+        )),
         "query_affordances" => match arg(args, "action").as_deref().and_then(parse_action) {
-            Some(action) => Ok(json!(engine.query_affordances_filtered(
+            Some(action) => Ok(json!(engine.query_affordances_scoped(
                 action,
-                arg_bool(args, "include_latent").unwrap_or(false)
+                arg_bool(args, "include_latent").unwrap_or(false),
+                arg(args, "scope").as_deref().unwrap_or("all"),
             ))),
             None => Err("missing/invalid 'action'".into()),
         },
@@ -124,6 +126,9 @@ fn dispatch_snapshot_tools(
             engine.desktop_view(arg_bool(args, "all").unwrap_or(false)),
         )
         .unwrap_or(Value::Null)),
+        "target_visibility" => {
+            Ok(serde_json::to_value(engine.target_visibility()).unwrap_or(Value::Null))
+        }
         "find_element" => match arg(args, "query") {
             Some(query) => find_element_value(
                 engine,
@@ -193,13 +198,55 @@ fn dispatch_vision_tools(
                 Err(err) => return Some(Err(err)),
             };
             engine
-                .read_text(region, arg_bool(args, "accurate").unwrap_or(false))
+                .read_text_detailed(
+                    region,
+                    arg_bool(args, "accurate").unwrap_or(false),
+                    arg_bool(args, "content_only").unwrap_or(false),
+                )
+                .map(|result| serde_json::to_value(result.hits).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string())
+        }
+        "read_text_detailed" => {
+            let region = match parse_region(args) {
+                Ok(region) => region,
+                Err(err) => return Some(Err(err)),
+            };
+            engine
+                .read_text_detailed(
+                    region,
+                    arg_bool(args, "accurate").unwrap_or(false),
+                    arg_bool(args, "content_only").unwrap_or(false),
+                )
                 .map(|hits| serde_json::to_value(hits).unwrap_or(Value::Null))
                 .map_err(|e| e.to_string())
         }
         "read_shapes" => engine
             .read_shapes()
             .map(|shapes| serde_json::to_value(shapes).unwrap_or(Value::Null))
+            .map_err(|e| e.to_string()),
+        "find_ocr_text" => match arg(args, "query") {
+            Some(query) => engine
+                .find_ocr_text(
+                    &query,
+                    arg_bool(args, "content_only").unwrap_or(true),
+                    arg_bool(args, "accurate").unwrap_or(true),
+                    args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize,
+                )
+                .map(|result| serde_json::to_value(result).unwrap_or(Value::Null))
+                .map_err(|e| e.to_string()),
+            None => Err("find_ocr_text requires 'query'".into()),
+        },
+        "detect_modal" => engine
+            .detect_modal()
+            .map(|result| serde_json::to_value(result).unwrap_or(Value::Null))
+            .map_err(|e| e.to_string()),
+        "extract_ocr_cards" => engine
+            .extract_ocr_cards(
+                arg_bool(args, "accurate").unwrap_or(true),
+                arg_bool(args, "content_only").unwrap_or(true),
+                args.get("limit").and_then(Value::as_u64).unwrap_or(24) as usize,
+            )
+            .map(|result| serde_json::to_value(result).unwrap_or(Value::Null))
             .map_err(|e| e.to_string()),
         "read_at" => match (
             args.get("x").and_then(Value::as_f64),
