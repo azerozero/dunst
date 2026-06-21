@@ -1,6 +1,6 @@
 # Plan de passage POC → CLI distribuable
 
-Date : 2026-06-14  
+Date : 2026-06-14
 Projet : `dunst-mcp` / `dunst-mcp`
 
 ## Contexte

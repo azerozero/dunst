@@ -1,0 +1,92 @@
+fail_fast = true
+default_install_hook_types = ["pre-commit", "pre-push"]
+
+# Builtin fast hooks: Rust-native, no network, no environment bootstrap.
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "check-toml" },
+  { id = "check-yaml", args = ["--allow-multiple-documents"] },
+  { id = "check-merge-conflict" },
+  { id = "mixed-line-ending", args = ["--fix", "lf"] },
+]
+
+[[repos]]
+repo = "local"
+
+# Secret scan staged changes before they enter history.
+[[repos.hooks]]
+id = "gitleaks"
+name = "gitleaks"
+language = "system"
+entry = "gitleaks protect --staged --no-banner"
+pass_filenames = false
+
+# Rust edit loop.
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt"
+language = "system"
+entry = "cargo fmt --all --"
+types = ["rust"]
+pass_filenames = false
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "cargo clippy"
+language = "system"
+entry = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+types = ["rust"]
+pass_filenames = false
+
+# Shell wrappers are part of the MCP entrypoint surface.
+[[repos.hooks]]
+id = "shellcheck"
+name = "shellcheck"
+language = "system"
+entry = "sh"
+args = ["-c", "shellcheck scripts/*.sh"]
+types = ["shell"]
+pass_filenames = false
+
+# Grob-style local docs gate: offline links before CI checks Markdown shape and
+# online links.
+[[repos.hooks]]
+id = "lychee-offline"
+name = "lychee (offline link check)"
+language = "system"
+entry = "sh"
+args = ["-c", "lychee --offline --no-progress --include-fragments docs/**/*.md README.md"]
+types = ["markdown"]
+pass_filenames = false
+
+# Heavier checks run on push. Dunst's test suite is still short enough to keep
+# this useful locally; CI repeats it on macOS and Linux.
+[[repos.hooks]]
+id = "cargo-test"
+name = "cargo test"
+language = "system"
+entry = "cargo test --workspace --all-targets --locked"
+always_run = true
+pass_filenames = false
+stages = ["pre-push"]
+
+[[repos.hooks]]
+id = "cargo-audit"
+name = "cargo audit"
+language = "system"
+entry = "cargo audit"
+always_run = true
+pass_filenames = false
+stages = ["pre-push"]
+
+[[repos.hooks]]
+id = "cargo-machete"
+name = "cargo machete"
+language = "system"
+entry = "cargo machete"
+always_run = true
+pass_filenames = false
+stages = ["pre-push"]

@@ -226,6 +226,18 @@ cargo test --workspace --all-targets --locked
 shellcheck scripts/*.sh
 ```
 
+Install local Git hooks with [prek](https://github.com/j178/prek):
+
+```bash
+brew install j178/tap/prek
+prek install
+```
+
+The hooks run `cargo fmt`, `clippy`, `shellcheck`, `gitleaks`, and
+offline `lychee` before commits. Heavier checks (`cargo test`,
+`cargo audit`, `cargo machete`) run before pushes. CI runs the online
+Markdown and link checks.
+
 Live smoke is macOS-only and requires Accessibility permission:
 
 ```bash

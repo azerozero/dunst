@@ -2,8 +2,8 @@
 
 # AUDIT platform — visualops-platform + risk gate
 
-Date: 2026-06-09  
-Scope: `crates/visualops-platform` en profondeur, passe transverse sur `crates/visualops-mcp/src/engine.rs::act`.  
+Date: 2026-06-09
+Scope: `crates/visualops-platform` en profondeur, passe transverse sur `crates/visualops-mcp/src/engine.rs::act`.
 Mode: audit uniquement, aucun correctif appliqué.
 
 ## Findings priorisés
