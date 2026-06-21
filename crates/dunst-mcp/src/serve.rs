@@ -290,12 +290,23 @@ fn wait_for_text_stable_value(
         let stable_for = last_change.elapsed();
         let stable = stable_for >= stable_window;
         if stable || elapsed >= timeout {
+            let empty = snippets.is_empty();
+            let diagnostic = if empty && visible_only {
+                Some("no visible AX text snippets matched; the target may be browser chrome, canvas-rendered, stale, or hidden from accessibility")
+            } else if empty {
+                Some("no AX text snippets matched; the target may be canvas-rendered, stale, or hidden from accessibility")
+            } else {
+                None
+            };
             return Ok(json!({
                 "stable": stable,
                 "elapsed_ms": elapsed.as_millis() as u64,
                 "stable_for_ms": stable_for.as_millis() as u64,
                 "visible_only": visible_only,
                 "query": query,
+                "empty": empty,
+                "diagnostic": diagnostic,
+                "fallback_hint": empty.then_some("use window_view/list_browser_tabs to confirm target scope, then read_text or screenshot for pixel/OCR verification"),
                 "snippets": snippets,
             }));
         }

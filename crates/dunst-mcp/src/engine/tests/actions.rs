@@ -207,6 +207,46 @@ fn type_into_waits_for_ax_value_to_settle() {
 }
 
 #[test]
+fn type_into_supports_browser_combobox_fields() {
+    let expected = "Wok THAi Brest avis Google";
+    let window = |value: &str| {
+        raw_node(
+            "AXWindow",
+            Some("Recherche Google"),
+            None,
+            test_bbox(0.0, 0.0, 1200.0, 800.0),
+            &[],
+            vec![raw_node(
+                "AXComboBox",
+                Some("Rech."),
+                Some(value),
+                test_bbox(231.0, 144.5, 658.0, 50.0),
+                &["press", "showmenu"],
+                vec![],
+            )],
+        )
+    };
+    let (mut eng, calls) = engine_from_sequence(
+        vec![vec![window("qwen3.6")], vec![window(expected)]],
+        "Firefox",
+        "Google",
+    );
+    let field = id_for(&eng, "Rech.");
+
+    assert!(
+        eng.query_affordances_filtered(SemanticAction::Type, false)
+            .contains(&field),
+        "browser AXComboBox fields should expose a stable type affordance"
+    );
+    let entry = eng
+        .type_into(&field, expected, Some("replace Google query"))
+        .unwrap();
+
+    assert_eq!(entry.result, ActionResult::Success);
+    assert_eq!(calls.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn high_risk_click_is_gated_then_approved() {
     let (mut eng, calls) = engine_with_counter();
     let id = id_for(&eng, "Supprimer");

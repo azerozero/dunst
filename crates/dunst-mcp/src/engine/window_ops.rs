@@ -48,6 +48,7 @@ impl Engine {
             target: page.target,
             title: page.title,
             url: page.url,
+            browser_tab: page.browser_tab,
             window,
             display,
             window_in_display,

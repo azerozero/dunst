@@ -34,6 +34,23 @@ struct CheckboxExpectation {
     before_value: Option<String>,
 }
 
+struct PreparedAction {
+    node: SceneNode,
+    source_risk: RiskAssessment,
+}
+
+struct ActionGate {
+    effective: RiskAssessment,
+    gated_ids: Vec<String>,
+    approved: bool,
+}
+
+#[derive(Clone, Debug)]
+struct PostActionExpectations {
+    removal: Option<RemovalExpectation>,
+    checkbox: Option<CheckboxExpectation>,
+}
+
 impl Engine {
     /// Compute an action's **effective risk** and the set of ids whose approval
     /// clears its gate. Folds a composite drag's drop target (audit #3), a
@@ -138,83 +155,133 @@ impl Engine {
         reasoning: Option<&str>,
         co_target: Option<CoTarget>,
     ) -> dunst_core::Result<AuditEntry> {
+        let prepared = self.prepare_action(id, action)?;
+        let gate = self.evaluate_action_gate(
+            id,
+            action,
+            argument,
+            &prepared.source_risk,
+            co_target.as_ref(),
+        );
+        let base = action_audit_entry(id, action, argument, reasoning, gate.effective.clone());
+
+        if self.pending_action_if_gated(&gate, &base).is_some() {
+            return Ok(self.push_entry(base));
+        }
+
+        let expectations = action_expectations(action, &prepared.node, self.scene_graph());
+        let executor_result = self.execute_prepared_action(&prepared.node, action, argument);
+        self.consume_element_approvals(&gate.gated_ids, &executor_result);
+        let _ = self.refresh();
+        let graph_diff = self.diff_since();
+        let (result, graph_diff) = self.verify_action_result(
+            id,
+            action,
+            argument,
+            executor_result,
+            graph_diff,
+            expectations,
+        );
+
+        Ok(self.push_entry(AuditEntry {
+            result,
+            graph_diff,
+            ..base
+        }))
+    }
+
+    fn prepare_action(
+        &self,
+        id: &str,
+        action: SemanticAction,
+    ) -> dunst_core::Result<PreparedAction> {
         let node = self
             .scene_graph()
             .get(id)
             .cloned()
             .ok_or_else(|| VisualOpsError::ElementNotFound(id.into()))?;
-        // Read the source affordance once and drop the borrow before we mutate.
-        let source_risk = {
-            let aff = self
-                .affordance_graph()
-                .affordances
-                .get(id)
-                .ok_or_else(|| VisualOpsError::ElementNotFound(id.into()))?;
-            if !aff.actions.contains(&action) {
-                return Err(VisualOpsError::ActionUnavailable {
-                    id: id.into(),
-                    action: format!("{action:?}"),
-                });
-            }
-            aff.risk.clone()
-        };
+        let aff = self
+            .affordance_graph()
+            .affordances
+            .get(id)
+            .ok_or_else(|| VisualOpsError::ElementNotFound(id.into()))?;
+        if !aff.actions.contains(&action) {
+            return Err(VisualOpsError::ActionUnavailable {
+                id: id.into(),
+                action: format!("{action:?}"),
+            });
+        }
+        Ok(PreparedAction {
+            node,
+            source_risk: aff.risk.clone(),
+        })
+    }
 
-        // Risk: fold in a composite drag target (#3) and a destructive typed
-        // payload (#13). `effective.requires_approval` decides the gate; `gated_ids`
-        // names the participants whose approval clears it.
+    fn evaluate_action_gate(
+        &self,
+        id: &str,
+        action: SemanticAction,
+        argument: Option<&str>,
+        source_risk: &RiskAssessment,
+        co_target: Option<&CoTarget>,
+    ) -> ActionGate {
         let (effective, gated_ids) =
-            self.effective_risk(id, action, argument, &source_risk, co_target.as_ref());
-        // A gate with no nameable participant must NOT pass vacuously: require a
-        // non-empty, fully-approved set. (When `effective.requires_approval` is
-        // true, `gated_ids` is always non-empty by construction in `effective_risk`.)
+            self.effective_risk(id, action, argument, source_risk, co_target);
+        // A gate with no nameable participant must not pass vacuously: require a
+        // non-empty, fully-approved set.
         let approved =
             !gated_ids.is_empty() && gated_ids.iter().all(|g| self.approvals.contains(g));
-
-        // Build the audit record once; the two outcome paths only differ in
-        // `result` and `graph_diff` (applied via struct update below).
-        let base = AuditEntry {
-            ts_ms: dunst_core::now_ms(),
-            target_id: id.to_string(),
-            action,
-            argument: argument.map(str::to_owned),
-            risk: effective.clone(),
-            reasoning: reasoning.map(str::to_owned),
-            result: ActionResult::PendingApproval,
-            graph_diff: GraphDiff::default(),
-        };
-
-        // Gate: high-risk actions need prior approval. Note the executor is
-        // never invoked on this path. Record the gated participants so a later
-        // `approve` can authorise a contextually-gated id (audit #13).
-        if effective.requires_approval && !approved {
-            for g in &gated_ids {
-                self.pending_gate_ids.insert(g.clone());
-            }
-            return Ok(self.push_entry(base));
+        ActionGate {
+            effective,
+            gated_ids,
+            approved,
         }
+    }
 
-        let removal_expectation = removal_expectation(action, &node, self.scene_graph());
-        let checkbox_expectation = checkbox_expectation(action, &node);
+    fn pending_action_if_gated(&mut self, gate: &ActionGate, base: &AuditEntry) -> Option<()> {
+        if !gate.effective.requires_approval || gate.approved {
+            return None;
+        }
+        for g in &gate.gated_ids {
+            self.pending_gate_ids.insert(g.clone());
+        }
+        debug_assert_eq!(base.result, ActionResult::PendingApproval);
+        Some(())
+    }
 
-        // Execute, then re-perceive and diff.
-        let executor_result = match retry_user_active_guard(|| {
-            self.executor.perform(&self.target, &node, action, argument)
+    fn execute_prepared_action(
+        &self,
+        node: &SceneNode,
+        action: SemanticAction,
+        argument: Option<&str>,
+    ) -> ActionResult {
+        match retry_user_active_guard(|| {
+            self.executor.perform(&self.target, node, action, argument)
         }) {
             Ok(()) => ActionResult::Success,
             Err(_) => ActionResult::Failed,
-        };
-        // One-shot consumption (audit #2): a grant authorises exactly one
-        // successful action; drop it (and clear any pending-gate marker) so a
-        // repeat re-gates. (`refresh` below also clears all grants — this keeps
-        // the semantics explicit and independent of refresh ordering.)
-        if executor_result == ActionResult::Success {
-            for g in &gated_ids {
-                self.approvals.remove(g);
-                self.pending_gate_ids.remove(g);
-            }
         }
-        let _ = self.refresh();
-        let mut graph_diff = self.diff_since();
+    }
+
+    fn consume_element_approvals(&mut self, gated_ids: &[String], result: &ActionResult) {
+        if *result != ActionResult::Success {
+            return;
+        }
+        for g in gated_ids {
+            self.approvals.remove(g);
+            self.pending_gate_ids.remove(g);
+        }
+    }
+
+    fn verify_action_result(
+        &mut self,
+        id: &str,
+        action: SemanticAction,
+        argument: Option<&str>,
+        executor_result: ActionResult,
+        mut graph_diff: GraphDiff,
+        expectations: PostActionExpectations,
+    ) -> (ActionResult, GraphDiff) {
         let mut result = verified_action_result(
             &executor_result,
             action,
@@ -225,67 +292,129 @@ impl Engine {
         );
         if executor_result == ActionResult::Success
             && result == ActionResult::Success
-            && removal_expectation.as_ref().is_some_and(|expectation| {
+            && expectations.removal.as_ref().is_some_and(|expectation| {
                 !removal_expectation_satisfied(expectation, &graph_diff, self.scene_graph())
             })
         {
             result = ActionResult::Failed;
         }
-        if executor_result == ActionResult::Success
-            && result == ActionResult::Success
-            && checkbox_expectation.as_ref().is_some_and(|expectation| {
+        self.verify_checkbox_expectation(
+            &executor_result,
+            &mut result,
+            &mut graph_diff,
+            expectations.checkbox.as_ref(),
+        );
+        self.verify_type_settle(
+            id,
+            action,
+            argument,
+            &executor_result,
+            &mut result,
+            &mut graph_diff,
+        );
+        (result, graph_diff)
+    }
+
+    fn verify_checkbox_expectation(
+        &mut self,
+        executor_result: &ActionResult,
+        result: &mut ActionResult,
+        graph_diff: &mut GraphDiff,
+        expectation: Option<&CheckboxExpectation>,
+    ) {
+        if *executor_result != ActionResult::Success
+            || *result != ActionResult::Success
+            || !expectation.is_some_and(|expectation| {
                 !checkbox_expectation_satisfied(expectation, self.scene_graph())
             })
         {
-            let started = Instant::now();
-            while started.elapsed() < CLICK_VERIFY_SETTLE_TIMEOUT {
-                std::thread::sleep(CLICK_VERIFY_POLL_INTERVAL);
-                if self.refresh().is_err() {
-                    break;
-                }
-                graph_diff = self.diff_since();
-                if checkbox_expectation.as_ref().is_some_and(|expectation| {
-                    checkbox_expectation_satisfied(expectation, self.scene_graph())
-                }) {
-                    break;
-                }
+            return;
+        }
+        let started = Instant::now();
+        while started.elapsed() < CLICK_VERIFY_SETTLE_TIMEOUT {
+            std::thread::sleep(CLICK_VERIFY_POLL_INTERVAL);
+            if self.refresh().is_err() {
+                break;
             }
-            if checkbox_expectation.as_ref().is_some_and(|expectation| {
-                !checkbox_expectation_satisfied(expectation, self.scene_graph())
+            *graph_diff = self.diff_since();
+            if expectation.is_some_and(|expectation| {
+                checkbox_expectation_satisfied(expectation, self.scene_graph())
             }) {
-                result = ActionResult::Failed;
+                break;
             }
         }
-        if executor_result == ActionResult::Success
-            && result == ActionResult::Failed
-            && matches!(action, SemanticAction::Type)
-            && argument.is_some_and(|arg| !arg.is_empty())
+        if expectation.is_some_and(|expectation| {
+            !checkbox_expectation_satisfied(expectation, self.scene_graph())
+        }) {
+            *result = ActionResult::Failed;
+        }
+    }
+
+    fn verify_type_settle(
+        &mut self,
+        id: &str,
+        action: SemanticAction,
+        argument: Option<&str>,
+        executor_result: &ActionResult,
+        result: &mut ActionResult,
+        graph_diff: &mut GraphDiff,
+    ) {
+        if *executor_result != ActionResult::Success
+            || *result != ActionResult::Failed
+            || !matches!(action, SemanticAction::Type)
+            || argument.is_none_or(|arg| arg.is_empty())
         {
-            let started = Instant::now();
-            while started.elapsed() < TYPE_VERIFY_SETTLE_TIMEOUT {
-                std::thread::sleep(TYPE_VERIFY_POLL_INTERVAL);
-                if self.refresh().is_err() {
-                    break;
-                }
-                graph_diff = self.diff_since();
-                result = verified_action_result(
-                    &executor_result,
-                    action,
-                    id,
-                    argument,
-                    &graph_diff,
-                    self.scene_graph().get(id),
-                );
-                if result == ActionResult::Success {
-                    break;
-                }
+            return;
+        }
+        let started = Instant::now();
+        while started.elapsed() < TYPE_VERIFY_SETTLE_TIMEOUT {
+            std::thread::sleep(TYPE_VERIFY_POLL_INTERVAL);
+            if self.refresh().is_err() {
+                break;
+            }
+            *graph_diff = self.diff_since();
+            *result = verified_action_result(
+                executor_result,
+                action,
+                id,
+                argument,
+                graph_diff,
+                self.scene_graph().get(id),
+            );
+            if *result == ActionResult::Success {
+                break;
             }
         }
-        Ok(self.push_entry(AuditEntry {
-            result,
-            graph_diff,
-            ..base
-        }))
+    }
+}
+
+fn action_audit_entry(
+    id: &str,
+    action: SemanticAction,
+    argument: Option<&str>,
+    reasoning: Option<&str>,
+    risk: RiskAssessment,
+) -> AuditEntry {
+    AuditEntry {
+        ts_ms: dunst_core::now_ms(),
+        target_id: id.to_string(),
+        action,
+        argument: argument.map(str::to_owned),
+        risk,
+        reasoning: reasoning.map(str::to_owned),
+        result: ActionResult::PendingApproval,
+        graph_diff: GraphDiff::default(),
+    }
+}
+
+fn action_expectations(
+    action: SemanticAction,
+    node: &SceneNode,
+    graph: &SceneGraph,
+) -> PostActionExpectations {
+    PostActionExpectations {
+        removal: removal_expectation(action, node, graph),
+        checkbox: checkbox_expectation(action, node),
     }
 }
 

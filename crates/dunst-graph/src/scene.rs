@@ -21,7 +21,7 @@ pub fn map_role(ax_role: &str) -> Role {
     match ax_role {
         "AXButton" => Role::Button,
         "AXMenuButton" => Role::MenuButton,
-        "AXTextField" => Role::TextField,
+        "AXTextField" | "AXComboBox" | "AXSearchField" => Role::TextField,
         "AXTextArea" => Role::TextArea,
         "AXCheckBox" => Role::Checkbox,
         "AXRadioButton" => Role::Radio,

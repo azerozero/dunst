@@ -193,12 +193,12 @@ fn raw_point_guard_rejects_off_target_points() {
 #[test]
 fn raw_key_approval_allows_short_repeated_same_key_burst() {
     let (mut eng, _) = engine_with_counter();
-    let target_id = "keyboard@press:Backspace";
+    let target_id = raw_press_key_target_id("Backspace", 1);
     let risk = Engine::raw_input_risk(Vec::new());
 
     let first = eng
         .gate_raw_input(
-            target_id,
+            &target_id,
             SemanticAction::KeyPress,
             Some("Backspace".into()),
             Some("raw key press"),
@@ -207,10 +207,10 @@ fn raw_key_approval_allows_short_repeated_same_key_burst() {
         .expect("first keypress should gate");
     assert_eq!(first.result, ActionResult::PendingApproval);
 
-    eng.approve(target_id).unwrap();
+    eng.approve(&target_id).unwrap();
     assert!(
         eng.gate_raw_input(
-            target_id,
+            &target_id,
             SemanticAction::KeyPress,
             Some("Backspace".into()),
             Some("raw key press"),
@@ -221,14 +221,163 @@ fn raw_key_approval_allows_short_repeated_same_key_burst() {
     );
     assert!(
         eng.gate_raw_input(
-            target_id,
+            &raw_press_key_target_id("Backspace", 2),
             SemanticAction::KeyPress,
-            Some("Backspace".into()),
+            Some("Backspace x2".into()),
             Some("raw key press"),
             risk,
         )
         .is_none(),
-        "same key should remain approved for a short burst"
+        "same key should remain approved for a short event budget"
+    );
+}
+
+#[test]
+fn raw_key_approval_does_not_cover_other_keys() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+    let backspace = raw_press_key_target_id("Backspace", 1);
+    let return_key = raw_press_key_target_id("Return", 1);
+
+    eng.pending_gate_ids.insert(backspace.clone());
+    eng.approve(&backspace).unwrap();
+
+    assert!(
+        eng.gate_raw_input(
+            &backspace,
+            SemanticAction::KeyPress,
+            Some("Backspace".into()),
+            Some("raw key press"),
+            risk.clone(),
+        )
+        .is_none(),
+        "approved key should pass"
+    );
+    assert!(
+        eng.gate_raw_input(
+            &return_key,
+            SemanticAction::KeyPress,
+            Some("Return".into()),
+            Some("raw key press"),
+            risk,
+        )
+        .is_some(),
+        "a key-specific raw grant must not cover another key"
+    );
+}
+
+#[test]
+fn raw_type_keys_approval_is_one_shot() {
+    let (mut eng, _) = engine_with_counter();
+    let first_text = "Wok THAi Brest avis Google";
+    let second_text = "Osaka Brest avis Google";
+    let target_id = raw_type_keys_target_id(first_text);
+    let second_target_id = raw_type_keys_target_id(second_text);
+    let risk = Engine::raw_input_risk(Vec::new());
+
+    let first = eng
+        .gate_raw_input(
+            &target_id,
+            SemanticAction::Type,
+            Some(first_text.into()),
+            Some("raw keyboard text into focused element"),
+            risk.clone(),
+        )
+        .expect("first raw type should gate");
+    assert_eq!(first.result, ActionResult::PendingApproval);
+
+    eng.approve(&target_id).unwrap();
+    assert!(
+        eng.gate_raw_input(
+            &second_target_id,
+            SemanticAction::Type,
+            Some(second_text.into()),
+            Some("raw keyboard text into focused element"),
+            risk.clone(),
+        )
+        .is_some(),
+        "approval for one type_keys payload must not cover changed text"
+    );
+    assert!(
+        eng.gate_raw_input(
+            &raw_type_keys_target_id(first_text),
+            SemanticAction::Type,
+            Some(first_text.into()),
+            Some("raw keyboard text into focused element"),
+            risk.clone(),
+        )
+        .is_none(),
+        "approved type_keys should pass once"
+    );
+    assert!(
+        eng.gate_raw_input(
+            &raw_type_keys_target_id(first_text),
+            SemanticAction::Type,
+            Some(first_text.into()),
+            Some("raw keyboard text into focused element"),
+            risk,
+        )
+        .is_some(),
+        "type_keys approval should be consumed after one matching payload"
+    );
+}
+
+#[test]
+fn raw_key_approval_budget_is_event_based() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+    let target_id = raw_press_key_target_id("Backspace", 8);
+
+    eng.pending_gate_ids.insert(target_id.clone());
+    eng.approve(&target_id).unwrap();
+
+    assert!(
+        eng.gate_raw_input(
+            &raw_press_key_target_id("Backspace", 8),
+            SemanticAction::KeyPress,
+            Some("Backspace x8".into()),
+            Some("raw key press"),
+            risk.clone(),
+        )
+        .is_none(),
+        "approval should cover the approved physical key events"
+    );
+    assert!(
+        eng.gate_raw_input(
+            &raw_press_key_target_id("Backspace", 3),
+            SemanticAction::KeyPress,
+            Some("Backspace x3".into()),
+            Some("raw key press"),
+            risk,
+        )
+        .is_some(),
+        "remaining two key events should not cover a three-key repeat"
+    );
+}
+
+#[test]
+fn hover_reveal_success_cleanup_clears_raw_grant() {
+    let (mut eng, _) = engine_with_counter();
+    let target_id = "hover-reveal@120,350:\"Edit\":click";
+    let risk = Engine::raw_input_risk(Vec::new());
+
+    eng.pending_gate_ids.insert(target_id.to_string());
+    eng.approve(target_id).unwrap();
+    assert!(
+        eng.gate_raw_input(
+            target_id,
+            SemanticAction::Click,
+            Some("hover 120,350; click visible \"Edit\"".into()),
+            Some("reveal hover-only control and click it"),
+            risk,
+        )
+        .is_none(),
+        "approved hover-reveal should pass raw gate"
+    );
+    eng.clear_inflight_raw_approval(target_id);
+    assert!(
+        !eng.raw_approval_available_for_test(target_id),
+        "successful nested hover-reveal click must clear the consumed raw grant"
     );
 }
 
@@ -265,15 +414,15 @@ fn raw_scroll_approval_covers_same_direction_count_change() {
 #[test]
 fn attach_clears_raw_approval_grants() {
     let (mut eng, _) = engine_with_counter();
-    let target_id = "keyboard@press:Backspace";
+    let target_id = raw_press_key_target_id("Backspace", 1);
 
     eng.pending_gate_ids.insert(target_id.to_string());
-    eng.approve(target_id).unwrap();
-    assert!(eng.raw_approval_available_for_test(target_id));
+    eng.approve(&target_id).unwrap();
+    assert!(eng.raw_approval_available_for_test(&target_id));
 
     eng.attach(99, 199).unwrap();
     assert!(
-        !eng.raw_approval_available_for_test(target_id),
+        !eng.raw_approval_available_for_test(&target_id),
         "raw grants are scoped to the attached window"
     );
 }

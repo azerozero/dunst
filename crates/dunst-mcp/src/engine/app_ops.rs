@@ -163,7 +163,12 @@ impl Engine {
     /// `--disable-backgrounding-occluded-windows` keeps it painting while it stays
     /// in the background (verified: TradingView curve renders, frontmost ≠ Chrome).
     #[cfg(target_os = "macos")]
-    pub fn launch_app(&self, app: &str, url: Option<&str>, extra_args: &[String]) -> bool {
+    pub fn launch_app(
+        &self,
+        app: &str,
+        url: Option<&str>,
+        extra_args: &[String],
+    ) -> LaunchAppResult {
         let mut cmd = std::process::Command::new("/usr/bin/open");
         cmd.args(["-g", "-a", app]);
         // `open` treats paths/URLs before `--args` as documents to open, and
@@ -176,13 +181,54 @@ impl Engine {
             cmd.arg("--args");
             cmd.args(extra_args);
         }
-        cmd.status().map(|s| s.success()).unwrap_or(false)
+        let launched = cmd.status().map(|s| s.success()).unwrap_or(false);
+        std::thread::sleep(Duration::from_millis(350));
+        self.launch_app_result(app, url, launched)
     }
 
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
-    pub fn launch_app(&self, _app: &str, _url: Option<&str>, _extra_args: &[String]) -> bool {
-        false
+    pub fn launch_app(
+        &self,
+        app: &str,
+        url: Option<&str>,
+        _extra_args: &[String],
+    ) -> LaunchAppResult {
+        self.launch_app_result(app, url, false)
+    }
+
+    fn launch_app_result(&self, app: &str, url: Option<&str>, launched: bool) -> LaunchAppResult {
+        let app_needle = normalize_match(app);
+        let matching_windows: Vec<WindowSummary> = self
+            .list_windows(false)
+            .into_iter()
+            .filter(|window| normalize_match(&window.app).contains(&app_needle))
+            .collect();
+        let target_window_title = self.scene_graph().window.title.clone();
+        let target_matches_requested_app =
+            normalize_match(&self.scene_graph().window.app_name).contains(&app_needle);
+        let target = TargetState {
+            pid: self.target.pid,
+            window_id: self.target.window_id,
+            app_name: self.scene_graph().window.app_name.clone(),
+        };
+        let verification_hint = if !target_matches_requested_app {
+            Some("target window is not owned by the requested app; call list_windows and attach before acting".to_string())
+        } else if url.is_some() {
+            Some("URL opens may select an existing tab or another window; call refresh plus list_browser_tabs/window_view and attach if the selected tab is not in the target window".to_string())
+        } else {
+            None
+        };
+
+        LaunchAppResult {
+            launched,
+            app: app.to_string(),
+            url: url.map(str::to_owned),
+            target,
+            target_window_title,
+            matching_windows,
+            verification_hint,
+        }
     }
 
     /// Quit an app gracefully (no foreground) by name.

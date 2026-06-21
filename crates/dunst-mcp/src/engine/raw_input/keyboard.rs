@@ -34,12 +34,12 @@ impl Engine {
             )));
         }
         let repeat = repeat.clamp(1, 20);
-        let target_id = format!("keyboard@press:{key}");
         let argument = if repeat == 1 {
             key.to_string()
         } else {
             format!("{key} x{repeat}")
         };
+        let target_id = raw_press_key_target_id(key, repeat);
         if let Some(entry) = self.gate_raw_input(
             &target_id,
             SemanticAction::KeyPress,
@@ -84,7 +84,7 @@ impl Engine {
     /// element.
     #[cfg(target_os = "macos")]
     pub fn type_keys(&mut self, text: &str) -> dunst_core::Result<AuditEntry> {
-        let target_id = "keyboard@type_keys".to_string();
+        let target_id = raw_type_keys_target_id(text);
         if let Some(entry) = self.gate_raw_input(
             &target_id,
             SemanticAction::Type,

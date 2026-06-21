@@ -104,6 +104,64 @@ jobs:
       - name: ShellCheck
         run: shellcheck scripts/*.sh
 
+  security:
+    name: Security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-security-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-security-
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.1 --force
+
+      - name: Audit dependencies
+        run: cargo audit --deny warnings
+
+  coverage:
+    name: Coverage gate
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-coverage-
+
+      - name: Install coverage tools
+        run: |
+          rustup component add llvm-tools-preview
+          cargo install cargo-llvm-cov --locked --version 0.8.7 --force
+
+      - name: Check line coverage
+        run: cargo llvm-cov --workspace --all-targets --locked --fail-under-lines 40 --summary-only
+
   benchmarks:
     name: Benchmarks
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

@@ -96,9 +96,12 @@ pub(super) fn dispatch(
                             .collect()
                     })
                     .unwrap_or_default();
-                Ok(
-                    json!({ "launched": engine.launch_app(&app, arg(args, "url").as_deref(), &extra) }),
-                )
+                Ok(serde_json::to_value(engine.launch_app(
+                    &app,
+                    arg(args, "url").as_deref(),
+                    &extra,
+                ))
+                .unwrap_or(Value::Null))
             }
             None => Err("launch_app requires 'app'".into()),
         },

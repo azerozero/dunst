@@ -187,3 +187,38 @@ fn wait_for_element_timeout_has_single_clear_status() {
         "legacy ambiguous field should not be returned: {body}"
     );
 }
+
+#[test]
+fn wait_for_text_stable_reports_empty_ax_text_diagnostic() {
+    let mut e = engine();
+    let resp = call(
+        &mut e,
+        "wait_for_text_stable",
+        json!({
+            "query": "definitely-not-present",
+            "timeout_ms": 500,
+            "stable_ms": 250,
+            "interval_ms": 100,
+            "limit": 4
+        }),
+    );
+
+    assert!(!is_error(&resp), "wait_for_text_stable succeeds: {resp}");
+    let body = text_json(&resp);
+    assert_eq!(body["empty"], true);
+    assert_eq!(body["snippets"].as_array().unwrap().len(), 0);
+    assert!(
+        body["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("no visible AX text snippets"),
+        "diagnostic should explain empty text: {body}"
+    );
+    assert!(
+        body["fallback_hint"]
+            .as_str()
+            .unwrap()
+            .contains("read_text"),
+        "fallback should point to OCR when AX text is empty: {body}"
+    );
+}

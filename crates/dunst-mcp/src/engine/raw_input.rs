@@ -56,7 +56,12 @@ impl Engine {
         self.pending_gate_ids.remove(&target_id);
 
         match self.reveal_hover_click_outcome(x, y, query, settle_ms, reasoning) {
-            Ok(entry) => Ok(entry),
+            Ok(entry) => {
+                self.clear_inflight_raw_approval(&target_id);
+                self.approvals.remove(&target_id);
+                self.pending_gate_ids.remove(&target_id);
+                Ok(entry)
+            }
             Err(err) => {
                 let _ = self.audit_raw_input(
                     target_id,

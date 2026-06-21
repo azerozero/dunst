@@ -111,11 +111,11 @@ impl Engine {
 
     pub(super) fn approve_raw_input(&mut self, target_id: &str) {
         let expires_at = Instant::now() + Duration::from_secs(30);
-        for (key, remaining) in raw_approval_keys(target_id) {
+        for policy in raw_approval_policy(target_id) {
             self.raw_approvals.insert(
-                key,
+                policy.key,
                 RawApprovalGrant {
-                    remaining,
+                    remaining: policy.grant_events,
                     expires_at,
                 },
             );
@@ -127,16 +127,17 @@ impl Engine {
         self.raw_approvals
             .retain(|_, grant| grant.remaining > 0 && grant.expires_at > now);
 
-        for (key, _) in raw_approval_keys(target_id) {
+        for policy in raw_approval_policy(target_id) {
+            let key = policy.key;
             let Some(grant) = self.raw_approvals.get_mut(&key) else {
                 continue;
             };
-            if grant.remaining == 0 || grant.expires_at <= now {
+            if grant.remaining < policy.cost_events || grant.expires_at <= now {
                 continue;
             }
-            grant.remaining -= 1;
+            grant.remaining -= policy.cost_events;
             let consumed = RawApprovalGrant {
-                remaining: 1,
+                remaining: policy.cost_events,
                 expires_at: grant.expires_at,
             };
             if grant.remaining == 0 {
@@ -156,9 +157,9 @@ impl Engine {
         if grant.expires_at <= Instant::now() {
             return;
         }
-        for (key, _) in raw_approval_keys(target_id) {
+        for policy in raw_approval_policy(target_id) {
             self.raw_approvals
-                .entry(key)
+                .entry(policy.key)
                 .and_modify(|existing| {
                     existing.remaining += grant.remaining;
                     existing.expires_at = existing.expires_at.max(grant.expires_at);
@@ -167,7 +168,7 @@ impl Engine {
         }
     }
 
-    fn clear_inflight_raw_approval(&mut self, target_id: &str) {
+    pub(super) fn clear_inflight_raw_approval(&mut self, target_id: &str) {
         self.raw_approval_inflight.remove(target_id);
     }
 
@@ -176,9 +177,11 @@ impl Engine {
         let now = Instant::now();
         self.raw_approvals
             .retain(|_, grant| grant.remaining > 0 && grant.expires_at > now);
-        raw_approval_keys(target_id)
-            .into_iter()
-            .any(|(key, _)| self.raw_approvals.contains_key(&key))
+        raw_approval_policy(target_id).into_iter().any(|policy| {
+            self.raw_approvals
+                .get(&policy.key)
+                .is_some_and(|grant| grant.remaining >= policy.cost_events)
+        })
     }
 
     /// Record a raw input attempt. The attempt is always written to the trace; on
@@ -235,24 +238,105 @@ impl Engine {
     }
 }
 
-pub(super) fn is_raw_input_target_id(target_id: &str) -> bool {
-    target_id.starts_with("keyboard@") || target_id.starts_with("screen@")
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(super) struct RawApprovalKey {
+    scope: RawApprovalScope,
 }
 
-fn raw_approval_keys(target_id: &str) -> Vec<(String, usize)> {
-    if let Some(key) = target_id.strip_prefix("keyboard@press:") {
-        return vec![(format!("keyboard@press:{key}"), 10)];
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum RawApprovalScope {
+    Exact(String),
+    KeyPress(String),
+    ScrollDirection(String),
+    Hotkey(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RawApprovalPolicy {
+    key: RawApprovalKey,
+    grant_events: usize,
+    cost_events: usize,
+}
+
+pub(super) fn is_synthetic_approval_target_id(target_id: &str) -> bool {
+    target_id.starts_with("keyboard@")
+        || target_id.starts_with("screen@")
+        || target_id.starts_with("file@")
+        || target_id.starts_with("hover-reveal@")
+}
+
+pub(super) fn raw_press_key_target_id(key: &str, repeat: usize) -> String {
+    format!("keyboard@press:{key}:{}", repeat.clamp(1, 20))
+}
+
+pub(super) fn raw_type_keys_target_id(text: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("keyboard@type_keys:{:016x}:{}", hash, text.chars().count())
+}
+
+fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
+    if let Some(rest) = target_id.strip_prefix("keyboard@press:") {
+        let (key, cost_events) = parse_key_with_count(rest);
+        return vec![RawApprovalPolicy {
+            key: RawApprovalKey {
+                scope: RawApprovalScope::KeyPress(key.to_string()),
+            },
+            grant_events: 10,
+            cost_events,
+        }];
     }
     if let Some(rest) = target_id.strip_prefix("keyboard@scroll:") {
         let mut parts = rest.split(':');
         let direction = parts.next().unwrap_or("down");
-        return vec![(format!("keyboard@scroll:{direction}"), 5)];
+        let cost_events = parts
+            .next()
+            .and_then(|count| count.parse::<usize>().ok())
+            .unwrap_or(1)
+            .clamp(1, 20);
+        return vec![RawApprovalPolicy {
+            key: RawApprovalKey {
+                scope: RawApprovalScope::ScrollDirection(direction.to_string()),
+            },
+            grant_events: 5,
+            cost_events,
+        }];
     }
     if target_id.starts_with("keyboard@hotkey:") {
-        return vec![(target_id.to_string(), 2)];
+        return vec![RawApprovalPolicy {
+            key: RawApprovalKey {
+                scope: RawApprovalScope::Hotkey(target_id.to_string()),
+            },
+            grant_events: 2,
+            cost_events: 1,
+        }];
     }
-    if target_id == "keyboard@type_keys" {
-        return vec![(target_id.to_string(), 1)];
+    if target_id.starts_with("keyboard@type_keys:") {
+        return vec![RawApprovalPolicy {
+            key: RawApprovalKey {
+                scope: RawApprovalScope::Exact(target_id.to_string()),
+            },
+            grant_events: 1,
+            cost_events: 1,
+        }];
     }
-    vec![(target_id.to_string(), 1)]
+    vec![RawApprovalPolicy {
+        key: RawApprovalKey {
+            scope: RawApprovalScope::Exact(target_id.to_string()),
+        },
+        grant_events: 1,
+        cost_events: 1,
+    }]
+}
+
+fn parse_key_with_count(rest: &str) -> (&str, usize) {
+    match rest.rsplit_once(':') {
+        Some((key, count)) if !key.is_empty() => {
+            (key, count.parse::<usize>().unwrap_or(1).clamp(1, 20))
+        }
+        _ => (rest, 1),
+    }
 }

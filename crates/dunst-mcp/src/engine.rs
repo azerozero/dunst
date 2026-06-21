@@ -58,7 +58,10 @@ use chart::{is_axis_token, looks_like_clock, parse_value};
 use input::char_keycode;
 use input::{is_press_key_name, layout_sensitive_hotkey_message, parse_combo};
 use query_support::*;
-use raw_input_gate::is_raw_input_target_id;
+use raw_input_gate::{
+    is_synthetic_approval_target_id, raw_press_key_target_id, raw_type_keys_target_id,
+    RawApprovalKey,
+};
 use runtime_support::*;
 use scene_query::*;
 use window_geometry::*;
@@ -88,7 +91,7 @@ pub struct Engine {
     /// element-bound approvals, these are count-limited instead of consumed by
     /// every refresh, so repeated keypresses can complete without approval
     /// churn after the operator has approved that exact raw input family.
-    raw_approvals: BTreeMap<String, RawApprovalGrant>,
+    raw_approvals: BTreeMap<RawApprovalKey, RawApprovalGrant>,
     /// Raw approval grant consumed by an in-flight raw action. If the platform
     /// rejects the action only because the operator is active, the grant is
     /// restored so the automatic retry path does not ask for approval again.
@@ -363,7 +366,7 @@ impl Engine {
                 "{id} is not gated; no approval required"
             )));
         }
-        if is_raw_input_target_id(id) {
+        if is_synthetic_approval_target_id(id) {
             self.approve_raw_input(id);
         } else {
             self.approvals.insert(id.to_string());

@@ -119,12 +119,29 @@ pub struct LaunchableApp {
     pub running: bool,
 }
 
+/// Result of launching/opening a URL in an app, including enough scope context
+/// for a caller to re-attach or verify the correct browser window/tab.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LaunchAppResult {
+    pub launched: bool,
+    pub app: String,
+    pub url: Option<String>,
+    pub target: TargetState,
+    pub target_window_title: String,
+    pub matching_windows: Vec<WindowSummary>,
+    pub verification_hint: Option<String>,
+}
+
 /// Lightweight page/window state for orientation without a screenshot or full scene graph.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PageState {
     pub target: TargetState,
     pub title: String,
     pub url: Option<String>,
+    /// Selected browser-tab title, when the target app exposes a tab strip.
+    /// This lets callers detect stale/incoherent browser window titles after
+    /// background URL opens or tab switches.
+    pub browser_tab: Option<BrowserTab>,
     pub visible_text: Vec<String>,
     pub key_elements: Vec<KeyElement>,
 }
@@ -194,6 +211,7 @@ pub struct WindowView {
     pub target: TargetState,
     pub title: String,
     pub url: Option<String>,
+    pub browser_tab: Option<BrowserTab>,
     pub window: Bbox,
     pub display: Option<DisplaySummary>,
     pub window_in_display: Option<Bbox>,

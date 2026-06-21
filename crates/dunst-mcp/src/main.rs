@@ -303,7 +303,10 @@ fn run_doctor() -> i32 {
         }
     );
     doctor_path(".mcp.json", "Claude-style project config");
+    let claude_config_ok = doctor_claude_config(".mcp.json").unwrap_or(true);
     doctor_path(".codex/config.toml", "Codex project config");
+    let codex_config_ok = doctor_codex_config(".codex/config.toml").unwrap_or(true);
+    let config_ok = claude_config_ok && codex_config_ok;
     doctor_executable("scripts/mcp-dunst.sh", "development wrapper");
     doctor_executable("target/debug/dunst-mcp", "development binary");
 
@@ -313,7 +316,11 @@ fn run_doctor() -> i32 {
         if dunst_platform::accessibility_trusted() {
             println!("accessibility: granted");
             println!("screen recording: not checked by this minimal doctor");
-            0
+            if config_ok {
+                0
+            } else {
+                1
+            }
         } else {
             println!("accessibility: not granted");
             println!(
@@ -364,6 +371,143 @@ fn doctor_executable(path: &str, label: &str) {
         })
         .unwrap_or("missing");
     println!("{label}: {status} ({path})");
+}
+
+fn doctor_claude_config(path: &str) -> Option<bool> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return None;
+    };
+    Some(match parse_claude_dunst_config(&text) {
+        Ok(Some((command, args))) => doctor_mcp_command(path, &command, &args),
+        Ok(None) => {
+            println!("{path}: dunst server missing");
+            false
+        }
+        Err(err) => {
+            println!("{path}: invalid ({err})");
+            false
+        }
+    })
+}
+
+fn doctor_codex_config(path: &str) -> Option<bool> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return None;
+    };
+    Some(match parse_codex_dunst_config(&text) {
+        Ok(Some((command, args))) => doctor_mcp_command(path, &command, &args),
+        Ok(None) => {
+            println!("{path}: dunst server missing");
+            false
+        }
+        Err(err) => {
+            println!("{path}: invalid ({err})");
+            false
+        }
+    })
+}
+
+fn doctor_mcp_command(path: &str, command: &str, args: &[String]) -> bool {
+    if mcp_command_starts_server(command, args) {
+        println!("{path}: dunst command ok ({command} {:?})", args);
+        true
+    } else {
+        println!(
+            "{path}: warning: dunst command may start the demo instead of MCP serve ({command} {:?})",
+            args
+        );
+        false
+    }
+}
+
+fn mcp_command_starts_server(command: &str, args: &[String]) -> bool {
+    let command_name = std::path::Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command);
+    command_name == "mcp-dunst.sh"
+        || command_name == "dunst-mcp" && args.iter().any(|arg| arg == "serve")
+}
+
+fn parse_claude_dunst_config(text: &str) -> Result<Option<(String, Vec<String>)>, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(text).map_err(|err| format!("json parse failed: {err}"))?;
+    let Some(server) = root
+        .get("mcpServers")
+        .and_then(|servers| servers.get("dunst"))
+    else {
+        return Ok(None);
+    };
+    let command = server
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "mcpServers.dunst.command missing or not a string".to_string())?;
+    let args = server
+        .get("args")
+        .map(json_string_array)
+        .transpose()?
+        .unwrap_or_default();
+    Ok(Some((command.to_string(), args)))
+}
+
+fn parse_codex_dunst_config(text: &str) -> Result<Option<(String, Vec<String>)>, String> {
+    let mut in_dunst = false;
+    let mut command = None;
+    let mut args = None;
+
+    for raw_line in text.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            in_dunst = line == "[mcp_servers.dunst]";
+            continue;
+        }
+        if !in_dunst {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "command" => {
+                command = Some(parse_toml_string(value.trim())?);
+            }
+            "args" => {
+                let parsed: serde_json::Value = serde_json::from_str(value.trim())
+                    .map_err(|err| format!("args parse failed: {err}"))?;
+                args = Some(json_string_array(&parsed)?);
+            }
+            _ => {}
+        }
+    }
+
+    match command {
+        Some(command) => Ok(Some((command, args.unwrap_or_default()))),
+        None if text.contains("[mcp_servers.dunst]") => {
+            Err("mcp_servers.dunst.command missing".into())
+        }
+        None => Ok(None),
+    }
+}
+
+fn parse_toml_string(value: &str) -> Result<String, String> {
+    serde_json::from_str(value).map_err(|err| format!("command parse failed: {err}"))
+}
+
+fn json_string_array(value: &serde_json::Value) -> Result<Vec<String>, String> {
+    let array = value
+        .as_array()
+        .ok_or_else(|| "args must be an array".to_string())?;
+    array
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "args entries must be strings".to_string())
+        })
+        .collect()
 }
 
 fn run_setup(args: SetupArgs) -> i32 {
@@ -424,4 +568,65 @@ fn pick<'a>(
 
 fn role_of(eng: &Engine, id: &str) -> Option<dunst_core::Role> {
     eng.scene_graph().get(id).map(|n| n.role)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_config_detects_dunst_server_command() {
+        let text = r#"{
+          "mcpServers": {
+            "dunst": { "command": "dunst-mcp", "args": ["serve"] }
+          }
+        }"#;
+
+        let (command, args) = parse_claude_dunst_config(text).unwrap().unwrap();
+
+        assert_eq!(command, "dunst-mcp");
+        assert_eq!(args, vec!["serve"]);
+        assert!(mcp_command_starts_server(&command, &args));
+    }
+
+    #[test]
+    fn codex_config_accepts_project_wrapper_without_duplicate_args() {
+        let text = r#"
+        [mcp_servers.dunst]
+        command = "scripts/mcp-dunst.sh"
+        args = []
+        startup_timeout_sec = 120
+        "#;
+
+        let (command, args) = parse_codex_dunst_config(text).unwrap().unwrap();
+
+        assert_eq!(command, "scripts/mcp-dunst.sh");
+        assert!(args.is_empty());
+        assert!(mcp_command_starts_server(&command, &args));
+    }
+
+    #[test]
+    fn installed_binary_without_serve_is_flagged() {
+        assert!(!mcp_command_starts_server("dunst-mcp", &[]));
+        assert!(!mcp_command_starts_server("dunst-mcp", &["demo".into()]));
+        assert!(mcp_command_starts_server(
+            "/usr/local/bin/dunst-mcp",
+            &["serve".into()]
+        ));
+    }
+
+    #[test]
+    fn installed_claude_config_without_serve_is_invalid_for_doctor() {
+        let text = r#"{
+          "mcpServers": {
+            "dunst": { "command": "dunst-mcp", "args": [] }
+          }
+        }"#;
+
+        let (command, args) = parse_claude_dunst_config(text).unwrap().unwrap();
+
+        assert_eq!(command, "dunst-mcp");
+        assert!(args.is_empty());
+        assert!(!mcp_command_starts_server(&command, &args));
+    }
 }

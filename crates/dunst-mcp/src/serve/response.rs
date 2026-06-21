@@ -81,7 +81,10 @@ pub(super) fn audit_entry_value(entry: AuditEntry, include_diff: bool) -> Value 
 }
 
 fn raw_input_target(target_id: &str) -> bool {
-    target_id.starts_with("keyboard@") || target_id.starts_with("screen@")
+    target_id.starts_with("keyboard@")
+        || target_id.starts_with("screen@")
+        || target_id.starts_with("file@")
+        || target_id.starts_with("hover-reveal@")
 }
 
 fn raw_input_fallback_hint(entry: &AuditEntry) -> Value {
@@ -177,6 +180,15 @@ fn failed_action_hint(entry: &AuditEntry) -> Option<Value> {
 }
 
 fn success_action_hint(entry: &AuditEntry) -> Option<Value> {
+    if entry.action == SemanticAction::Scroll
+        && entry.graph_diff.changes.iter().all(low_signal_diff_change)
+    {
+        return Some(json!({
+            "reason": "The scroll key sequence returned success, but no meaningful AX graph movement was observed.",
+            "next_step": "Treat the scroll as unverified. Re-read window_view/read_text; if the page did not move, click or focus the intended page/container, use scroll with a scrollable element id when available, or use PageUp/PageDown via press_key after explicit operator approval.",
+            "verification": "visible text, OCR, or key element positions should change before relying on the new viewport"
+        }));
+    }
     if entry.action != SemanticAction::Click
         || raw_input_target(&entry.target_id)
         || entry

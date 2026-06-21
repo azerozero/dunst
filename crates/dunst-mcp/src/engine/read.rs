@@ -139,6 +139,13 @@ impl Engine {
     pub fn list_browser_tabs(&self, query: Option<&str>, visible_only: bool) -> Vec<BrowserTab> {
         let q = query.map(normalize_match);
         let window_rect = self.cached_window_rect;
+        let has_explicit_selection = self.scene_graph().nodes.values().any(|node| {
+            node.role == Role::Radio
+                && node.ax_role == "AXRadioButton"
+                && looks_like_browser_tab(node, window_rect)
+                && (!visible_only || node_on_screen(node, window_rect))
+                && browser_tab_explicitly_selected(node)
+        });
         let mut tabs = Vec::new();
 
         for node in self.scene_graph().nodes.values() {
@@ -163,7 +170,8 @@ impl Engine {
                 }
             }
 
-            let selected = browser_tab_selected(self.scene_graph(), node, &title);
+            let selected =
+                browser_tab_selected(self.scene_graph(), node, &title, has_explicit_selection);
             tabs.push(BrowserTab {
                 id: node.id.clone(),
                 url: likely_url(&title),
@@ -206,6 +214,10 @@ impl Engine {
         let mut visible_text = Vec::new();
         let mut key_elements = Vec::new();
         let mut url = None;
+        let browser_tab = self
+            .list_browser_tabs(None, true)
+            .into_iter()
+            .find(|tab| tab.selected);
 
         for node in g.nodes.values() {
             if !node_visible_or_menu(node, window_rect, menubar) {
@@ -275,6 +287,7 @@ impl Engine {
             },
             title: g.window.title.clone(),
             url,
+            browser_tab,
             visible_text,
             key_elements,
         }

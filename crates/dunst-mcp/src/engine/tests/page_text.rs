@@ -40,6 +40,49 @@ fn page_state_does_not_use_window_root_as_key_element() {
 }
 
 #[test]
+fn page_state_reports_selected_browser_tab_when_window_title_is_stale() {
+    let window = raw_node(
+        "AXWindow",
+        Some("Commandez vos repas en ligne | Uber Eats"),
+        None,
+        test_bbox(0.0, 33.0, 1728.0, 1000.0),
+        &[],
+        vec![
+            raw_node(
+                "AXRadioButton",
+                Some("Commandez vos repas en ligne | Uber Eats"),
+                Some("false"),
+                test_bbox(60.0, 33.0, 76.0, 44.0),
+                &["press"],
+                vec![],
+            ),
+            raw_node(
+                "AXRadioButton",
+                Some("Wok THAi Brest avis Google - Recherche Google"),
+                Some("true"),
+                test_bbox(1352.0, 33.0, 76.0, 44.0),
+                &["press"],
+                vec![],
+            ),
+        ],
+    );
+    let (eng, _) = engine_from_roots(
+        vec![window],
+        "Firefox",
+        "Commandez vos repas en ligne | Uber Eats",
+    );
+
+    let state = eng.page_state(10);
+
+    assert_eq!(state.title, "Commandez vos repas en ligne | Uber Eats");
+    assert_eq!(
+        state.browser_tab.as_ref().map(|tab| tab.title.as_str()),
+        Some("Wok THAi Brest avis Google - Recherche Google"),
+        "selected browser tab should make title/tab mismatch explicit"
+    );
+}
+
+#[test]
 fn page_state_drops_unlabeled_full_size_unknown_containers() {
     let window = raw_node(
         "AXWindow",

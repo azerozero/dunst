@@ -423,7 +423,7 @@ fn window_app_tools() -> Vec<Value> {
         ),
         tool(
             "launch_app",
-            "Launch an app WITHOUT bringing it to the foreground (open -g), optionally opening a url in it. Then list_windows + attach to drive it. Closes the last external dependency — full autonomy via the MCP alone. args: extra argv passed to the app (only applies when this call actually launches it). To read a Chromium chart in pure background, launch with args [\"--disable-features=CalculateNativeWinOcclusion\",\"--disable-renderer-backgrounding\",\"--disable-background-timer-throttling\",\"--disable-backgrounding-occluded-windows\"] so the <canvas> keeps painting while backgrounded (otherwise scan_chart sees a blank plot).",
+            "Launch an app WITHOUT bringing it to the foreground (open -g), optionally opening a url in it. Returns launched plus matching_windows, the current target, and a verification_hint because browsers may reuse another window/tab; after URL opens, call refresh + list_browser_tabs/window_view and attach if needed before acting. args: extra argv passed to the app (only applies when this call actually launches it). To read a Chromium chart in pure background, launch with args [\"--disable-features=CalculateNativeWinOcclusion\",\"--disable-renderer-backgrounding\",\"--disable-background-timer-throttling\",\"--disable-backgrounding-occluded-windows\"] so the <canvas> keeps painting while backgrounded (otherwise scan_chart sees a blank plot).",
             schema(json!({ "app": {"type":"string"}, "url": {"type":"string"}, "args": {"type":"array","items":{"type":"string"},"description":"extra argv for the app (e.g. Chromium background-paint flags)"} }), &["app"]),
         ),
         tool(

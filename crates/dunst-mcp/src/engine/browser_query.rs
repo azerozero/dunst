@@ -45,17 +45,27 @@ pub(super) fn browser_tab_title(graph: &SceneGraph, node: &SceneNode) -> String 
         .to_string()
 }
 
-pub(super) fn browser_tab_selected(graph: &SceneGraph, node: &SceneNode, title: &str) -> bool {
-    let window_title = normalize_match(&graph.window.title);
-    let tab_title = normalize_match(title);
+pub(super) fn browser_tab_explicitly_selected(node: &SceneNode) -> bool {
     node.focused
         || node
             .value
             .as_deref()
             .map(normalize_match)
             .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "selected" | "selectionne"))
+}
+
+pub(super) fn browser_tab_selected(
+    graph: &SceneGraph,
+    node: &SceneNode,
+    title: &str,
+    has_explicit_selection: bool,
+) -> bool {
+    let window_title = normalize_match(&graph.window.title);
+    let tab_title = normalize_match(title);
+    browser_tab_explicitly_selected(node)
         || (!window_title.is_empty()
             && !tab_title.is_empty()
+            && !has_explicit_selection
             && (window_title == tab_title
                 || window_title.starts_with(&tab_title)
                 || tab_title.starts_with(&window_title)))
