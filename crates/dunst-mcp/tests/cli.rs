@@ -51,12 +51,40 @@ fn subcommand_help_lists_live_and_setup_options() {
         .expect("run setup --help");
     assert!(setup.status.success(), "setup --help should exit 0");
     let setup_out = String::from_utf8(setup.stdout).expect("utf8 setup help");
-    for option in ["--client", "--dev-wrapper"] {
+    for option in [
+        "--client",
+        "--dev-wrapper",
+        "--dry-run",
+        "--apply",
+        "--edit",
+        "--migrate",
+        "--config",
+    ] {
         assert!(
             setup_out.contains(option),
             "setup --help should mention {option:?}; got:\n{setup_out}"
         );
     }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn doctor_reports_permission_statuses() {
+    let output = dunst_mcp().arg("doctor").output().expect("run doctor");
+    let stdout = String::from_utf8(output.stdout).expect("utf8 doctor");
+
+    assert!(
+        stdout.contains("accessibility:"),
+        "doctor should report Accessibility status:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("screen recording:"),
+        "doctor should report Screen Recording status:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("not checked by this minimal doctor"),
+        "doctor should not leave Screen Recording as an unchecked gap:\n{stdout}"
+    );
 }
 
 #[test]
@@ -87,7 +115,7 @@ fn setup_installed_configs_start_the_server() {
         "installed claude setup should use the binary:\n{claude_out}"
     );
     assert!(
-        claude_out.contains("\"args\": [\"serve\"]"),
+        claude_out.contains("\"args\":") && claude_out.contains("\"serve\""),
         "installed claude setup must start the MCP server, not demo:\n{claude_out}"
     );
 }
@@ -109,4 +137,50 @@ fn setup_dev_wrapper_keeps_wrapper_owned_args_empty() {
         stdout.contains("args = []"),
         "dev wrapper already starts serve --live and should not get duplicate args:\n{stdout}"
     );
+}
+
+#[test]
+fn setup_apply_writes_idempotent_codex_config() {
+    let path =
+        std::env::temp_dir().join(format!("dunst-mcp-test-{}-codex.toml", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+
+    let output = dunst_mcp()
+        .args([
+            "setup",
+            "--client",
+            "codex",
+            "--apply",
+            "--config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run setup --apply");
+    assert!(output.status.success(), "setup --apply should exit 0");
+    let written = std::fs::read_to_string(&path).expect("config written");
+    assert!(written.contains("[mcp_servers.dunst]"));
+    assert!(written.contains("command = \"dunst-mcp\""));
+    assert!(written.contains("args = [\"serve\"]"));
+
+    let output = dunst_mcp()
+        .args([
+            "setup",
+            "--client",
+            "codex",
+            "--apply",
+            "--config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("rerun setup --apply");
+    assert!(
+        output.status.success(),
+        "second setup --apply should exit 0"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("config still present"),
+        written,
+        "setup --apply should be idempotent"
+    );
+    let _ = std::fs::remove_file(&path);
 }

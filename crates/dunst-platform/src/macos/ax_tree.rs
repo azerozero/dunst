@@ -272,7 +272,7 @@ pub(super) fn find_element(root: AxElement, wanted: &SceneNode) -> Result<Option
     }
 
     if require_path && path_mismatch {
-        return Err(VisualOpsError::ElementNotFound(format!(
+        return Err(DunstError::ElementNotFound(format!(
             "id={} path={:?} resolved to a different live AX element",
             wanted.id, wanted.path
         )));

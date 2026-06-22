@@ -417,7 +417,7 @@ fn parent_resolution_does_not_bypass_high_risk_static_text() {
     let err = eng
         .click_element(&text, Some("remove via text"))
         .unwrap_err();
-    assert!(matches!(err, VisualOpsError::ActionUnavailable { .. }));
+    assert!(matches!(err, DunstError::ActionUnavailable { .. }));
     assert!(
         calls.lock().unwrap().is_empty(),
         "high-risk static text must not execute through an unlabeled parent"

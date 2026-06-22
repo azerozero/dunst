@@ -15,6 +15,7 @@ use std::{
 use serde_json::{json, Value};
 
 mod dispatch;
+mod registry;
 mod response;
 mod tools;
 

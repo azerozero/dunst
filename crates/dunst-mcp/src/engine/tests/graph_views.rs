@@ -6,7 +6,7 @@ fn unavailable_action_is_an_error() {
     // A button has no Type affordance.
     let id = id_for(&eng, "Nouvelle note");
     let err = eng.type_into(&id, "x", None).unwrap_err();
-    assert!(matches!(err, VisualOpsError::ActionUnavailable { .. }));
+    assert!(matches!(err, DunstError::ActionUnavailable { .. }));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
@@ -55,7 +55,7 @@ fn drag_unknown_target_is_an_error() {
     let err = eng
         .drag_element(&source, "no_such_target", None)
         .unwrap_err();
-    assert!(matches!(err, VisualOpsError::ElementNotFound(_)));
+    assert!(matches!(err, DunstError::ElementNotFound(_)));
 
     // No executor call, no audit entry: the failure is structural, pre-act.
     assert!(calls.lock().unwrap().is_empty());
@@ -70,7 +70,7 @@ fn drag_source_without_affordance_is_unavailable() {
     let target = id_for(&eng, "Nouvelle note");
 
     let err = eng.drag_element(&source, &target, None).unwrap_err();
-    assert!(matches!(err, VisualOpsError::ActionUnavailable { .. }));
+    assert!(matches!(err, DunstError::ActionUnavailable { .. }));
     assert!(calls.lock().unwrap().is_empty());
     assert_eq!(eng.trace().len(), 0);
 }

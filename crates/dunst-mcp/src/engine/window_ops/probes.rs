@@ -17,7 +17,7 @@ impl Engine {
         let region = region.unwrap_or_else(|| self.current_window_bounds());
         self.ensure_region_in_target_window(region, "visual_change_probe")?;
         if region.w <= 0.0 || region.h <= 0.0 {
-            return Err(VisualOpsError::Perception(
+            return Err(DunstError::Perception(
                 "visual_change_probe region width/height must be positive".into(),
             ));
         }
@@ -26,11 +26,11 @@ impl Engine {
         let captured =
             dunst_vision::capture::capture_screen_rect(region.x, region.y, region.w, region.h)
                 .map_err(|err| {
-                    VisualOpsError::Perception(format!("visual probe capture failed: {err}"))
+                    DunstError::Perception(format!("visual probe capture failed: {err}"))
                 })?;
         let signature = dunst_vision::capture::sample_luma_signature(&captured, columns, rows)
             .ok_or_else(|| {
-                VisualOpsError::Perception("visual probe could not sample captured pixels".into())
+                DunstError::Perception("visual probe could not sample captured pixels".into())
             })?;
         let key = visual_probe_key(region, columns, rows);
         let previous = self.visual_probe_cache.borrow().clone();
@@ -74,7 +74,7 @@ impl Engine {
         _threshold: u8,
         _refresh_on_change: bool,
     ) -> dunst_core::Result<VisualChangeProbe> {
-        Err(VisualOpsError::Perception(
+        Err(DunstError::Perception(
             "visual_change_probe requires a macOS backend".into(),
         ))
     }

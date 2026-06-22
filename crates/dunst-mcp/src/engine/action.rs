@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use dunst_core::{
-    ActionResult, AuditEntry, GraphDiff, RiskAssessment, RiskLevel, Role, SceneGraph, SceneNode,
-    SemanticAction, VisualOpsError,
+    ActionResult, AuditEntry, DunstError, GraphDiff, RiskAssessment, RiskLevel, Role, SceneGraph,
+    SceneNode, SemanticAction,
 };
 
 use super::{is_element_not_found, normalize_match, retry_user_active_guard, Engine};
@@ -199,14 +199,14 @@ impl Engine {
             .scene_graph()
             .get(id)
             .cloned()
-            .ok_or_else(|| VisualOpsError::ElementNotFound(id.into()))?;
+            .ok_or_else(|| DunstError::ElementNotFound(id.into()))?;
         let aff = self
             .affordance_graph()
             .affordances
             .get(id)
-            .ok_or_else(|| VisualOpsError::ElementNotFound(id.into()))?;
+            .ok_or_else(|| DunstError::ElementNotFound(id.into()))?;
         if !aff.actions.contains(&action) {
-            return Err(VisualOpsError::ActionUnavailable {
+            return Err(DunstError::ActionUnavailable {
                 id: id.into(),
                 action: format!("{action:?}"),
             });

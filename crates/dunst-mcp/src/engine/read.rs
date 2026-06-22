@@ -172,6 +172,12 @@ impl Engine {
                 risk: affordance.risk.clone(),
             });
         }
+        let mut supplemental_warnings = Vec::new();
+        if scope != "browser_chrome" && scope != "chrome" {
+            append_page_scroll_targets(&mut targets, window);
+            self.append_ocr_hit_targets(&mut targets, &mut supplemental_warnings, limit);
+            self.append_shape_hit_targets(&mut targets, &mut supplemental_warnings, limit);
+        }
         targets.sort_by(hit_target_order);
         targets.truncate(limit);
 
@@ -186,7 +192,62 @@ impl Engine {
             state_changed,
             stale_reason,
             resume_hint,
+            supplemental_warnings,
             targets,
+        }
+    }
+
+    fn append_ocr_hit_targets(
+        &self,
+        targets: &mut Vec<HitTarget>,
+        warnings: &mut Vec<String>,
+        limit: usize,
+    ) {
+        match self.extract_ocr_cards(false, true, limit.min(24)) {
+            Ok(result) => {
+                warnings.extend(result.warnings);
+                for card in result.cards {
+                    if bbox_duplicate_of_existing(card.bbox, targets) {
+                        continue;
+                    }
+                    let risk = self.risk.assess_text(&card.lines.join(" "));
+                    targets.push(card_hit_target(card, risk));
+                }
+            }
+            Err(err) => warnings.push(format!("OCR card targets unavailable: {err}")),
+        }
+
+        match self.read_text_detailed(None, false, true) {
+            Ok(result) => {
+                warnings.extend(result.warnings);
+                for (idx, hit) in result.hits.iter().enumerate().take(limit.min(80)) {
+                    if hit.confidence < 0.45 || bbox_duplicate_of_existing(hit.bbox, targets) {
+                        continue;
+                    }
+                    let risk = self.risk.assess_text(&hit.text);
+                    targets.push(ocr_hit_target(idx, hit, risk));
+                }
+            }
+            Err(err) => warnings.push(format!("OCR text targets unavailable: {err}")),
+        }
+    }
+
+    fn append_shape_hit_targets(
+        &self,
+        targets: &mut Vec<HitTarget>,
+        warnings: &mut Vec<String>,
+        limit: usize,
+    ) {
+        match self.read_shapes() {
+            Ok(shapes) => {
+                for (idx, shape) in shapes.into_iter().enumerate().take(limit.min(40)) {
+                    if shape.confidence < 0.35 || bbox_duplicate_of_existing(shape.bbox, targets) {
+                        continue;
+                    }
+                    targets.push(shape_hit_target(idx, shape));
+                }
+            }
+            Err(err) => warnings.push(format!("vision shape targets unavailable: {err}")),
         }
     }
 
@@ -669,6 +730,7 @@ fn hit_action_modes(affordance: &dunst_core::Affordance) -> Vec<HitActionMode> {
             action: *action,
             tool_hint: tool_hint_for_action(*action).to_string(),
             target_id: Some(affordance.id.clone()),
+            arguments: None,
             drop_targets: if *action == SemanticAction::Drag {
                 affordance.drag_targets.clone()
             } else {
@@ -677,6 +739,157 @@ fn hit_action_modes(affordance: &dunst_core::Affordance) -> Vec<HitActionMode> {
             risk: affordance.risk.clone(),
         })
         .collect()
+}
+
+fn append_page_scroll_targets(targets: &mut Vec<HitTarget>, window: Bbox) {
+    if window.w <= 0.0 || window.h <= 0.0 {
+        return;
+    }
+    let bbox = Bbox {
+        x: window.x + window.w * 0.08,
+        y: window.y + window.h * 0.16,
+        w: window.w * 0.84,
+        h: window.h * 0.76,
+    };
+    for direction in ["down", "up", "bottom", "top"] {
+        let id = page_scroll_target_id(direction);
+        targets.push(HitTarget {
+            id: id.clone(),
+            source: "page".into(),
+            role: "group",
+            label: Some(format!("Page scroll {direction}")),
+            value: None,
+            bbox: Some(bbox),
+            safe_click: synthetic_safe_zone(
+                bbox,
+                "page_scroll_region",
+                "Use the scroll tool with this pseudo-target id, or scroll_at at the center point.",
+            ),
+            confidence: 0.65,
+            action_modes: vec![HitActionMode {
+                action: SemanticAction::Scroll,
+                tool_hint: "scroll".into(),
+                target_id: Some(id.clone()),
+                arguments: Some(json!({
+                    "id": id,
+                    "direction": direction,
+                    "pages": if matches!(direction, "top" | "bottom") { 1 } else { 3 },
+                })),
+                drop_targets: Vec::new(),
+                risk: RiskAssessment::low(),
+            }],
+            risk: RiskAssessment::low(),
+        });
+    }
+}
+
+fn card_hit_target(card: OcrCard, risk: RiskAssessment) -> HitTarget {
+    let mut value = card
+        .lines
+        .iter()
+        .skip(1)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if value.is_empty() {
+        value = card.title.clone();
+    }
+    HitTarget {
+        id: card.id.clone(),
+        source: "ocr".into(),
+        role: "group",
+        label: Some(card.title.clone()),
+        value: Some(value),
+        bbox: Some(card.bbox),
+        safe_click: synthetic_safe_zone(
+            card.bbox,
+            "ocr_card_bbox_inset",
+            "Prefer click_near_text with the card title; use the zone only after OCR verification.",
+        ),
+        confidence: card.confidence,
+        action_modes: vec![HitActionMode {
+            action: SemanticAction::Click,
+            tool_hint: "click_near_text".into(),
+            target_id: None,
+            arguments: Some(json!({
+                "query": card.title,
+                "content_only": true,
+                "accurate": false,
+            })),
+            drop_targets: Vec::new(),
+            risk: risk.clone(),
+        }],
+        risk,
+    }
+}
+
+fn ocr_hit_target(idx: usize, hit: &TextHit, risk: RiskAssessment) -> HitTarget {
+    let id = format!("ocr_text_{idx}_{}", compact_synthetic_label(&hit.text));
+    HitTarget {
+        id,
+        source: "ocr".into(),
+        role: "static_text",
+        label: Some(hit.text.clone()),
+        value: None,
+        bbox: Some(hit.bbox),
+        safe_click: synthetic_safe_zone(
+            hit.bbox,
+            "ocr_text_bbox_inset",
+            "Prefer click_near_text with this text; use the zone only after OCR verification.",
+        ),
+        confidence: hit.confidence,
+        action_modes: vec![HitActionMode {
+            action: SemanticAction::Click,
+            tool_hint: "click_near_text".into(),
+            target_id: None,
+            arguments: Some(json!({
+                "query": hit.text,
+                "content_only": true,
+                "accurate": false,
+            })),
+            drop_targets: Vec::new(),
+            risk: risk.clone(),
+        }],
+        risk,
+    }
+}
+
+fn shape_hit_target(idx: usize, shape: ShapeHit) -> HitTarget {
+    let center = (
+        shape.bbox.x + shape.bbox.w / 2.0,
+        shape.bbox.y + shape.bbox.h / 2.0,
+    );
+    let risk = RiskAssessment {
+        level: RiskLevel::Medium,
+        requires_approval: false,
+        reasons: vec!["vision-derived shape target; verify semantics before mutating".into()],
+    };
+    HitTarget {
+        id: format!(
+            "vision_shape_{idx}_{}",
+            compact_synthetic_label(&shape.kind)
+        ),
+        source: "vision".into(),
+        role: "image",
+        label: Some(format!("{} shape", shape.kind)),
+        value: None,
+        bbox: Some(shape.bbox),
+        safe_click: synthetic_safe_zone(
+            shape.bbox,
+            "vision_shape_bbox_inset",
+            "Use read_at/hover verification before any raw click on this shape.",
+        ),
+        confidence: shape.confidence,
+        action_modes: vec![HitActionMode {
+            action: SemanticAction::Hover,
+            tool_hint: "read_at".into(),
+            target_id: None,
+            arguments: Some(json!({ "x": center.0, "y": center.1 })),
+            drop_targets: Vec::new(),
+            risk: risk.clone(),
+        }],
+        risk,
+    }
 }
 
 fn tool_hint_for_action(action: SemanticAction) -> &'static str {
@@ -719,7 +932,55 @@ fn safe_click_zone(bbox: Bbox) -> Option<SafeClickZone> {
     })
 }
 
+fn synthetic_safe_zone(bbox: Bbox, source: &str, note: &str) -> Option<SafeClickZone> {
+    safe_click_zone(bbox).map(|mut zone| {
+        zone.source = source.to_string();
+        zone.note = note.to_string();
+        zone
+    })
+}
+
+fn bbox_duplicate_of_existing(bbox: Bbox, targets: &[HitTarget]) -> bool {
+    let area = (bbox.w.max(0.0) * bbox.h.max(0.0)).max(1.0);
+    targets.iter().any(|target| {
+        if target.source == "page" {
+            return false;
+        }
+        target
+            .bbox
+            .map(|existing| rect_intersection_area(existing, bbox) / area > 0.72)
+            .unwrap_or(false)
+    })
+}
+
+fn compact_synthetic_label(text: &str) -> String {
+    let normalized = normalize_match(text);
+    let mut out = String::new();
+    for ch in normalized.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+        if out.len() >= 48 {
+            break;
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    if trimmed.is_empty() {
+        "target".into()
+    } else {
+        trimmed.into()
+    }
+}
+
 fn hit_target_order(a: &HitTarget, b: &HitTarget) -> std::cmp::Ordering {
+    hit_source_rank(&a.source)
+        .cmp(&hit_source_rank(&b.source))
+        .then_with(|| hit_target_position_order(a, b))
+}
+
+fn hit_target_position_order(a: &HitTarget, b: &HitTarget) -> std::cmp::Ordering {
     let ay = a.bbox.map(|b| rounded_i64(b.y)).unwrap_or(i64::MAX);
     let by = b.bbox.map(|b| rounded_i64(b.y)).unwrap_or(i64::MAX);
     ay.cmp(&by)
@@ -730,6 +991,16 @@ fn hit_target_order(a: &HitTarget, b: &HitTarget) -> std::cmp::Ordering {
         })
         .then_with(|| a.role.cmp(b.role))
         .then_with(|| a.id.cmp(&b.id))
+}
+
+fn hit_source_rank(source: &str) -> u8 {
+    match source {
+        "accessibility" => 0,
+        "page" => 1,
+        "ocr" => 2,
+        "vision" => 3,
+        _ => 4,
+    }
 }
 
 fn source_name(source: dunst_core::Source) -> &'static str {
@@ -756,4 +1027,43 @@ fn hash_bbox<H: Hasher>(bbox: Bbox, hasher: &mut H) {
 
 fn rounded_i64(value: f64) -> i64 {
     value.round() as i64
+}
+
+#[cfg(test)]
+mod hit_target_tests {
+    use super::*;
+
+    #[test]
+    fn page_scroll_bbox_does_not_mask_ocr_targets() {
+        let page = HitTarget {
+            id: "page@scroll:down".into(),
+            source: "page".into(),
+            role: "group",
+            label: None,
+            value: None,
+            bbox: Some(Bbox {
+                x: 0.0,
+                y: 0.0,
+                w: 1_000.0,
+                h: 800.0,
+            }),
+            safe_click: None,
+            confidence: 0.65,
+            action_modes: Vec::new(),
+            risk: RiskAssessment::low(),
+        };
+
+        assert!(
+            !bbox_duplicate_of_existing(
+                Bbox {
+                    x: 100.0,
+                    y: 120.0,
+                    w: 80.0,
+                    h: 20.0,
+                },
+                &[page],
+            ),
+            "page pseudo-targets are scroll surfaces, not real semantic duplicates"
+        );
+    }
 }

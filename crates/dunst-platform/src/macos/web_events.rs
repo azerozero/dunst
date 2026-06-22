@@ -206,6 +206,66 @@ pub(super) fn hover_web_background_impl(
     }
 }
 
+/// Post a concrete wheel event to a backgrounded web window through SkyLight.
+/// Unlike PageDown, this targets a point inside a scroll container/card and lets
+/// the browser decide which element owns the wheel delta.
+pub fn scroll_web_background(
+    pid: i32,
+    window_id: u32,
+    sx: f64,
+    sy: f64,
+    ox: f64,
+    oy: f64,
+    delta_y: i32,
+) -> Result<()> {
+    scroll_web_background_impl(pid, window_id, sx, sy, ox, oy, delta_y).map_err(ActionFailure::into)
+}
+
+pub(super) fn scroll_web_background_impl(
+    pid: i32,
+    window_id: u32,
+    sx: f64,
+    sy: f64,
+    ox: f64,
+    oy: f64,
+    delta_y: i32,
+) -> std::result::Result<(), ActionFailure> {
+    if window_id == 0 || !skylight::mouse_post_available() {
+        return Err(ActionFailure::Execution(
+            "background wheel scroll requires the SkyLight backend".into(),
+        ));
+    }
+    ensure_user_idle_action("background wheel scroll")?;
+    focus_without_raise(window_id);
+    thread::sleep(Duration::from_millis(40));
+
+    let screen = CGPoint::new(sx, sy);
+    let local = CGPoint::new(sx - ox, sy - oy);
+    let source = event_source("create background scroll CGEventSource")?;
+    let event = CGEvent::new_scroll_event(source, ScrollEventUnit::PIXEL, 1, delta_y, 0, 0)
+        .map_err(|err| ActionFailure::Execution(format!("create wheel scroll CGEvent: {err:?}")))?;
+    // SAFETY: `event` is a live CGEventRef; `screen` is a valid CGPoint.
+    unsafe { CGEventSetLocation(event.as_ptr().cast(), screen) };
+    event.set_integer_value_field(
+        EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER,
+        window_id as i64,
+    );
+    event.set_integer_value_field(
+        EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER_THAT_CAN_HANDLE_THIS_EVENT,
+        window_id as i64,
+    );
+    event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, pid as i64);
+    skylight::set_window_location(event.as_ptr().cast(), local.x, local.y);
+    skylight::attach_auth_message(event.as_ptr().cast(), pid);
+    if skylight::post_event_to_pid(pid, event.as_ptr().cast()) {
+        Ok(())
+    } else {
+        Err(ActionFailure::Execution(
+            "post background wheel scroll via SkyLight".into(),
+        ))
+    }
+}
+
 /// Type `text` into the focused element of a backgrounded window's (web)
 /// content via SkyLight: focus-without-raise, then per character a key
 /// down/up whose CGEvent carries the typed unicode + the
@@ -296,7 +356,7 @@ pub(super) fn post_background_key_event(
 /// is absent or if either key event cannot be created and posted.
 pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) -> Result<()> {
     if !skylight::mouse_post_available() {
-        return Err(VisualOpsError::Execution(
+        return Err(DunstError::Execution(
             "key_web_background requires the SkyLight backend".into(),
         ));
     }
@@ -309,7 +369,7 @@ pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) ->
     for down in [true, false] {
         let source = event_source("skylight key CGEventSource")?;
         let event = CGEvent::new_keyboard_event(source, keycode, down).map_err(|err| {
-            VisualOpsError::Execution(format!("create background key CGEvent: {err:?}"))
+            DunstError::Execution(format!("create background key CGEvent: {err:?}"))
         })?;
         if !mods.is_empty() {
             event.set_flags(mods);
@@ -317,7 +377,7 @@ pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) ->
         event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, pid as i64);
         skylight::attach_auth_message(event.as_ptr().cast(), pid);
         if !skylight::post_event_to_pid(pid, event.as_ptr().cast()) {
-            return Err(VisualOpsError::Execution(
+            return Err(DunstError::Execution(
                 "post background key CGEvent via SkyLight".into(),
             ));
         }
@@ -326,7 +386,7 @@ pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) ->
 }
 
 pub fn press_key(pid: i32, window_id: u32, key: &str) -> Result<()> {
-    let keycode = named_keycode(key).map_err(VisualOpsError::from)?;
+    let keycode = named_keycode(key).map_err(DunstError::from)?;
     key_web_background(pid, window_id, keycode, 0)
 }
 

@@ -1,6 +1,7 @@
 use super::*;
 
 mod keyboard;
+pub(super) use keyboard::page_scroll_target_id;
 
 impl Engine {
     // --- raw input tools ----------------------------------------------------
@@ -32,7 +33,7 @@ impl Engine {
         self.ensure_point_in_target_window(x, y, "reveal_hover_click")?;
         let query = query.trim();
         if query.is_empty() {
-            return Err(VisualOpsError::Execution(
+            return Err(DunstError::Execution(
                 "reveal_hover_click requires a non-empty query".into(),
             ));
         }
@@ -71,7 +72,7 @@ impl Engine {
                     risk,
                     Err(err),
                 );
-                Err(VisualOpsError::Execution(
+                Err(DunstError::Execution(
                     "reveal_hover_click failed; cursor/window restore was attempted".into(),
                 ))
             }
@@ -109,7 +110,7 @@ impl Engine {
             }
         }
 
-        Err(VisualOpsError::Execution(format!(
+        Err(DunstError::Execution(format!(
             "no visible clickable element found after hover reveal for query {query:?}"
         )))
     }
@@ -204,7 +205,7 @@ impl Engine {
             } else if button == 0 {
                 dunst_platform::click_at_point(self.target.pid, x, y)
             } else {
-                Err(VisualOpsError::Execution(
+                Err(DunstError::Execution(
                     "right-click requires the SkyLight backend".into(),
                 ))
             }
@@ -214,7 +215,7 @@ impl Engine {
     /// Non-macOS stub: raw CGEvent input needs the macOS backend.
     #[cfg(not(target_os = "macos"))]
     pub fn click_at(&mut self, _x: f64, _y: f64) -> dunst_core::Result<AuditEntry> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "click_at requires a macOS backend".into(),
         ))
     }
@@ -229,7 +230,7 @@ impl Engine {
         _settle_ms: u64,
         _reasoning: Option<&str>,
     ) -> dunst_core::Result<AuditEntry> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "reveal_hover_click requires a macOS backend".into(),
         ))
     }
@@ -237,7 +238,7 @@ impl Engine {
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
     pub fn right_click_at(&mut self, _x: f64, _y: f64) -> dunst_core::Result<AuditEntry> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "right_click_at requires a macOS backend".into(),
         ))
     }
@@ -245,7 +246,7 @@ impl Engine {
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
     pub fn double_click_at(&mut self, _x: f64, _y: f64) -> dunst_core::Result<AuditEntry> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "double_click_at requires a macOS backend".into(),
         ))
     }
@@ -270,7 +271,7 @@ impl Engine {
     /// Non-macOS stub: raw CGEvent input needs the macOS backend.
     #[cfg(not(target_os = "macos"))]
     pub fn hover_at(&self, _x: f64, _y: f64) -> dunst_core::Result<()> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "hover_at requires a macOS backend".into(),
         ))
     }

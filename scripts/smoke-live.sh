@@ -41,5 +41,5 @@ pid="$(pgrep -x "$app" | head -1 || true)"
 [[ -n "$pid" ]] || { echo "error: could not find pid for $app" >&2; exit 1; }
 echo "    $app pid=$pid"
 
-echo "==> driving live MCP smoke (window 0 -> AXMainWindow)"
-exec python3 scripts/smoke-live.py "$bin" "$pid" 0
+echo "==> driving live MCP smoke (app target discovery)"
+exec python3 scripts/smoke-live.py "$bin" --app "$app"

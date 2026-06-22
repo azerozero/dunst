@@ -73,7 +73,7 @@ impl Engine {
         // Guard the synchronous keystroke path against a multi-MB payload (audit C9).
         const MAX_TYPE_LEN: usize = 100_000;
         if text.len() > MAX_TYPE_LEN {
-            return Err(dunst_core::VisualOpsError::Execution(format!(
+            return Err(dunst_core::DunstError::Execution(format!(
                 "type text too long: {} bytes (max {MAX_TYPE_LEN})",
                 text.len()
             )));
@@ -105,9 +105,9 @@ impl Engine {
         let target = self
             .scene_graph()
             .get(target_id)
-            .ok_or_else(|| VisualOpsError::ElementNotFound(target_id.into()))?;
+            .ok_or_else(|| DunstError::ElementNotFound(target_id.into()))?;
         let bbox = target.bbox.ok_or_else(|| {
-            VisualOpsError::Execution(format!(
+            DunstError::Execution(format!(
                 "target {target_id} has no bbox; a drop needs a concrete point"
             ))
         })?;

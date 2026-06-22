@@ -29,7 +29,7 @@ impl Engine {
             }
         }
 
-        Err(VisualOpsError::Execution(format!(
+        Err(DunstError::Execution(format!(
             "no clickable option found for query {query:?}"
         )))
     }
@@ -55,7 +55,7 @@ impl Engine {
     ) -> dunst_core::Result<(String, SemanticAction)> {
         self.scene_graph()
             .get(id)
-            .ok_or_else(|| VisualOpsError::ElementNotFound(id.into()))?;
+            .ok_or_else(|| DunstError::ElementNotFound(id.into()))?;
 
         let mut actions = Vec::new();
         for action in preferred {
@@ -78,7 +78,7 @@ impl Engine {
             .map(|a| a.risk.clone())
             .unwrap_or_else(RiskAssessment::low);
         if requested_risk.requires_approval {
-            return Err(VisualOpsError::ActionUnavailable {
+            return Err(DunstError::ActionUnavailable {
                 id: id.into(),
                 action: preferred
                     .first()
@@ -98,7 +98,7 @@ impl Engine {
                 .and_then(|n| n.parent.as_deref());
         }
 
-        Err(VisualOpsError::ActionUnavailable {
+        Err(DunstError::ActionUnavailable {
             id: id.into(),
             action: preferred
                 .first()

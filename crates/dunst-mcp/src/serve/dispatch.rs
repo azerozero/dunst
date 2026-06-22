@@ -1,4 +1,5 @@
 use super::*;
+use crate::serve::registry::{tool_route, ToolRoute};
 
 mod args;
 mod element_tools;
@@ -15,16 +16,23 @@ pub(super) fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> V
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
+    let Some(route) = tool_route(name) else {
+        return text_response(id, name, started, Err(format!("unknown tool: {name}")));
+    };
+
     // screenshot returns an IMAGE content block, not text.
-    if name == "screenshot" {
+    if route == ToolRoute::Screenshot {
         return screenshot_response(engine, id, name, started);
     }
 
-    let outcome = read_tools::dispatch(engine, name, &args)
-        .or_else(|| element_tools::dispatch(engine, name, &args))
-        .or_else(|| raw_tools::dispatch(engine, name, &args))
-        .or_else(|| window_app_tools::dispatch(engine, name, &args))
-        .unwrap_or_else(|| Err(format!("unknown tool: {name}")));
+    let outcome = match route {
+        ToolRoute::Read => read_tools::dispatch(engine, name, &args),
+        ToolRoute::Element => element_tools::dispatch(engine, name, &args),
+        ToolRoute::Raw => raw_tools::dispatch(engine, name, &args),
+        ToolRoute::WindowApp => window_app_tools::dispatch(engine, name, &args),
+        ToolRoute::Screenshot => unreachable!("handled above"),
+    }
+    .unwrap_or_else(|| Err(format!("registered tool has no handler: {name}")));
 
     text_response(id, name, started, outcome)
 }

@@ -139,7 +139,7 @@ fn disabled_button_click_is_unavailable() {
         .click_element("btn_publier", Some("publish disabled draft"))
         .unwrap_err();
 
-    assert!(matches!(err, VisualOpsError::ActionUnavailable { .. }));
+    assert!(matches!(err, DunstError::ActionUnavailable { .. }));
     assert_eq!(calls.lock().unwrap().len(), 0);
 }
 
@@ -392,7 +392,7 @@ fn approve_rejects_unknown_and_non_gated_ids() {
 
     // Unknown id → ElementNotFound; nothing is stored.
     let err = eng.approve("no_such_id").unwrap_err();
-    assert!(matches!(err, VisualOpsError::ElementNotFound(_)));
+    assert!(matches!(err, DunstError::ElementNotFound(_)));
 
     // A low-risk element (toolbar button) is not gated → error, nothing stored.
     let low = id_for(&eng, "Nouvelle note");
@@ -441,7 +441,7 @@ fn raw_input_gate_requires_pending_synthetic_approval() {
 
     eng.approvals.remove("screen@10,20:click");
     let err = eng.approve("screen@10,20:other").unwrap_err();
-    assert!(matches!(err, VisualOpsError::ElementNotFound(_)));
+    assert!(matches!(err, DunstError::ElementNotFound(_)));
 }
 
 #[test]
@@ -464,7 +464,7 @@ fn raw_user_active_failure_preserves_approval_for_retry() {
         "approved scroll should pass the raw gate"
     );
 
-    let outcome = Err(VisualOpsError::Execution(
+    let outcome = Err(DunstError::Execution(
             "user-active guard blocked background key: last keyboard/mouse input was 244 ms ago (< 300 ms)".into(),
         ));
     let err = eng

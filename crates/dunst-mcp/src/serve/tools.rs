@@ -170,7 +170,7 @@ fn query_tools() -> Vec<Value> {
         ),
         tool(
             "get_hit_targets",
-            "Return semantic UI targets with labels, roles, safe click zones, available action modes (click/type/drag/drop/etc.), risk, target_visibility, selected browser tab, and a ui_epoch fingerprint. Pass previous_epoch to detect stale coordinates after window moves, resizes, tab switches, or page changes.",
+            "Return semantic UI targets with labels, roles, safe click zones, available action modes (click/type/drag/drop/scroll/read_at/etc.), risk, target_visibility, selected browser tab, and a ui_epoch fingerprint. AX targets are listed first, with page scroll pseudo-targets plus OCR text/cards and vision shapes added as supplemental targets when available. Pass previous_epoch to detect stale coordinates after window moves, resizes, tab switches, or page changes.",
             schema(
                 json!({
                     "include_latent": { "type": "boolean", "description": "include latent/off-screen nodes (default false)" },
@@ -573,8 +573,13 @@ fn keyboard_menu_tools() -> Vec<Value> {
         ),
         tool(
             "scroll",
-            "Scroll the focused page/container. With id, uses direct AX scrollbar value changes on that element or an ancestor exposing AXVerticalScrollBar. Without id, falls back to background Page/Home/End keys. direction: down|up|top|bottom; pages: number of pages (default 3). Action responses are compact by default; set include_diff=true for the full scene diff.",
+            "Scroll the focused page/container. With a real AX id, uses direct AX scrollbar value changes on that element or an ancestor exposing AXVerticalScrollBar. With a page@scroll:* pseudo-target from get_hit_targets, wheel-scrolls the page center. Without id, falls back to background Page/Home/End keys. direction: down|up|top|bottom; pages: number of pages (default 3). Action responses are compact by default; set include_diff=true for the full scene diff.",
             schema(json!({ "direction": {"type":"string","enum":["down","up","top","bottom"]}, "pages": {"type":"integer"}, "id": {"type":"string","description":"optional scrollable element id; requires an AXVerticalScrollBar on the element or an ancestor"}, "include_diff": {"type":"boolean"} }), &[]),
+        ),
+        tool(
+            "scroll_at",
+            "Wheel-scroll at a concrete screen point inside the target window. Use when get_hit_targets returns a page/card pseudo-target or when AX exposes no scrollbar for the desired container. direction: down|up|top|bottom; pages defaults to 3. Raw wheel input is approval-gated.",
+            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"}, "direction": {"type":"string","enum":["down","up","top","bottom"]}, "pages": {"type":"integer"}, "include_diff": {"type":"boolean"} }), &["x", "y"]),
         ),
         tool(
             "zoom",

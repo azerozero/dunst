@@ -15,8 +15,8 @@ destructive action:
 
 Exit code 0 only if every assertion holds. Safe to run repeatedly / from a loop.
 
-Usage: scripts/smoke-live.py <bin> <pid> <window_id>
-       (window_id 0 -> AXMainWindow fallback)
+Usage: scripts/smoke-live.py <bin> --app <app_name>
+       scripts/smoke-live.py <bin> <pid> <window_id>
 """
 import json
 import subprocess
@@ -24,13 +24,17 @@ import sys
 import time
 
 if len(sys.argv) != 4:
-    sys.exit("usage: smoke-live.py <dunst-mcp-bin> <pid> <window_id>")
-BIN, PID, WIN = sys.argv[1], sys.argv[2], sys.argv[3]
+    sys.exit("usage: smoke-live.py <dunst-mcp-bin> (--app <app_name> | <pid> <window_id>)")
+BIN = sys.argv[1]
+if sys.argv[2] == "--app":
+    target_args = ["serve", "--app", sys.argv[3]]
+else:
+    target_args = ["serve", "--pid", sys.argv[2], "--window", sys.argv[3]]
 
 NOTE_TEXT = "Dunst MCP — note de test live (WP-E), ecrite via type_into du serveur MCP."
 
 proc = subprocess.Popen(
-    [BIN, "serve", "--pid", PID, "--window", WIN],
+    [BIN, *target_args],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     text=True, bufsize=1,
 )

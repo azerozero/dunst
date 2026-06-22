@@ -1,10 +1,11 @@
 use super::*;
+use crate::serve::registry::TOOL_REGISTRY;
 
 #[test]
 fn tools_list_exposes_read_text_with_object_schema() {
     std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
     let tools = tools_list();
-    assert_eq!(tools.len(), 64, "tool count");
+    assert_eq!(tools.len(), 65, "tool count");
     // Every tool must declare a JSON-Schema object input (the type:object fix).
     for t in &tools {
         assert_eq!(
@@ -217,5 +218,33 @@ fn tools_list_exposes_click_at_and_press_key() {
     assert!(
         tools.iter().all(|t| t["name"] != "approve"),
         "approve is an operator-side escape hatch and is not advertised by default"
+    );
+
+    let scroll_at = tools
+        .iter()
+        .find(|t| t["name"] == "scroll_at")
+        .expect("scroll_at tool present");
+    assert_eq!(scroll_at["inputSchema"]["required"], json!(["x", "y"]));
+}
+
+#[test]
+fn tool_registry_matches_advertised_catalog() {
+    std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
+    let mut catalog: Vec<_> = tools_list()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect();
+    let mut registry: Vec<_> = TOOL_REGISTRY
+        .iter()
+        .filter(|tool| tool.name != "approve")
+        .map(|tool| tool.name.to_string())
+        .collect();
+    catalog.sort();
+    registry.sort();
+
+    assert_eq!(catalog, registry);
+    assert!(
+        TOOL_REGISTRY.iter().any(|tool| tool.name == "approve"),
+        "operator-side approve tool remains registered even when hidden by default"
     );
 }

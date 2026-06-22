@@ -225,7 +225,7 @@ pub(super) fn layout_frames(
             grid_frames(count, &usable, cols, rows, gap)
         }
         other => {
-            return Err(VisualOpsError::Execution(format!(
+            return Err(DunstError::Execution(format!(
                 "invalid arrange mode {other:?}; expected grid|columns|rows|cascade|maximize"
             )))
         }

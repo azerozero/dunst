@@ -83,7 +83,7 @@ impl Engine {
             .iter()
             .find(|d| d.index == display_index)
             .ok_or_else(|| {
-                VisualOpsError::Execution(format!(
+                DunstError::Execution(format!(
                     "display index {display_index} not found; call list_displays first"
                 ))
             })?;
@@ -116,7 +116,7 @@ impl Engine {
             .into_iter()
             .find(|d| d.index == display_index)
             .ok_or_else(|| {
-                VisualOpsError::Execution(format!(
+                DunstError::Execution(format!(
                     "display index {display_index} not found; call list_displays first"
                 ))
             })?;
@@ -130,7 +130,7 @@ impl Engine {
             })
             .collect();
         if windows.is_empty() {
-            return Err(VisualOpsError::Execution(format!(
+            return Err(DunstError::Execution(format!(
                 "no drivable windows found for app {app:?}"
             )));
         }
@@ -172,7 +172,7 @@ impl Engine {
         _display_index: usize,
         _preserve_size: bool,
     ) -> dunst_core::Result<MoveAppResult> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "move_app_to_display requires a macOS backend".into(),
         ))
     }
@@ -263,7 +263,7 @@ impl Engine {
         all: bool,
     ) -> dunst_core::Result<ArrangeResult> {
         if !all && app.is_none() && window_ids.is_empty() {
-            return Err(VisualOpsError::Execution(
+            return Err(DunstError::Execution(
                 "arrange_windows requires window_ids, app, or all=true".into(),
             ));
         }
@@ -272,7 +272,7 @@ impl Engine {
             .into_iter()
             .find(|d| d.index == display_index)
             .ok_or_else(|| {
-                VisualOpsError::Execution(format!(
+                DunstError::Execution(format!(
                     "display index {display_index} not found; call list_displays first"
                 ))
             })?;
@@ -290,7 +290,7 @@ impl Engine {
             .collect();
         selected.sort_by_key(|w| w.window_id);
         if selected.is_empty() {
-            return Err(VisualOpsError::Execution(
+            return Err(DunstError::Execution(
                 "arrange_windows found no matching drivable windows".into(),
             ));
         }
@@ -429,7 +429,7 @@ impl Engine {
         _window_ids: &[u32],
         _all: bool,
     ) -> dunst_core::Result<ArrangeResult> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "arrange_windows requires a macOS backend".into(),
         ))
     }

@@ -22,7 +22,7 @@ impl Engine {
         }
         let visibility = self.target_visibility();
         if !visibility.covered_by.is_empty() {
-            return Err(VisualOpsError::Execution(format!(
+            return Err(DunstError::Execution(format!(
                 "read_series borrow_cursor=true requires visible target pixels, but target window {} is covered by {:?}; use expose_target_window or read without borrow_cursor",
                 visibility.target_window_id,
                 visibility
@@ -68,7 +68,7 @@ impl Engine {
         _points: &[(f64, f64)],
         _borrow_cursor: bool,
     ) -> dunst_core::Result<Vec<Vec<TextHit>>> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "read_series requires a macOS backend".into(),
         ))
     }
@@ -138,7 +138,7 @@ impl Engine {
             window,
         )
         .ok_or_else(|| {
-            VisualOpsError::Perception("window fovea does not intersect target window".into())
+            DunstError::Perception("window fovea does not intersect target window".into())
         })?;
         self.read_text(Some(region), false)
     }
@@ -165,9 +165,7 @@ impl Engine {
             .map(|s| s.success())
             .unwrap_or(false);
         if !ok {
-            return Err(VisualOpsError::Perception(
-                "screen fovea capture failed".into(),
-            ));
+            return Err(DunstError::Perception("screen fovea capture failed".into()));
         }
         let geom = dunst_vision::CaptureGeometry {
             window_origin_pt: (x, y),
@@ -182,7 +180,7 @@ impl Engine {
             Ok(boxes) => boxes,
             Err(e) => {
                 let _ = std::fs::remove_file(&path);
-                return Err(VisualOpsError::Perception(format!(
+                return Err(DunstError::Perception(format!(
                     "screen fovea OCR failed: {e}"
                 )));
             }
@@ -219,7 +217,7 @@ impl Engine {
     ) -> dunst_core::Result<OcrTextSearchResult> {
         let query = query.trim();
         if query.is_empty() {
-            return Err(VisualOpsError::Execution(
+            return Err(DunstError::Execution(
                 "find_ocr_text requires a non-empty query".into(),
             ));
         }
@@ -288,7 +286,7 @@ impl Engine {
             .get(occurrence.saturating_sub(1))
             .or_else(|| search.hits.first())
             .cloned()
-            .ok_or_else(|| VisualOpsError::ElementNotFound(format!("OCR text {query:?}")))?;
+            .ok_or_else(|| DunstError::ElementNotFound(format!("OCR text {query:?}")))?;
         let audit = self.click_at_button(
             hit.center.0,
             hit.center.1,
@@ -397,7 +395,7 @@ impl Engine {
             .first()
             .cloned()
             .ok_or_else(|| {
-                VisualOpsError::Execution(
+                DunstError::Execution(
                     "dismiss_modal found no safe OCR close/dismiss candidate; use detect_modal/read_text_detailed and avoid raw coordinate guesses"
                         .into(),
                 )
@@ -531,7 +529,7 @@ impl Engine {
         // CGWindowListCreateImage misses it.
         let captured = dunst_vision::capture::capture_window_composited(self.target.window_id)
             .map_err(|e| {
-                VisualOpsError::Perception(format!("chart scan requires a live window: {e}"))
+                DunstError::Perception(format!("chart scan requires a live window: {e}"))
             })?;
         // Read the chart by GEOMETRY — no hover, occlusion-proof: derive the plot
         // from the OCR'd axis labels, calibrate the Y axis from its price labels,
@@ -590,7 +588,7 @@ impl Engine {
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
     pub fn scan_chart(&self, _samples: usize) -> dunst_core::Result<ScanResult> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "scan_chart requires a macOS backend".into(),
         ))
     }

@@ -61,6 +61,24 @@ fn engine_with_counter() -> (Engine, Arc<AtomicUsize>) {
     (eng, calls)
 }
 
+#[test]
+fn engine_new_normalizes_main_window_placeholder_target() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let perceptor = Box::new(MockPerceptor::notes_fixture().unwrap());
+    let exec = Box::new(CountingExecutor(calls));
+    let eng = Engine::new(
+        perceptor,
+        exec,
+        Target {
+            pid: 1363,
+            window_id: 0,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(eng.target(), (1363, 105));
+}
+
 type RecordedCall = (String, SemanticAction, Option<String>);
 
 /// Executor that records every `(id, action, argument)` it receives, so we

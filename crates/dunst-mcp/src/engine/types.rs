@@ -102,6 +102,8 @@ pub struct HitActionMode {
     pub action: SemanticAction,
     pub tool_hint: String,
     pub target_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Value>,
     pub drop_targets: Vec<String>,
     pub risk: RiskAssessment,
 }
@@ -135,6 +137,7 @@ pub struct HitTargetsResult {
     pub state_changed: bool,
     pub stale_reason: Option<String>,
     pub resume_hint: Option<String>,
+    pub supplemental_warnings: Vec<String>,
     pub targets: Vec<HitTarget>,
 }
 

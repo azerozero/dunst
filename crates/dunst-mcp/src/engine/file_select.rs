@@ -51,7 +51,7 @@ impl Engine {
         _trigger: Option<FileSelectTrigger>,
         _reasoning: Option<&str>,
     ) -> dunst_core::Result<AuditEntry> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "select_file requires a macOS backend".into(),
         ))
     }
@@ -70,12 +70,12 @@ impl Engine {
                 let node = self
                     .scene_graph()
                     .get(id)
-                    .ok_or_else(|| VisualOpsError::ElementNotFound(id.clone()))?;
+                    .ok_or_else(|| DunstError::ElementNotFound(id.clone()))?;
                 let bbox = node.bbox.ok_or_else(|| {
-                    VisualOpsError::Execution(format!("element {id:?} has no screen bbox"))
+                    DunstError::Execution(format!("element {id:?} has no screen bbox"))
                 })?;
                 if bbox.w <= 0.0 || bbox.h <= 0.0 {
-                    return Err(VisualOpsError::Execution(format!(
+                    return Err(DunstError::Execution(format!(
                         "element {id:?} has an empty screen bbox"
                     )));
                 }
@@ -115,7 +115,7 @@ impl Engine {
         }
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Err(VisualOpsError::Execution(format!(
+        Err(DunstError::Execution(format!(
             "select_file failed: {}",
             if stderr.is_empty() { stdout } else { stderr }
         )))
@@ -131,11 +131,11 @@ impl Engine {
         cmd.arg(&target.title);
         let output = cmd
             .output()
-            .map_err(|e| VisualOpsError::Execution(format!("borrow window failed: {e}")))?;
+            .map_err(|e| DunstError::Execution(format!("borrow window failed: {e}")))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            return Err(VisualOpsError::Execution(format!(
+            return Err(DunstError::Execution(format!(
                 "borrow window failed: {}",
                 if stderr.is_empty() { stdout } else { stderr }
             )));
@@ -154,13 +154,13 @@ impl Engine {
         cmd.arg(pid);
         let output = cmd
             .output()
-            .map_err(|e| VisualOpsError::Execution(format!("restore window failed: {e}")))?;
+            .map_err(|e| DunstError::Execution(format!("restore window failed: {e}")))?;
         if output.status.success() {
             return Ok(());
         }
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Err(VisualOpsError::Execution(format!(
+        Err(DunstError::Execution(format!(
             "restore window failed: {}",
             if stderr.is_empty() { stdout } else { stderr }
         )))
@@ -396,27 +396,27 @@ impl Engine {
         cmd.stderr(std::process::Stdio::piped());
         let mut child = cmd
             .spawn()
-            .map_err(|e| VisualOpsError::Execution(format!("{label} failed: {e}")))?;
+            .map_err(|e| DunstError::Execution(format!("{label} failed: {e}")))?;
         let started = Instant::now();
 
         loop {
             if child
                 .try_wait()
-                .map_err(|e| VisualOpsError::Execution(format!("{label} wait failed: {e}")))?
+                .map_err(|e| DunstError::Execution(format!("{label} wait failed: {e}")))?
                 .is_some()
             {
                 return child
                     .wait_with_output()
-                    .map_err(|e| VisualOpsError::Execution(format!("{label} failed: {e}")));
+                    .map_err(|e| DunstError::Execution(format!("{label} failed: {e}")));
             }
             if started.elapsed() >= timeout {
                 let _ = child.kill();
                 let output = child.wait_with_output().map_err(|e| {
-                    VisualOpsError::Execution(format!("{label} timeout cleanup failed: {e}"))
+                    DunstError::Execution(format!("{label} timeout cleanup failed: {e}"))
                 })?;
                 let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                return Err(VisualOpsError::Execution(format!(
+                return Err(DunstError::Execution(format!(
                     "{label} timed out after {} ms{}{}",
                     timeout.as_millis(),
                     if stdout.is_empty() {

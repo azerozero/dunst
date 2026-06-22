@@ -64,6 +64,12 @@ pub fn accessibility_trusted() -> bool {
     macos::accessibility_trusted()
 }
 
+/// Whether the current process has macOS Screen Recording permission.
+#[cfg(target_os = "macos")]
+pub fn screen_capture_trusted() -> bool {
+    macos::screen_capture_trusted()
+}
+
 /// Make `window_id`'s app **AppKit-active without raising it or switching Spaces**
 /// (SkyLight focus-without-raise, the recipe cua-driver ports from yabai). A
 /// backgrounded web canvas (e.g. a chart) only paints when its window is active,
@@ -100,7 +106,7 @@ pub fn set_window_frame(
     _width: Option<f64>,
     _height: Option<f64>,
 ) -> Result<()> {
-    Err(dunst_core::VisualOpsError::Execution(
+    Err(dunst_core::DunstError::Execution(
         "set_window_frame requires a macOS backend".into(),
     ))
 }
@@ -138,6 +144,22 @@ pub fn hover_web_background(
     macos::hover_web_background(pid, window_id, x, y, origin_x, origin_y)
 }
 
+/// Post a wheel-scroll event to a backgrounded web window at a concrete screen
+/// point. `delta_y` follows CoreGraphics convention: positive scrolls up,
+/// negative scrolls down.
+#[cfg(target_os = "macos")]
+pub fn scroll_web_background(
+    pid: i32,
+    window_id: u32,
+    x: f64,
+    y: f64,
+    origin_x: f64,
+    origin_y: f64,
+    delta_y: i32,
+) -> Result<()> {
+    macos::scroll_web_background(pid, window_id, x, y, origin_x, origin_y, delta_y)
+}
+
 /// Type `text` into the focused element of a **backgrounded** window's (web)
 /// content via SkyLight — trusted (auth-signed), no cursor, no foreground. The
 /// caller should first focus the field (e.g. a [`click_web_background`] on it).
@@ -171,7 +193,7 @@ pub fn element_at_point(pid: i32, x: f64, y: f64) -> Result<RawAxNode> {
 /// Non-macOS stub.
 #[cfg(not(target_os = "macos"))]
 pub fn element_at_point(_pid: i32, _x: f64, _y: f64) -> Result<RawAxNode> {
-    Err(dunst_core::VisualOpsError::Perception(
+    Err(dunst_core::DunstError::Perception(
         "element_at_point requires a macOS backend".into(),
     ))
 }
@@ -181,18 +203,16 @@ mod macos;
 
 #[cfg(not(target_os = "macos"))]
 mod macos {
-    use dunst_core::{
-        RawAxNode, Result, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
-    };
+    use dunst_core::{DunstError, RawAxNode, Result, SceneNode, SemanticAction, Target, WindowRef};
 
     pub fn capture(_target: &Target) -> Result<Vec<RawAxNode>> {
-        Err(VisualOpsError::Perception(
+        Err(DunstError::Perception(
             "macOS accessibility backend is only available on macOS".into(),
         ))
     }
 
     pub fn window_ref(target: &Target) -> Result<WindowRef> {
-        Err(VisualOpsError::Perception(format!(
+        Err(DunstError::Perception(format!(
             "macOS accessibility backend is only available on macOS (pid={}, window_id={})",
             target.pid, target.window_id
         )))
@@ -204,7 +224,7 @@ mod macos {
         _action: SemanticAction,
         _argument: Option<&str>,
     ) -> Result<()> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "macOS accessibility backend is only available on macOS".into(),
         ))
     }

@@ -27,16 +27,16 @@ pub(super) fn push_unique_action(out: &mut Vec<SemanticAction>, action: Semantic
 pub(super) fn canonical_file_path(path: &str) -> dunst_core::Result<PathBuf> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
-        return Err(VisualOpsError::Execution(
+        return Err(DunstError::Execution(
             "select_file requires a non-empty path".into(),
         ));
     }
     let path = Path::new(trimmed);
     let canonical = path
         .canonicalize()
-        .map_err(|e| VisualOpsError::Execution(format!("file {trimmed:?} not accessible: {e}")))?;
+        .map_err(|e| DunstError::Execution(format!("file {trimmed:?} not accessible: {e}")))?;
     if !canonical.is_file() {
-        return Err(VisualOpsError::Execution(format!(
+        return Err(DunstError::Execution(format!(
             "path {:?} is not a file",
             canonical.display()
         )));
@@ -131,12 +131,12 @@ where
     Err(last_guard_err.expect("guard retry loop stores the last guard error"))
 }
 
-pub(super) fn is_user_active_guard_error(err: &VisualOpsError) -> bool {
+pub(super) fn is_user_active_guard_error(err: &DunstError) -> bool {
     err.to_string().contains("user-active guard blocked")
 }
 
-pub(super) fn is_element_not_found(err: &VisualOpsError) -> bool {
-    matches!(err, VisualOpsError::ElementNotFound(_))
+pub(super) fn is_element_not_found(err: &DunstError) -> bool {
+    matches!(err, DunstError::ElementNotFound(_))
 }
 
 pub(super) fn is_terminal_app_name(value: &str) -> bool {

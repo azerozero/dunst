@@ -143,8 +143,8 @@ Exit-code expectations:
 |---------|---------|---------|
 | `dunst-mcp demo` | `0` when the fixture loads and the scripted path completes | `1` on fixture or engine initialisation failure |
 | `dunst-mcp serve` | `0` when the stdio loop exits normally | `1` when an explicitly requested live target cannot be resolved |
-| `dunst-mcp doctor` | `0` when the local environment is usable for live automation | `1` when Accessibility is missing or the platform is unsupported |
-| `dunst-mcp setup` | `0` after printing config snippets | clap exits non-zero for invalid arguments |
+| `dunst-mcp doctor` | `0` when the local environment is usable for live automation | `1` when Accessibility, Screen Recording, config, or platform checks fail |
+| `dunst-mcp setup` | `0` after dry-run/edit output or successful apply/migrate | `1` on invalid config merge/write or clap exits non-zero for invalid arguments |
 
 ## MCP client setup
 
@@ -153,11 +153,13 @@ For local clients, use `scripts/mcp-dunst.sh` as the stdio entrypoint. The
 wrapper builds `target/debug/dunst-mcp` if needed, keeps stdout clean for
 JSON-RPC, then starts `dunst-mcp serve --live`.
 
-Print config snippets without writing user files:
+Inspect or write config snippets:
 
 ```bash
-cargo run -p dunst-mcp -- setup --client codex
-cargo run -p dunst-mcp -- setup --client claude --dev-wrapper
+cargo run -p dunst-mcp -- setup --client codex --dry-run
+cargo run -p dunst-mcp -- setup --client claude --dry-run --dev-wrapper
+cargo run -p dunst-mcp -- setup --client codex --apply
+cargo run -p dunst-mcp -- setup --client claude --migrate
 ```
 
 Codex can load the project-local registration in `.codex/config.toml` after a
@@ -169,6 +171,11 @@ The Codex config uses `startup_timeout_sec = 120` because the development
 wrapper may need to build `target/debug/dunst-mcp` before the MCP handshake.
 Installed configs that call a prebuilt `dunst-mcp` binary can use a shorter
 timeout.
+
+Use `setup --edit` to print the current file and merged result without writing,
+and `setup --config PATH` for tests or non-standard client paths. A compact
+device-free MCP transcript lives at `docs/fixtures/mcp-transcript.jsonl`; keep it
+updated when tool names or core response shapes change.
 
 To pin startup to an app:
 
@@ -298,11 +305,18 @@ offline `lychee` before commits. Heavier checks (`cargo test`,
 `cargo audit`, `cargo machete`) run before pushes. CI runs the online
 Markdown and link checks.
 
-Live smoke is macOS-only and requires Accessibility permission:
+Live smoke is macOS-only and requires Accessibility permission; screenshot/OCR
+paths also require Screen Recording:
 
 ```bash
 scripts/smoke-live.sh Notes
 ```
+
+Branch policy: `main` should be protected before release distribution. In the
+current repository, GitHub reports `main` as unprotected and the rulesets API
+returns `403`, so this environment cannot enforce the policy directly. Until
+rulesets/branch protection are available, green CI plus manual review is the
+required merge gate.
 
 ## Status
 

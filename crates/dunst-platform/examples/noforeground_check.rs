@@ -119,8 +119,8 @@ fn scene_node(raw: &RawAxNode) -> SceneNode {
     }
 }
 
-fn usage(message: &str) -> dunst_core::VisualOpsError {
-    dunst_core::VisualOpsError::Perception(format!(
+fn usage(message: &str) -> dunst_core::DunstError {
+    dunst_core::DunstError::Perception(format!(
         "{message}; usage: cargo run -p dunst-platform --example noforeground_check -- <pid> <window_id>"
     ))
 }

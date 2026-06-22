@@ -79,7 +79,7 @@ impl Engine {
         use dunst_vision::ocr::RecognitionMode;
         if let Some(region) = region_screen_pt {
             if region.w <= 0.0 || region.h <= 0.0 {
-                return Err(VisualOpsError::Perception(
+                return Err(DunstError::Perception(
                     "OCR region width/height must be positive".into(),
                 ));
             }
@@ -102,7 +102,7 @@ impl Engine {
         // Firefox windows are open.
         let captured = dunst_vision::capture::capture_window_composited(self.target.window_id)
             .map_err(|err| {
-                VisualOpsError::Perception(format!(
+                DunstError::Perception(format!(
                     "OCR requires a live macOS window (capture failed: {err})"
                 ))
             })?;
@@ -130,7 +130,7 @@ impl Engine {
                     });
                     return Ok(fallback);
                 }
-                return Err(VisualOpsError::Perception(format!("OCR failed: {err}")));
+                return Err(DunstError::Perception(format!("OCR failed: {err}")));
             }
         };
         let hits: Vec<TextHit> = boxes
@@ -168,7 +168,7 @@ impl Engine {
         _region_screen_pt: Option<Bbox>,
         _accurate: bool,
     ) -> dunst_core::Result<Vec<TextHit>> {
-        Err(VisualOpsError::Perception(
+        Err(DunstError::Perception(
             "OCR requires a live macOS window".into(),
         ))
     }
@@ -180,7 +180,7 @@ impl Engine {
         _accurate: bool,
         _content_only: bool,
     ) -> dunst_core::Result<ReadTextResult> {
-        Err(VisualOpsError::Perception(
+        Err(DunstError::Perception(
             "OCR requires a live macOS window".into(),
         ))
     }
@@ -195,7 +195,7 @@ impl Engine {
         // GPU/WebGL-rendered windows, so grab what is actually on screen instead.
         let captured = dunst_vision::capture::capture_window_composited(self.target.window_id)
             .map_err(|err| {
-                VisualOpsError::Perception(format!(
+                DunstError::Perception(format!(
                     "shape detection requires a live macOS window (capture failed: {err})"
                 ))
             })?;
@@ -214,7 +214,7 @@ impl Engine {
     /// Non-macOS stub: shape detection needs a live macOS window.
     #[cfg(not(target_os = "macos"))]
     pub fn read_shapes(&self) -> dunst_core::Result<Vec<ShapeHit>> {
-        Err(VisualOpsError::Perception(
+        Err(DunstError::Perception(
             "shape detection requires a live macOS window".into(),
         ))
     }

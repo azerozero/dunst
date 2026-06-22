@@ -31,7 +31,7 @@ pub fn now_ms() -> u64 {
 
 /// Crate-wide error type. Kept deliberately small for the POC.
 #[derive(Debug, thiserror::Error)]
-pub enum VisualOpsError {
+pub enum DunstError {
     #[error("element not found: {0}")]
     ElementNotFound(String),
     #[error("action {action} not available on element {id}")]
@@ -52,4 +52,4 @@ pub enum VisualOpsError {
     Io(#[from] std::io::Error),
 }
 
-pub type Result<T> = std::result::Result<T, VisualOpsError>;
+pub type Result<T> = std::result::Result<T, DunstError>;

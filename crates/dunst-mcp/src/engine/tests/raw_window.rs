@@ -6,7 +6,7 @@ fn user_active_guard_retry_runs_once_before_returning() {
     let attempts_in_closure = attempts.clone();
     let result = retry_user_active_guard_after(Duration::from_millis(0), || {
             if attempts_in_closure.fetch_add(1, Ordering::SeqCst) == 0 {
-                Err(VisualOpsError::Execution(
+                Err(DunstError::Execution(
                     "user-active guard blocked hover_at: last keyboard/mouse input was 1 ms ago (< 300 ms)".into(),
                 ))
             } else {
@@ -245,6 +245,27 @@ fn hit_targets_return_safe_click_zones_and_action_modes() {
     assert!(safe.bbox.x + safe.bbox.w <= bbox.x + bbox.w);
     assert!(safe.bbox.y + safe.bbox.h <= bbox.y + bbox.h);
     assert!(point_in_bbox(safe.center, bbox));
+
+    for direction in ["down", "up", "top", "bottom"] {
+        let target_id = format!("page@scroll:{direction}");
+        let page_scroll = result
+            .targets
+            .iter()
+            .find(|target| target.id == target_id)
+            .unwrap_or_else(|| panic!("{target_id} pseudo-target should be returned"));
+        assert_eq!(page_scroll.source, "page");
+        assert!(page_scroll.action_modes.iter().any(|mode| {
+            mode.action == SemanticAction::Scroll
+                && mode.tool_hint == "scroll"
+                && mode.target_id.as_deref() == Some(target_id.as_str())
+                && mode
+                    .arguments
+                    .as_ref()
+                    .and_then(|args| args.get("direction"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(direction)
+        }));
+    }
 }
 
 #[test]
@@ -518,6 +539,36 @@ fn raw_scroll_approval_covers_same_direction_count_change() {
         )
         .is_none(),
         "same-direction scroll should not ask for another approval solely because pages changed"
+    );
+}
+
+#[test]
+fn wheel_scroll_approval_covers_same_direction_count_change() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+
+    let gated = eng
+        .gate_raw_input(
+            "wheel@scroll:down:1:100,200",
+            SemanticAction::Scroll,
+            Some("wheel scroll down x1".into()),
+            Some("background wheel scroll"),
+            risk.clone(),
+        )
+        .expect("first wheel scroll should gate");
+    assert_eq!(gated.result, ActionResult::PendingApproval);
+
+    eng.approve("wheel@scroll:down:1:100,200").unwrap();
+    assert!(
+        eng.gate_raw_input(
+            "wheel@scroll:down:3:140,260",
+            SemanticAction::Scroll,
+            Some("wheel scroll down x3".into()),
+            Some("background wheel scroll"),
+            risk,
+        )
+        .is_none(),
+        "same-direction wheel scroll should not ask again solely because count or point changed"
     );
 }
 

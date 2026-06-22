@@ -61,7 +61,7 @@ impl Engine {
         if point_in_bbox((x, y), window) {
             return Ok(());
         }
-        Err(VisualOpsError::Execution(format!(
+        Err(DunstError::Execution(format!(
             "{operation} point ({x:.1},{y:.1}) is outside the target window {} {:?}; attach the intended window or set DUNST_MCP_ALLOW_OFF_TARGET_RAW=1",
             self.target.window_id,
             window
@@ -85,7 +85,7 @@ impl Engine {
         {
             return Ok(());
         }
-        Err(VisualOpsError::Execution(format!(
+        Err(DunstError::Execution(format!(
             "{operation} region {:?} is outside the target window {} {:?}; pass target-window screen coordinates or set DUNST_MCP_ALLOW_OFF_TARGET_RAW=1",
             region,
             self.target.window_id,
@@ -271,6 +271,7 @@ struct RawApprovalPolicy {
 
 pub(super) fn is_synthetic_approval_target_id(target_id: &str) -> bool {
     target_id.starts_with("keyboard@")
+        || target_id.starts_with("wheel@")
         || target_id.starts_with("screen@")
         || target_id.starts_with("file@")
         || target_id.starts_with("hover-reveal@")
@@ -301,20 +302,10 @@ fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
         }];
     }
     if let Some(rest) = target_id.strip_prefix("keyboard@scroll:") {
-        let mut parts = rest.split(':');
-        let direction = parts.next().unwrap_or("down");
-        let cost_events = parts
-            .next()
-            .and_then(|count| count.parse::<usize>().ok())
-            .unwrap_or(1)
-            .clamp(1, 20);
-        return vec![RawApprovalPolicy {
-            key: RawApprovalKey {
-                scope: RawApprovalScope::ScrollDirection(direction.to_string()),
-            },
-            grant_events: 5,
-            cost_events,
-        }];
+        return scroll_direction_policy(rest);
+    }
+    if let Some(rest) = target_id.strip_prefix("wheel@scroll:") {
+        return scroll_direction_policy(rest);
     }
     if target_id.starts_with("keyboard@hotkey:") {
         return vec![RawApprovalPolicy {
@@ -340,6 +331,23 @@ fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
         },
         grant_events: 1,
         cost_events: 1,
+    }]
+}
+
+fn scroll_direction_policy(rest: &str) -> Vec<RawApprovalPolicy> {
+    let mut parts = rest.split(':');
+    let direction = parts.next().unwrap_or("down");
+    let cost_events = parts
+        .next()
+        .and_then(|count| count.parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 20);
+    vec![RawApprovalPolicy {
+        key: RawApprovalKey {
+            scope: RawApprovalScope::ScrollDirection(direction.to_string()),
+        },
+        grant_events: 5,
+        cost_events,
     }]
 }
 

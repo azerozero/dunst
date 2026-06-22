@@ -1,4 +1,4 @@
-//! The VisualOps data model. These types are the contract between the
+//! The Dunst data model. These types are the contract between the
 //! perception layer, the graph/logic layer, and the MCP server.
 
 use serde::{Deserialize, Serialize};

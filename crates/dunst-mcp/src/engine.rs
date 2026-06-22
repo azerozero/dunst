@@ -16,8 +16,8 @@ use std::{
 };
 
 use dunst_core::{
-    ActionExecutor, ActionResult, AffordanceGraph, AuditEntry, Bbox, GraphDiff, Perceptor,
-    RiskAssessment, RiskLevel, Role, SceneGraph, SceneNode, SemanticAction, Target, VisualOpsError,
+    ActionExecutor, ActionResult, AffordanceGraph, AuditEntry, Bbox, DunstError, GraphDiff,
+    Perceptor, RiskAssessment, RiskLevel, Role, SceneGraph, SceneNode, SemanticAction, Target,
     WindowRef,
 };
 use dunst_graph::{audit, derive_affordances, scene, RiskEngine};
@@ -58,6 +58,7 @@ use chart::{is_axis_token, looks_like_clock, parse_value};
 use input::char_keycode;
 use input::{is_press_key_name, layout_sensitive_hotkey_message, parse_combo};
 use query_support::*;
+use raw_input::page_scroll_target_id;
 use raw_input_gate::{
     is_synthetic_approval_target_id, raw_press_key_target_id, raw_type_keys_target_id,
     RawApprovalKey,
@@ -120,9 +121,12 @@ impl Engine {
     pub fn new(
         perceptor: Box<dyn Perceptor>,
         executor: Box<dyn ActionExecutor>,
-        target: Target,
+        mut target: Target,
     ) -> dunst_core::Result<Self> {
         let window = perceptor.window_ref(&target)?;
+        if target.window_id == 0 && window.window_id != 0 {
+            target.window_id = window.window_id;
+        }
         let mut e = Engine {
             perceptor,
             executor,
@@ -211,6 +215,9 @@ impl Engine {
         self.pending_gate_ids.clear();
         self.target = Target { pid, window_id };
         self.window = self.perceptor.window_ref(&self.target)?;
+        if self.target.window_id == 0 && self.window.window_id != 0 {
+            self.target.window_id = self.window.window_id;
+        }
         self.refresh()
     }
 
@@ -221,7 +228,7 @@ impl Engine {
             .into_iter()
             .find(|w| w.window_id == window_id)
             .map(|w| w.pid)
-            .ok_or_else(|| VisualOpsError::Perception(format!("window {window_id} not found")))?;
+            .ok_or_else(|| DunstError::Perception(format!("window {window_id} not found")))?;
         // A stdio server may start on the device-free Notes fixture so it is
         // inspectable before a client chooses a real target. Once the client
         // attaches to a live WindowServer id, perception and actions must switch
@@ -235,7 +242,7 @@ impl Engine {
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
     pub fn attach_window(&mut self, _window_id: u32) -> dunst_core::Result<()> {
-        Err(VisualOpsError::Perception(
+        Err(DunstError::Perception(
             "attach requires a macOS backend".into(),
         ))
     }
@@ -324,13 +331,13 @@ impl Engine {
         let n = self
             .scene_graph()
             .get(id)
-            .ok_or_else(|| VisualOpsError::ElementNotFound(id.into()))?;
+            .ok_or_else(|| DunstError::ElementNotFound(id.into()))?;
         let actual = match field {
             "label" => n.label.clone().unwrap_or_default(),
             "value" => n.value.clone().unwrap_or_default(),
             "enabled" => n.enabled.to_string(),
             "focused" => n.focused.to_string(),
-            other => return Err(VisualOpsError::Execution(format!("unknown field {other}"))),
+            other => return Err(DunstError::Execution(format!("unknown field {other}"))),
         };
         Ok(actual == expected)
     }
@@ -353,7 +360,7 @@ impl Engine {
         let is_pending_synthetic = self.pending_gate_ids.contains(id);
         let is_scene_id = self.scene_graph().get(id).is_some();
         if !is_scene_id && !is_pending_synthetic {
-            return Err(VisualOpsError::ElementNotFound(id.into()));
+            return Err(DunstError::ElementNotFound(id.into()));
         }
         let own_gated = self
             .affordance_graph()
@@ -362,7 +369,7 @@ impl Engine {
             .map(|a| a.risk.requires_approval)
             .unwrap_or(false);
         if !own_gated && !is_pending_synthetic {
-            return Err(VisualOpsError::Execution(format!(
+            return Err(DunstError::Execution(format!(
                 "{id} is not gated; no approval required"
             )));
         }

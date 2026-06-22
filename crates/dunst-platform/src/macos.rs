@@ -41,16 +41,17 @@ use core_foundation::{
 use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
 use core_foundation_sys::base::{CFIndex, CFNullGetTypeID, CFRange};
 use core_graphics::{
+    access::ScreenCaptureAccess,
     display::CGDisplay,
     event::{
         CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGKeyCode, CGMouseButton,
-        EventField, KeyCode,
+        EventField, KeyCode, ScrollEventUnit,
     },
     event_source::{CGEventSource, CGEventSourceStateID},
     geometry::{CGPoint, CGRect, CGSize},
 };
 use dunst_core::{
-    Bbox, RawAxNode, Result, Role, SceneNode, SemanticAction, Target, VisualOpsError, WindowRef,
+    Bbox, DunstError, RawAxNode, Result, Role, SceneNode, SemanticAction, Target, WindowRef,
 };
 use foreign_types::ForeignType;
 use objc2::msg_send;
@@ -78,6 +79,11 @@ const DRAG_STEP_DELAY: Duration = Duration::from_millis(8);
 const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.0;
 const DEFAULT_USER_IDLE_GUARD_MS: u64 = 300;
 const TYPE_SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(80);
+
+pub fn screen_capture_trusted() -> bool {
+    ScreenCaptureAccess.preflight()
+}
+
 const TYPE_SETTLE_BASE_MS: u64 = 300;
 const TYPE_SETTLE_PER_CHAR_MS: u64 = 12;
 const TYPE_SETTLE_MAX_MS: u64 = 10_000;
@@ -106,7 +112,8 @@ pub(crate) use pointer_events::{
 use text_input::*;
 use web_events::*;
 pub(crate) use web_events::{
-    click_web_background, hover_web_background, key_web_background, press_key, type_text_background,
+    click_web_background, hover_web_background, key_web_background, press_key,
+    scroll_web_background, type_text_background,
 };
 
 thread_local! {

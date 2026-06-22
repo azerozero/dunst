@@ -4,7 +4,7 @@
 //!   demo        Run the AX-first pipeline on the bundled Notes fixture
 //!   serve       Start the MCP stdio server
 //!   doctor      Print local environment diagnostics for MCP setup
-//!   setup       Print MCP client config snippets
+//!   setup       Manage MCP client config snippets/files
 
 mod engine;
 mod serve;
@@ -13,6 +13,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use dunst_core::mock::{MockPerceptor, RecordingExecutor};
 use dunst_core::{ActionResult, SemanticAction, Target};
 use engine::Engine;
+use serde_json::json;
+use std::path::{Path, PathBuf};
 
 /// Fixture target for the device-free `demo` and the no-target `serve` fallback:
 /// the bundled Notes capture, not a live process.
@@ -54,7 +56,7 @@ enum Command {
     Serve(ServeArgs),
     /// Print local environment diagnostics.
     Doctor,
-    /// Print MCP client configuration snippets without writing files.
+    /// Manage MCP client configuration snippets/files.
     Setup(SetupArgs),
 }
 
@@ -82,6 +84,21 @@ struct SetupArgs {
     /// Use this checkout's development wrapper instead of installed dunst-mcp.
     #[arg(long)]
     dev_wrapper: bool,
+    /// Print the planned config without writing files.
+    #[arg(long, conflicts_with_all = ["apply", "edit", "migrate"])]
+    dry_run: bool,
+    /// Write or update the selected config file idempotently.
+    #[arg(long, conflicts_with_all = ["dry_run", "edit", "migrate"])]
+    apply: bool,
+    /// Show the current file and the merged desired config without writing.
+    #[arg(long, conflicts_with_all = ["dry_run", "apply", "migrate"])]
+    edit: bool,
+    /// Rewrite an existing dunst entry to the current serve command.
+    #[arg(long, conflicts_with_all = ["dry_run", "apply", "edit"])]
+    migrate: bool,
+    /// Override the config path; defaults to .codex/config.toml or .mcp.json.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -291,6 +308,10 @@ fn run_doctor() -> i32 {
         Err(err) => println!("binary: unknown ({err})"),
     }
     println!("recommended MCP command: dunst-mcp serve");
+    println!("setup dry-run: dunst-mcp setup --client codex --dry-run");
+    println!("setup apply: dunst-mcp setup --client codex --apply");
+    println!("setup edit: dunst-mcp setup --client codex --edit");
+    println!("setup migrate: dunst-mcp setup --client codex --migrate");
     println!(
         "approval tool: {}",
         if std::env::var("DUNST_MCP_ENABLE_APPROVE_TOOL")
@@ -315,8 +336,8 @@ fn run_doctor() -> i32 {
         println!("os: macOS");
         if dunst_platform::accessibility_trusted() {
             println!("accessibility: granted");
-            println!("screen recording: not checked by this minimal doctor");
-            if config_ok {
+            let screen_capture_ok = doctor_screen_capture();
+            if config_ok && screen_capture_ok {
                 0
             } else {
                 1
@@ -326,7 +347,7 @@ fn run_doctor() -> i32 {
             println!(
                 "hint: enable Accessibility for your terminal/agent host in System Settings > Privacy & Security > Accessibility"
             );
-            println!("screen recording: enable it too if you use OCR/screenshot tools");
+            let _ = doctor_screen_capture();
             1
         }
     }
@@ -371,6 +392,20 @@ fn doctor_executable(path: &str, label: &str) {
         })
         .unwrap_or("missing");
     println!("{label}: {status} ({path})");
+}
+
+#[cfg(target_os = "macos")]
+fn doctor_screen_capture() -> bool {
+    if dunst_platform::screen_capture_trusted() {
+        println!("screen recording: granted");
+        true
+    } else {
+        println!("screen recording: not granted");
+        println!(
+            "hint: enable Screen Recording for your terminal/agent host in System Settings > Privacy & Security > Screen Recording"
+        );
+        false
+    }
 }
 
 fn doctor_claude_config(path: &str) -> Option<bool> {
@@ -511,36 +546,276 @@ fn json_string_array(value: &serde_json::Value) -> Result<Vec<String>, String> {
 }
 
 fn run_setup(args: SetupArgs) -> i32 {
+    let mode = setup_mode(&args);
     let command = if args.dev_wrapper {
         "scripts/mcp-dunst.sh"
     } else {
         "dunst-mcp"
     };
-    let command_args = if args.dev_wrapper {
-        "[]"
+    let command_args: Vec<String> = if args.dev_wrapper {
+        Vec::new()
     } else {
-        "[\"serve\"]"
+        vec!["serve".into()]
     };
-    match args.client {
-        SetupClient::Codex => {
-            println!("# Add to .codex/config.toml or $CODEX_HOME/config.toml");
-            println!("[mcp_servers.dunst]");
-            println!("command = \"{command}\"");
-            println!("args = {command_args}");
-            println!("startup_timeout_sec = 120");
+    let path = args
+        .config
+        .clone()
+        .unwrap_or_else(|| default_setup_path(args.client));
+    let desired = render_setup_config(args.client, command, &command_args);
+    let existing = std::fs::read_to_string(&path).ok();
+    let merged = match merge_setup_config(args.client, existing.as_deref(), command, &command_args)
+    {
+        Ok(merged) => merged,
+        Err(err) => {
+            eprintln!("setup: {err}");
+            return 1;
         }
-        SetupClient::Claude => {
-            println!("{{");
-            println!("  \"mcpServers\": {{");
-            println!("    \"dunst\": {{");
-            println!("      \"command\": \"{command}\",");
-            println!("      \"args\": {command_args}");
-            println!("    }}");
-            println!("  }}");
-            println!("}}");
+    };
+    let changed = existing.as_deref() != Some(merged.as_str());
+
+    println!("dunst-mcp setup");
+    println!("mode: {}", mode.as_str());
+    println!("client: {}", args.client.as_str());
+    println!("path: {}", path.display());
+    println!("command: {command} {:?}", command_args);
+    println!(
+        "status: {}",
+        if changed {
+            "changes pending"
+        } else {
+            "already up to date"
+        }
+    );
+
+    match mode {
+        SetupMode::DryRun => {
+            println!("\n# Desired config");
+            print!("{desired}");
+            if !desired.ends_with('\n') {
+                println!();
+            }
+            println!("\n# Merged result");
+            print!("{merged}");
+            if !merged.ends_with('\n') {
+                println!();
+            }
+            0
+        }
+        SetupMode::Edit => {
+            println!("\n# Current config");
+            match existing.as_deref() {
+                Some(text) => print!("{text}"),
+                None => println!("(missing)"),
+            }
+            if existing
+                .as_deref()
+                .is_some_and(|text| !text.ends_with('\n'))
+            {
+                println!();
+            }
+            println!("\n# Merged result");
+            print!("{merged}");
+            if !merged.ends_with('\n') {
+                println!();
+            }
+            0
+        }
+        SetupMode::Apply => write_setup_config(&path, &merged),
+        SetupMode::Migrate => {
+            if existing.is_none() {
+                eprintln!(
+                    "setup: cannot migrate missing config {}; run setup --apply to create it",
+                    path.display()
+                );
+                return 1;
+            }
+            if !existing_config_has_dunst(args.client, existing.as_deref().unwrap_or("")) {
+                eprintln!(
+                    "setup: cannot migrate {}; no existing dunst server entry was found",
+                    path.display()
+                );
+                return 1;
+            }
+            write_setup_config(&path, &merged)
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SetupMode {
+    DryRun,
+    Apply,
+    Edit,
+    Migrate,
+}
+
+impl SetupMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            SetupMode::DryRun => "dry-run",
+            SetupMode::Apply => "apply",
+            SetupMode::Edit => "edit",
+            SetupMode::Migrate => "migrate",
+        }
+    }
+}
+
+impl SetupClient {
+    fn as_str(self) -> &'static str {
+        match self {
+            SetupClient::Codex => "codex",
+            SetupClient::Claude => "claude",
+        }
+    }
+}
+
+fn setup_mode(args: &SetupArgs) -> SetupMode {
+    if args.apply {
+        SetupMode::Apply
+    } else if args.edit {
+        SetupMode::Edit
+    } else if args.migrate {
+        SetupMode::Migrate
+    } else {
+        SetupMode::DryRun
+    }
+}
+
+fn default_setup_path(client: SetupClient) -> PathBuf {
+    match client {
+        SetupClient::Codex => PathBuf::from(".codex/config.toml"),
+        SetupClient::Claude => PathBuf::from(".mcp.json"),
+    }
+}
+
+fn render_setup_config(client: SetupClient, command: &str, args: &[String]) -> String {
+    match client {
+        SetupClient::Codex => format!(
+            "[mcp_servers.dunst]\ncommand = \"{}\"\nargs = {}\nstartup_timeout_sec = 120\n",
+            escape_toml_string(command),
+            json_string_list(args)
+        ),
+        SetupClient::Claude => {
+            let value = json!({
+                "mcpServers": {
+                    "dunst": {
+                        "command": command,
+                        "args": args,
+                    }
+                }
+            });
+            format!("{}\n", serde_json::to_string_pretty(&value).unwrap())
+        }
+    }
+}
+
+fn merge_setup_config(
+    client: SetupClient,
+    existing: Option<&str>,
+    command: &str,
+    args: &[String],
+) -> Result<String, String> {
+    match client {
+        SetupClient::Codex => Ok(merge_codex_config(existing.unwrap_or(""), command, args)),
+        SetupClient::Claude => merge_claude_config(existing.unwrap_or("{}"), command, args),
+    }
+}
+
+fn merge_codex_config(existing: &str, command: &str, args: &[String]) -> String {
+    let desired = render_setup_config(SetupClient::Codex, command, args);
+    if existing.trim().is_empty() {
+        return desired;
+    }
+
+    let mut out = Vec::new();
+    let mut inserted = false;
+    let mut skipping_dunst = false;
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if skipping_dunst {
+                out.push(desired.trim_end().to_string());
+                inserted = true;
+                skipping_dunst = false;
+            }
+            if trimmed == "[mcp_servers.dunst]" {
+                skipping_dunst = true;
+                continue;
+            }
+        }
+        if !skipping_dunst {
+            out.push(line.to_string());
+        }
+    }
+    if skipping_dunst || !inserted {
+        if !out.is_empty() && !out.last().is_some_and(|line| line.trim().is_empty()) {
+            out.push(String::new());
+        }
+        out.push(desired.trim_end().to_string());
+    }
+    format!("{}\n", out.join("\n"))
+}
+
+fn merge_claude_config(existing: &str, command: &str, args: &[String]) -> Result<String, String> {
+    let mut root: serde_json::Value = if existing.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(existing).map_err(|err| format!("json parse failed: {err}"))?
+    };
+    if !root.is_object() {
+        return Err("root JSON value must be an object".into());
+    }
+    if root.get("mcpServers").is_none() {
+        root["mcpServers"] = json!({});
+    }
+    if !root["mcpServers"].is_object() {
+        return Err("mcpServers must be an object".into());
+    }
+    root["mcpServers"]["dunst"] = json!({
+        "command": command,
+        "args": args,
+    });
+    Ok(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&root).unwrap()
+    ))
+}
+
+fn existing_config_has_dunst(client: SetupClient, existing: &str) -> bool {
+    match client {
+        SetupClient::Codex => parse_codex_dunst_config(existing)
+            .map(|entry| entry.is_some())
+            .unwrap_or(false),
+        SetupClient::Claude => parse_claude_dunst_config(existing)
+            .map(|entry| entry.is_some())
+            .unwrap_or(false),
+    }
+}
+
+fn write_setup_config(path: &Path, merged: &str) -> i32 {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            eprintln!("setup: create {} failed: {err}", parent.display());
+            return 1;
+        }
+    }
+    if let Err(err) = std::fs::write(path, merged) {
+        eprintln!("setup: write {} failed: {err}", path.display());
+        return 1;
+    }
+    println!("written: {}", path.display());
     0
+}
+
+fn json_string_list(args: &[String]) -> String {
+    serde_json::to_string(args).unwrap_or_else(|_| "[]".into())
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn section(t: &str) {

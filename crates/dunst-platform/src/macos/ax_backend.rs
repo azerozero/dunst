@@ -84,7 +84,7 @@ pub(super) fn user_idle_block_message(operation: &str) -> Option<String> {
 
 pub(super) fn ensure_user_idle(operation: &str) -> Result<()> {
     if let Some(message) = user_idle_block_message(operation) {
-        return Err(VisualOpsError::Execution(message));
+        return Err(DunstError::Execution(message));
     }
     Ok(())
 }
@@ -136,7 +136,7 @@ pub fn window_ref(target: &Target) -> Result<WindowRef> {
     let window = resolve_window(&app, target.window_id)?;
     Ok(WindowRef {
         pid: target.pid,
-        window_id: target.window_id,
+        window_id: ax_window_id(&window).unwrap_or(target.window_id),
         app_name: attr_string(&app, kAXTitleAttribute).unwrap_or_default(),
         title: attr_string(&window, kAXTitleAttribute).unwrap_or_default(),
     })
@@ -151,7 +151,7 @@ pub fn element_at_point(pid: i32, x: f64, y: f64) -> Result<RawAxNode> {
     let err =
         unsafe { AXUIElementCopyElementAtPosition(app.as_ptr(), x as f32, y as f32, &mut raw) };
     if err != kAXErrorSuccess || raw.is_null() {
-        return Err(VisualOpsError::Perception(format!(
+        return Err(DunstError::Perception(format!(
             "AX hit-test failed at ({x:.1},{y:.1}): {} ({err})",
             error_string(err)
         )));
@@ -215,7 +215,7 @@ pub(super) fn perform_with_cache(
     let app = app_element(target.pid)?;
     let window = resolve_window(&app, target.window_id)?;
     let element = find_element(window, node)?.ok_or_else(|| {
-        VisualOpsError::ElementNotFound(format!(
+        DunstError::ElementNotFound(format!(
             "role={:?} label={:?} identifier={:?}",
             node.ax_role, node.label, node.ax_identifier
         ))
@@ -361,16 +361,15 @@ pub fn set_window_frame(
     if let Some(h) = height {
         size.height = h.max(1.0);
     }
-    set_cgsize_attr(&window, kAXSizeAttribute, size).map_err(VisualOpsError::from)?;
-    set_cgpoint_attr(&window, kAXPositionAttribute, CGPoint::new(x, y))
-        .map_err(VisualOpsError::from)
+    set_cgsize_attr(&window, kAXSizeAttribute, size).map_err(DunstError::from)?;
+    set_cgpoint_attr(&window, kAXPositionAttribute, CGPoint::new(x, y)).map_err(DunstError::from)
 }
 
 pub(super) fn ensure_trusted() -> Result<()> {
     if accessibility_trusted() {
         Ok(())
     } else {
-        Err(VisualOpsError::Perception(
+        Err(DunstError::Perception(
             "accessibility not granted for this process".into(),
         ))
     }
@@ -381,7 +380,7 @@ pub(super) fn app_element(pid: i32) -> Result<AxElement> {
     // returned pointer is null-checked and then owned by AxElement.
     let app = unsafe { AXUIElementCreateApplication(pid) };
     if app.is_null() {
-        Err(VisualOpsError::Perception(format!(
+        Err(DunstError::Perception(format!(
             "AXUIElementCreateApplication returned null for pid {pid}"
         )))
     } else {
@@ -407,7 +406,7 @@ pub(super) fn resolve_window(app: &AxElement, requested_window_id: u32) -> Resul
                 return Ok(main_window);
             }
         }
-        return Err(VisualOpsError::Perception(format!(
+        return Err(DunstError::Perception(format!(
             "window id {requested_window_id} not found; target window may be closed"
         )));
     }
@@ -423,7 +422,7 @@ pub(super) fn resolve_window(app: &AxElement, requested_window_id: u32) -> Resul
         return Ok(windows.remove(0));
     }
 
-    Err(VisualOpsError::Perception(format!(
+    Err(DunstError::Perception(format!(
         "no AX window found for requested window id {requested_window_id}"
     )))
 }
@@ -469,14 +468,13 @@ impl ActionFailure {
     }
 }
 
-impl From<ActionFailure> for VisualOpsError {
+impl From<ActionFailure> for DunstError {
     fn from(value: ActionFailure) -> Self {
         match value {
-            ActionFailure::Ax { operation, err } => VisualOpsError::Execution(format!(
-                "{operation} failed: {} ({err})",
-                error_string(err)
-            )),
-            ActionFailure::Execution(message) => VisualOpsError::Execution(message),
+            ActionFailure::Ax { operation, err } => {
+                DunstError::Execution(format!("{operation} failed: {} ({err})", error_string(err)))
+            }
+            ActionFailure::Execution(message) => DunstError::Execution(message),
         }
     }
 }

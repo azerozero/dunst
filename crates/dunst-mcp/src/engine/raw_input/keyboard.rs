@@ -18,7 +18,7 @@ impl Engine {
             .map(|node| node.id.clone());
         match id {
             Some(id) => self.click_element(&id, Some(&format!("open menu {name}"))),
-            None => Err(VisualOpsError::Execution(format!(
+            None => Err(DunstError::Execution(format!(
                 "no menu {name:?} found in the menubar"
             ))),
         }
@@ -29,7 +29,7 @@ impl Engine {
     #[cfg(target_os = "macos")]
     pub fn press_key(&mut self, key: &str, repeat: usize) -> dunst_core::Result<AuditEntry> {
         if !is_press_key_name(key) {
-            return Err(VisualOpsError::Execution(format!(
+            return Err(DunstError::Execution(format!(
                 "unsupported key {key:?}; expected return|enter, tab, escape, space, delete, up/down/left/right, pageup/pagedown, home/end"
             )));
         }
@@ -72,7 +72,7 @@ impl Engine {
     /// Non-macOS stub: raw CGEvent input needs the macOS backend.
     #[cfg(not(target_os = "macos"))]
     pub fn press_key(&mut self, _key: &str, _repeat: usize) -> dunst_core::Result<AuditEntry> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "press_key requires a macOS backend".into(),
         ))
     }
@@ -110,7 +110,7 @@ impl Engine {
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
     pub fn type_keys(&mut self, _text: &str) -> dunst_core::Result<AuditEntry> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "type_keys requires a macOS backend".into(),
         ))
     }
@@ -126,6 +126,15 @@ impl Engine {
         focus_id: Option<&str>,
     ) -> dunst_core::Result<AuditEntry> {
         if let Some(id) = focus_id {
+            if let Some(page_direction) = page_scroll_target_direction(id) {
+                let window = self.current_window_bounds();
+                return self.scroll_at(
+                    window.x + window.w / 2.0,
+                    window.y + window.h / 2.0,
+                    page_direction.unwrap_or(direction),
+                    pages,
+                );
+            }
             let can_scroll = self
                 .affordance_graph()
                 .affordances
@@ -133,7 +142,7 @@ impl Engine {
                 .map(|affordance| affordance.actions.contains(&SemanticAction::Scroll))
                 .unwrap_or(false);
             if !can_scroll {
-                return Err(VisualOpsError::ActionUnavailable {
+                return Err(DunstError::ActionUnavailable {
                     id: id.to_string(),
                     action: format!("{:?}", SemanticAction::Scroll),
                 });
@@ -147,6 +156,15 @@ impl Engine {
             );
         }
 
+        self.scroll_with_background_keys(direction, pages)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn scroll_with_background_keys(
+        &mut self,
+        direction: &str,
+        pages: usize,
+    ) -> dunst_core::Result<AuditEntry> {
         // macOS virtual keycodes: PageDown=0x79, PageUp=0x74, Home=0x73, End=0x77.
         let (keycode, count) = match direction {
             "up" => (0x74_u16, pages.clamp(1, 20)),
@@ -189,6 +207,73 @@ impl Engine {
         )
     }
 
+    /// Wheel-scroll at a concrete screen point in the target window. This is the
+    /// fallback for web pages/cards that do not expose an AX scrollbar: the point
+    /// chooses the scroll container, while the raw input gate still requires
+    /// operator approval before mutating the page.
+    #[cfg(target_os = "macos")]
+    pub fn scroll_at(
+        &mut self,
+        x: f64,
+        y: f64,
+        direction: &str,
+        pages: usize,
+    ) -> dunst_core::Result<AuditEntry> {
+        self.ensure_point_in_target_window(x, y, "scroll_at")?;
+        let direction = normalized_scroll_direction(direction);
+        let count = pages.clamp(1, 20);
+        if matches!(direction, "top" | "bottom") {
+            return self.scroll_with_background_keys(direction, count);
+        }
+        let target_id = wheel_scroll_target_id(direction, count, x, y);
+        let argument = format!("wheel scroll {direction} x{count} at {x:.1},{y:.1}");
+        if let Some(entry) = self.gate_raw_input(
+            &target_id,
+            SemanticAction::Scroll,
+            Some(argument.clone()),
+            Some("background wheel scroll at target point"),
+            self.raw_point_risk(x, y),
+        ) {
+            return Ok(entry);
+        }
+        let (ox, oy) = dunst_vision::capture::window_bounds(self.target.window_id)
+            .map(|(x, y, _, _)| (x, y))
+            .unwrap_or((
+                self.current_window_bounds().x,
+                self.current_window_bounds().y,
+            ));
+        let delta = match direction {
+            "up" => 720,
+            _ => -720,
+        };
+        let mut outcome = Ok(());
+        for _ in 0..count {
+            outcome = retry_user_active_guard(|| {
+                dunst_platform::scroll_web_background(
+                    self.target.pid,
+                    self.target.window_id,
+                    x,
+                    y,
+                    ox,
+                    oy,
+                    delta,
+                )
+            });
+            if outcome.is_err() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(160));
+        }
+        self.audit_raw_input(
+            target_id,
+            SemanticAction::Scroll,
+            Some(argument),
+            Some("background wheel scroll at target point"),
+            self.raw_point_risk(x, y),
+            outcome,
+        )
+    }
+
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
     pub fn scroll(
@@ -197,8 +282,22 @@ impl Engine {
         _pages: usize,
         _focus_id: Option<&str>,
     ) -> dunst_core::Result<AuditEntry> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "scroll requires a macOS backend".into(),
+        ))
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn scroll_at(
+        &mut self,
+        _x: f64,
+        _y: f64,
+        _direction: &str,
+        _pages: usize,
+    ) -> dunst_core::Result<AuditEntry> {
+        Err(DunstError::Execution(
+            "scroll_at requires a macOS backend".into(),
         ))
     }
 
@@ -239,7 +338,7 @@ impl Engine {
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
     pub fn zoom(&mut self, _direction: &str) -> dunst_core::Result<AuditEntry> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "zoom requires a macOS backend".into(),
         ))
     }
@@ -253,10 +352,10 @@ impl Engine {
     #[cfg(target_os = "macos")]
     pub fn hotkey(&mut self, combo: &str) -> dunst_core::Result<AuditEntry> {
         if let Some(message) = layout_sensitive_hotkey_message(combo) {
-            return Err(VisualOpsError::Execution(message));
+            return Err(DunstError::Execution(message));
         }
         let (flags, keycode) = parse_combo(combo)
-            .ok_or_else(|| VisualOpsError::Execution(format!("unrecognised hotkey {combo:?}")))?;
+            .ok_or_else(|| DunstError::Execution(format!("unrecognised hotkey {combo:?}")))?;
         let target_id = format!("keyboard@hotkey:{combo}");
         if let Some(entry) = self.gate_raw_input(
             &target_id,
@@ -288,8 +387,39 @@ impl Engine {
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
     pub fn hotkey(&mut self, _combo: &str) -> dunst_core::Result<AuditEntry> {
-        Err(VisualOpsError::Execution(
+        Err(DunstError::Execution(
             "hotkey requires a macOS backend".into(),
         ))
     }
+}
+
+pub(in crate::engine) fn page_scroll_target_id(direction: &str) -> String {
+    format!("page@scroll:{}", normalized_scroll_direction(direction))
+}
+
+pub(super) fn page_scroll_target_direction(id: &str) -> Option<Option<&str>> {
+    if id == "page@scroll" {
+        return Some(None);
+    }
+    id.strip_prefix("page@scroll:")
+        .map(|direction| Some(normalized_scroll_direction(direction)))
+}
+
+fn normalized_scroll_direction(direction: &str) -> &'static str {
+    match direction.trim().to_ascii_lowercase().as_str() {
+        "up" => "up",
+        "top" => "top",
+        "bottom" => "bottom",
+        _ => "down",
+    }
+}
+
+fn wheel_scroll_target_id(direction: &str, count: usize, x: f64, y: f64) -> String {
+    format!(
+        "wheel@scroll:{}:{}:{:.0},{:.0}",
+        normalized_scroll_direction(direction),
+        count.clamp(1, 20),
+        x,
+        y
+    )
 }

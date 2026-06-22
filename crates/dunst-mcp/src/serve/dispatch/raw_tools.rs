@@ -134,6 +134,20 @@ pub(super) fn dispatch(
             )
             .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
             .map_err(|e| e.to_string()),
+        "scroll_at" => match point(args) {
+            Some((x, y)) => engine
+                .scroll_at(
+                    x,
+                    y,
+                    arg(args, "direction").as_deref().unwrap_or("down"),
+                    args.get("pages").and_then(Value::as_u64).unwrap_or(3) as usize,
+                )
+                .map(|entry| {
+                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
+                })
+                .map_err(|e| e.to_string()),
+            None => Err("scroll_at requires numeric 'x' and 'y'".into()),
+        },
         "zoom" => engine
             .zoom(arg(args, "direction").as_deref().unwrap_or("in"))
             .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
