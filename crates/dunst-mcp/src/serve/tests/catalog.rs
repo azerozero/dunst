@@ -4,7 +4,7 @@ use super::*;
 fn tools_list_exposes_read_text_with_object_schema() {
     std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
     let tools = tools_list();
-    assert_eq!(tools.len(), 63, "tool count");
+    assert_eq!(tools.len(), 64, "tool count");
     // Every tool must declare a JSON-Schema object input (the type:object fix).
     for t in &tools {
         assert_eq!(
@@ -67,6 +67,10 @@ fn tools_list_exposes_read_text_with_object_schema() {
     assert!(
         tools.iter().any(|t| t["name"] == "target_visibility"),
         "target visibility tool present"
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "get_hit_targets"),
+        "semantic hit target tool present"
     );
     assert!(
         tools.iter().any(|t| t["name"] == "visual_change_probe"),

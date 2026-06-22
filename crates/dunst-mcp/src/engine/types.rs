@@ -1,4 +1,4 @@
-use dunst_core::{AuditEntry, Bbox, SemanticAction};
+use dunst_core::{AuditEntry, Bbox, RiskAssessment, SemanticAction};
 
 /// Projection requested for [`Engine::scene_graph_view`](super::Engine::scene_graph_view)
 /// (WP-J / J1). The MCP server defaults to [`Compact`](SceneView::Compact) so a
@@ -67,6 +67,75 @@ pub struct TargetVisibility {
     pub status: String,
     pub warnings: Vec<String>,
     pub fallback_hint: Option<String>,
+}
+
+/// Stable-enough UI state token for resuming after a window move, tab switch,
+/// resize, or page change. `fingerprint` intentionally excludes capture time so
+/// callers can compare it across refreshes.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UiEpoch {
+    pub fingerprint: String,
+    pub captured_at_ms: u64,
+    pub target: TargetState,
+    pub title: String,
+    pub window: Bbox,
+    pub browser_tab: Option<BrowserTab>,
+    pub target_visibility_status: String,
+    pub visible_fraction: f64,
+    pub covered_by: Vec<u32>,
+    pub warnings: Vec<String>,
+}
+
+/// A shrunken, button-body click zone derived from an element bbox. This lets
+/// callers click "the button" instead of carrying a brittle raw coordinate.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SafeClickZone {
+    pub bbox: Bbox,
+    pub center: (f64, f64),
+    pub source: String,
+    pub note: String,
+}
+
+/// One action available from a semantic hit target.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HitActionMode {
+    pub action: SemanticAction,
+    pub tool_hint: String,
+    pub target_id: Option<String>,
+    pub drop_targets: Vec<String>,
+    pub risk: RiskAssessment,
+}
+
+/// A compact target an agent can reason about as UI, not as coordinates.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HitTarget {
+    pub id: String,
+    pub source: String,
+    pub role: &'static str,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub bbox: Option<Bbox>,
+    pub safe_click: Option<SafeClickZone>,
+    pub confidence: f32,
+    pub action_modes: Vec<HitActionMode>,
+    pub risk: RiskAssessment,
+}
+
+/// Semantic target listing plus the state token needed to decide whether old
+/// click/drag plans are stale.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HitTargetsResult {
+    pub target: TargetState,
+    pub title: String,
+    pub window: Bbox,
+    pub browser_tab: Option<BrowserTab>,
+    pub target_visibility: TargetVisibility,
+    pub ui_epoch: UiEpoch,
+    pub previous_epoch: Option<String>,
+    pub state_changed: bool,
+    pub stale_reason: Option<String>,
+    pub resume_hint: Option<String>,
+    pub targets: Vec<HitTarget>,
 }
 
 /// A recognized OCR text target suitable for element-free navigation.

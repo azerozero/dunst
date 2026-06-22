@@ -1,4 +1,5 @@
 use super::*;
+use std::hash::{Hash, Hasher};
 
 mod perception;
 
@@ -95,6 +96,179 @@ impl Engine {
             }
         }
         json!({ "affordances": Value::Object(map) })
+    }
+
+    /// Semantic targets with safe click zones and a UI epoch. This is the
+    /// compact "act on this button" read path: it combines scene nodes,
+    /// affordances, risk, browser tab state, and target visibility so agents do
+    /// not have to stitch together several tools before avoiding raw coords.
+    pub fn hit_targets(
+        &self,
+        include_latent: bool,
+        scope: &str,
+        limit: usize,
+        previous_epoch: Option<&str>,
+    ) -> HitTargetsResult {
+        let limit = limit.clamp(1, 500);
+        let g = self.scene_graph();
+        let ag = self.affordance_graph();
+        let window_rect = self.cached_window_rect;
+        let menubar = self.cached_menubar_root.as_deref();
+        let window = self.current_window_bounds();
+        let browser_tab = self
+            .list_browser_tabs(None, true)
+            .into_iter()
+            .find(|tab| tab.selected);
+        let target_visibility = self.target_visibility();
+        let target = TargetState {
+            pid: g.window.pid,
+            window_id: g.window.window_id,
+            app_name: g.window.app_name.clone(),
+        };
+        let ui_epoch = self.ui_epoch(window, browser_tab.clone(), target_visibility.clone(), ag);
+        let state_changed = previous_epoch.is_some_and(|previous| previous != ui_epoch.fingerprint);
+        let stale_reason = state_changed.then(|| {
+            "ui_epoch changed; the window, selected tab, visibility, or actionable graph no longer matches the caller's previous view"
+                .to_string()
+        });
+        let resume_hint = if state_changed {
+            Some(
+                "Discard cached coordinates and call get_hit_targets again before clicking, dragging, or typing."
+                    .to_string(),
+            )
+        } else if !target_visibility.warnings.is_empty() {
+            Some("Resolve target_visibility warnings before OCR, screenshot, or raw pointer actions.".to_string())
+        } else {
+            None
+        };
+
+        let mut targets = Vec::new();
+        for (id, affordance) in &ag.affordances {
+            let Some(node) = g.get(id) else { continue };
+            if affordance.actions.is_empty() && affordance.drag_targets.is_empty() {
+                continue;
+            }
+            if !include_latent && !node_visible_or_menu(node, window_rect, menubar) {
+                continue;
+            }
+            if !node_matches_scope(g, node, window_rect, menubar, scope) {
+                continue;
+            }
+
+            let action_modes = hit_action_modes(affordance);
+            if action_modes.is_empty() {
+                continue;
+            }
+            targets.push(HitTarget {
+                id: node.id.clone(),
+                source: source_name(node.source).to_string(),
+                role: node.role.as_str(),
+                label: node.label.clone().or_else(|| node.help.clone()),
+                value: node.value.clone(),
+                bbox: node.bbox,
+                safe_click: node.bbox.and_then(safe_click_zone),
+                confidence: node.confidence,
+                action_modes,
+                risk: affordance.risk.clone(),
+            });
+        }
+        targets.sort_by(hit_target_order);
+        targets.truncate(limit);
+
+        HitTargetsResult {
+            target,
+            title: g.window.title.clone(),
+            window,
+            browser_tab,
+            target_visibility,
+            ui_epoch,
+            previous_epoch: previous_epoch.map(str::to_string),
+            state_changed,
+            stale_reason,
+            resume_hint,
+            targets,
+        }
+    }
+
+    fn ui_epoch(
+        &self,
+        window: Bbox,
+        browser_tab: Option<BrowserTab>,
+        target_visibility: TargetVisibility,
+        affordances: &AffordanceGraph,
+    ) -> UiEpoch {
+        let g = self.scene_graph();
+        let fingerprint = self.ui_fingerprint(
+            window,
+            browser_tab.as_ref(),
+            &target_visibility,
+            affordances,
+        );
+        UiEpoch {
+            fingerprint,
+            captured_at_ms: g.captured_at_ms,
+            target: TargetState {
+                pid: g.window.pid,
+                window_id: g.window.window_id,
+                app_name: g.window.app_name.clone(),
+            },
+            title: g.window.title.clone(),
+            window,
+            browser_tab,
+            target_visibility_status: target_visibility.status.clone(),
+            visible_fraction: target_visibility.visible_fraction,
+            covered_by: target_visibility
+                .covered_by
+                .iter()
+                .map(|w| w.window_id)
+                .collect(),
+            warnings: target_visibility.warnings.clone(),
+        }
+    }
+
+    fn ui_fingerprint(
+        &self,
+        window: Bbox,
+        browser_tab: Option<&BrowserTab>,
+        target_visibility: &TargetVisibility,
+        affordances: &AffordanceGraph,
+    ) -> String {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let g = self.scene_graph();
+        g.window.pid.hash(&mut hasher);
+        g.window.window_id.hash(&mut hasher);
+        g.window.app_name.hash(&mut hasher);
+        g.window.title.hash(&mut hasher);
+        hash_bbox(window, &mut hasher);
+        if let Some(tab) = browser_tab {
+            tab.id.hash(&mut hasher);
+            tab.title.hash(&mut hasher);
+            tab.url.hash(&mut hasher);
+            tab.selected.hash(&mut hasher);
+            hash_optional_bbox(tab.bbox, &mut hasher);
+        }
+        target_visibility.status.hash(&mut hasher);
+        rounded_i64(target_visibility.visible_fraction * 10_000.0).hash(&mut hasher);
+        for window in &target_visibility.covered_by {
+            window.window_id.hash(&mut hasher);
+            window.title.hash(&mut hasher);
+            hash_bbox(window.bounds, &mut hasher);
+        }
+
+        for (id, node) in &g.nodes {
+            id.hash(&mut hasher);
+            node.role.as_str().hash(&mut hasher);
+            node.label.hash(&mut hasher);
+            node.value.hash(&mut hasher);
+            node.enabled.hash(&mut hasher);
+            node.focused.hash(&mut hasher);
+            hash_optional_bbox(node.bbox, &mut hasher);
+            if let Some(affordance) = affordances.affordances.get(id) {
+                affordance.actions.hash(&mut hasher);
+                affordance.drag_targets.hash(&mut hasher);
+            }
+        }
+        format!("{:016x}", hasher.finish())
     }
 
     /// WP-J/J1: the scene graph under a projection `view`, optionally limited to
@@ -485,4 +659,101 @@ fn node_matches_scope(
         "browser_chrome" | "chrome" => read_chrome_node(graph, node, window_rect, menubar),
         _ => true,
     }
+}
+
+fn hit_action_modes(affordance: &dunst_core::Affordance) -> Vec<HitActionMode> {
+    affordance
+        .actions
+        .iter()
+        .map(|action| HitActionMode {
+            action: *action,
+            tool_hint: tool_hint_for_action(*action).to_string(),
+            target_id: Some(affordance.id.clone()),
+            drop_targets: if *action == SemanticAction::Drag {
+                affordance.drag_targets.clone()
+            } else {
+                Vec::new()
+            },
+            risk: affordance.risk.clone(),
+        })
+        .collect()
+}
+
+fn tool_hint_for_action(action: SemanticAction) -> &'static str {
+    match action {
+        SemanticAction::Click | SemanticAction::Toggle | SemanticAction::Focus => "click_element",
+        SemanticAction::Hover => "hover_probe",
+        SemanticAction::Type => "type_into",
+        SemanticAction::OpenMenu => "open_menu",
+        SemanticAction::Pick => "pick_option",
+        SemanticAction::Scroll => "scroll",
+        SemanticAction::Drag => "drag_element",
+        SemanticAction::Raise => "raise_element",
+        SemanticAction::KeyPress => "press_key",
+        SemanticAction::Hotkey => "hotkey",
+    }
+}
+
+fn safe_click_zone(bbox: Bbox) -> Option<SafeClickZone> {
+    if bbox.w <= 0.0 || bbox.h <= 0.0 {
+        return None;
+    }
+    let inset = (bbox.w.min(bbox.h) * 0.12).min(8.0);
+    let inset = if bbox.w - inset * 2.0 >= 4.0 && bbox.h - inset * 2.0 >= 4.0 {
+        inset
+    } else {
+        0.0
+    };
+    let zone = Bbox {
+        x: bbox.x + inset,
+        y: bbox.y + inset,
+        w: bbox.w - inset * 2.0,
+        h: bbox.h - inset * 2.0,
+    };
+    Some(SafeClickZone {
+        bbox: zone,
+        center: (zone.x + zone.w / 2.0, zone.y + zone.h / 2.0),
+        source: "accessibility_bbox_inset".into(),
+        note: "Prefer click_element by id; use this zone only when an element-bound click is unavailable."
+            .into(),
+    })
+}
+
+fn hit_target_order(a: &HitTarget, b: &HitTarget) -> std::cmp::Ordering {
+    let ay = a.bbox.map(|b| rounded_i64(b.y)).unwrap_or(i64::MAX);
+    let by = b.bbox.map(|b| rounded_i64(b.y)).unwrap_or(i64::MAX);
+    ay.cmp(&by)
+        .then_with(|| {
+            let ax = a.bbox.map(|b| rounded_i64(b.x)).unwrap_or(i64::MAX);
+            let bx = b.bbox.map(|b| rounded_i64(b.x)).unwrap_or(i64::MAX);
+            ax.cmp(&bx)
+        })
+        .then_with(|| a.role.cmp(b.role))
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+fn source_name(source: dunst_core::Source) -> &'static str {
+    match source {
+        dunst_core::Source::Accessibility => "accessibility",
+        dunst_core::Source::Vision => "vision",
+        dunst_core::Source::Ocr => "ocr",
+    }
+}
+
+fn hash_optional_bbox<H: Hasher>(bbox: Option<Bbox>, hasher: &mut H) {
+    bbox.is_some().hash(hasher);
+    if let Some(bbox) = bbox {
+        hash_bbox(bbox, hasher);
+    }
+}
+
+fn hash_bbox<H: Hasher>(bbox: Bbox, hasher: &mut H) {
+    rounded_i64(bbox.x).hash(hasher);
+    rounded_i64(bbox.y).hash(hasher);
+    rounded_i64(bbox.w).hash(hasher);
+    rounded_i64(bbox.h).hash(hasher);
+}
+
+fn rounded_i64(value: f64) -> i64 {
+    value.round() as i64
 }

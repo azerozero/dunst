@@ -216,6 +216,59 @@ fn target_visibility_reports_covered_window_and_hint() {
 }
 
 #[test]
+fn hit_targets_return_safe_click_zones_and_action_modes() {
+    let (eng, _) = engine_with_counter();
+    let new_note_id = id_for(&eng, "Nouvelle note");
+
+    let result = eng.hit_targets(false, "all", 80, None);
+    assert!(!result.ui_epoch.fingerprint.is_empty());
+    assert!(!result.state_changed);
+
+    let target = result
+        .targets
+        .iter()
+        .find(|target| target.id == new_note_id)
+        .expect("Nouvelle note should be returned as a semantic target");
+    assert_eq!(target.role, "button");
+    assert_eq!(target.source, "accessibility");
+    assert_eq!(target.risk.level, RiskLevel::Low);
+    assert!(target.action_modes.iter().any(|mode| {
+        mode.action == SemanticAction::Click
+            && mode.tool_hint == "click_element"
+            && mode.target_id.as_deref() == Some(new_note_id.as_str())
+    }));
+
+    let bbox = target.bbox.expect("button bbox");
+    let safe = target.safe_click.as_ref().expect("safe click zone");
+    assert!(safe.bbox.x >= bbox.x);
+    assert!(safe.bbox.y >= bbox.y);
+    assert!(safe.bbox.x + safe.bbox.w <= bbox.x + bbox.w);
+    assert!(safe.bbox.y + safe.bbox.h <= bbox.y + bbox.h);
+    assert!(point_in_bbox(safe.center, bbox));
+}
+
+#[test]
+fn hit_targets_report_stale_previous_epoch() {
+    let (eng, _) = engine_with_counter();
+
+    let current = eng.hit_targets(false, "all", 80, None);
+    let unchanged = eng.hit_targets(false, "all", 80, Some(&current.ui_epoch.fingerprint));
+    assert!(!unchanged.state_changed);
+    assert!(unchanged.stale_reason.is_none());
+
+    let stale = eng.hit_targets(false, "all", 80, Some("old-window-state"));
+    assert!(stale.state_changed);
+    assert!(stale
+        .stale_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("ui_epoch changed")));
+    assert!(stale
+        .resume_hint
+        .as_deref()
+        .is_some_and(|hint| hint.contains("Discard cached coordinates")));
+}
+
+#[test]
 fn raw_point_risk_flags_possible_backdrop_clicks() {
     let (eng, _) = engine_with_counter();
     let risk = eng.raw_point_risk(10_000.0, 10_000.0);

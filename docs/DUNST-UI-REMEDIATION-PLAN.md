@@ -131,6 +131,45 @@ card-like candidates. `detect_modal` and `dismiss_modal` provide a conservative
 modal path: if no close/dismiss text is recognized, the tool refuses to guess.
 The combined AX/OCR ranked search remains open.
 
+## P2 - Semantic Hit Targets And Resume State
+
+- Return explicit semantic hit targets for each clickable candidate: label,
+  role, action modes, bbox, safe click zone, center point, confidence, and risk.
+  The safe zone should be inset from the visual/button border and, when text is
+  detected, should prefer the area between the text and the button edge instead
+  of a guessed global coordinate.
+- Make action availability textual first: "click the Osaka Brest card", "drag
+  this file to that folder", "drop onto Upload", "type into Search", with the
+  underlying coordinates treated as derived execution details.
+- Extend affordances with mode metadata: `click`, `double_click`, `drag_source`,
+  `drop_target`, `type`, `pick`, `scroll`, and the verification expected after
+  each mode.
+- Pair AX nodes, OCR text, shapes, and card groups into one ranked target list
+  so the agent can choose a named button/card/field and let Dunst derive the
+  safest click point.
+- Track a UI epoch made from target window id, selected browser tab, URL/title,
+  window bounds, visible fraction, z-order coverage, and a lightweight visual
+  fingerprint. If any of those changes after the agent's last read, mark cached
+  targets as stale.
+- On window move, resize, cover/uncover, user interaction, tab switch, or SPA
+  navigation, return a `state_changed`/`stale_target` diagnostic with what
+  changed and the safest next step: re-read, re-attach, expose window, switch
+  tab, or re-run OCR.
+- Allow geometry rebasing only when the same target identity is still confirmed.
+  If identity is not confirmed, refuse the raw click/drag and ask the agent to
+  rescan instead of applying old coordinates to a moved UI.
+- Surface resume context to the LLM: previous target id/text, new target
+  visibility, selected tab, likely URL, stale reason, and recommended tool call.
+
+Status: partial and agent-usable. `get_hit_targets` now returns AX semantic
+targets with label, role, source, bbox, inset safe click zone, action modes,
+drag/drop ids, risk, selected browser tab, `target_visibility`, and a `ui_epoch`
+fingerprint. Passing `previous_epoch` reports `state_changed`, `stale_reason`,
+and a resume hint so agents discard old coordinates after window moves, resizes,
+tab switches, coverage changes, or graph changes. The remaining work is to fold
+OCR cards/text and shape targets into the same ranked list, add identity-based
+geometry rebasing, and attach richer per-mode verification expectations.
+
 ## P2 - Agent Playbook
 
 - Document a "full Dunst" mode: no browser cookies, no product API calls, and no

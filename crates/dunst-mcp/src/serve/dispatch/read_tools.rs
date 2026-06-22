@@ -106,6 +106,23 @@ fn dispatch_snapshot_tools(
                 .unwrap_or(Value::Null))
             }
         }
+        "get_hit_targets" => {
+            if let Err(err) = ensure_recent_graph(
+                engine,
+                arg_bool(args, "fresh").unwrap_or(true),
+                arg_bool(args, "force_refresh").unwrap_or(false),
+            ) {
+                Err(err)
+            } else {
+                Ok(serde_json::to_value(engine.hit_targets(
+                    arg_bool(args, "include_latent").unwrap_or(false),
+                    arg(args, "scope").as_deref().unwrap_or("page"),
+                    args.get("limit").and_then(Value::as_u64).unwrap_or(80) as usize,
+                    arg(args, "previous_epoch").as_deref(),
+                ))
+                .unwrap_or(Value::Null))
+            }
+        }
         "window_view" => {
             if let Err(err) = ensure_recent_graph(
                 engine,

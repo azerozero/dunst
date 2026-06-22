@@ -169,6 +169,21 @@ fn query_tools() -> Vec<Value> {
             schema(json!({ "include_latent": { "type": "boolean", "description": "include latent/off-screen nodes (default false)" }, "scope": { "type": "string", "enum": ["all", "page", "browser_chrome"], "description": "filter browser chrome versus page targets (default all)" } }), &[]),
         ),
         tool(
+            "get_hit_targets",
+            "Return semantic UI targets with labels, roles, safe click zones, available action modes (click/type/drag/drop/etc.), risk, target_visibility, selected browser tab, and a ui_epoch fingerprint. Pass previous_epoch to detect stale coordinates after window moves, resizes, tab switches, or page changes.",
+            schema(
+                json!({
+                    "include_latent": { "type": "boolean", "description": "include latent/off-screen nodes (default false)" },
+                    "scope": { "type": "string", "enum": ["all", "page", "browser_chrome"], "description": "filter browser chrome versus page targets (default page)" },
+                    "limit": { "type": "integer", "description": "max semantic targets, 1-500 (default 80)" },
+                    "previous_epoch": { "type": "string", "description": "previous ui_epoch.fingerprint to detect stale plans" },
+                    "fresh": { "type": "boolean", "description": "ensure recent graph before reading targets (default true)" },
+                    "force_refresh": { "type": "boolean", "description": "force an AX refresh even if the short TTL is still valid (default false)" }
+                }),
+                &[],
+            ),
+        ),
+        tool(
             "find_element",
             "Find elements whose id/label/role contains the query (case-insensitive). Ensures a recent AX graph by default. Results are ranked with visible enabled targets first; visible_only drops off-window/latent noise.",
             schema(

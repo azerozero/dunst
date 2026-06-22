@@ -3,7 +3,8 @@
 [![CI](https://github.com/azerozero/dunst/actions/workflows/ci.yml/badge.svg)](https://github.com/azerozero/dunst/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-> From pixels to verified actions. **AX-first slice.**
+> MCP-first macOS UI automation: choose the fastest trustworthy read path,
+> then execute only verified, risk-gated actions.
 
 A macOS daemon that turns a window into a **verifiable affordance graph** for AI
 agents. Instead of `Click(x=842, y=661)`, an agent resolves a target by meaning —
@@ -16,33 +17,68 @@ risk), two distinct objects keyed by the same stable id:
   "bbox": { "x": 1815, "y": 391, "w": 45, "h": 52 },
   "enabled": true, "focused": false, "parent": "toolbar_692558b0", "n_children": 0 }
 
-// get_affordances — the affordance for that same id
-{ "id": "btn_nouvelle_note", "actions": ["click"], "drag_targets": [],
+// get_hit_targets — the agent-facing target for that same id
+{ "id": "btn_nouvelle_note", "label": "Nouvelle note", "role": "button",
+  "safe_click": { "center": [1837.5, 417.0], "source": "accessibility_bbox_inset" },
+  "action_modes": [{ "action": "click", "tool_hint": "click_element" }],
   "risk": { "level": "low", "requires_approval": false, "reasons": [] } }
 ```
 
 (The node carries `confidence`/`source` in the `full` view; the compact projection
 drops them. `risk` is the structured `RiskAssessment`, not a bare string.)
 
-## Why this POC is small (and still proves the point)
+## How Dunst Reads And Acts
 
-The full vision (Tile/Foveal/OCR/ScreenCaptureKit, drag&drop, replay…) is large.
-This POC proves the **load-bearing hypothesis**: *the macOS Accessibility tree is
-rich enough to build the affordance graph without pixels or OCR.*
-
-Validated on Notes (pure AX, no screenshot): 427 elements, each actionable one
-already carrying `role`, native `actions`, `label`/`help`, an identifier, and
-risk signals in the label text (`Supprimer`, `Éteindre`, …). So the
-Tile/Foveal/OCR half is deferred to P1 — only needed for non-AX surfaces.
+Dunst is used from an MCP client first. The engine starts by confirming the
+target window, then walks the cheapest reliable information path before falling
+back to slower or riskier surfaces. Raw screen input is the last resort, not the
+default.
 
 ```mermaid
 flowchart TD
-    AX[macOS AX tree] --> Scene[Scene Graph<br/>stable ids, role, bbox]
-    Scene --> Affordance[Affordance Graph<br/>semantic actions, drag targets]
-    Affordance --> Risk[Risk Engine<br/>low, medium, high, approval]
-    Risk --> MCP[MCP tools<br/>verify_state, diff_since, export_trace]
-    Vision[dunst-vision<br/>capture, OCR, coordinate math] -. P1 surfaces .-> Scene
+    Client[MCP client] --> Call[tools/call]
+    Call --> Target[Attach and verify target<br/>list_windows, attach, target_visibility]
+    Target --> AXFast[Fast AX reads<br/>window_view, page_state, text_snapshot]
+    AXFast --> AXQuery[Semantic targets<br/>get_hit_targets scope=page, find_element]
+    AXQuery --> Targeted[Targeted probes<br/>analyze_region_ax, visual_change_probe]
+    Targeted --> OCR[OCR fallback<br/>read_text_detailed, find_ocr_text, extract_ocr_cards]
+    OCR --> Pixels[Pixel and chart fallback<br/>read_shapes, scan_chart, read_at]
+    Pixels --> Action[Element-bound or OCR-bound action<br/>click_element, type_into, click_near_text]
+    Action --> Gate[Risk gate and approval policy]
+    Gate --> Verify[Refresh, diff, expected_text, audit]
 ```
+
+Information ladder, from fastest and most practical to slowest:
+
+1. **Target scope**: `list_windows`, `attach`, `target_visibility`,
+   `expose_target_window`, and `list_browser_tabs` make sure Dunst is reading the
+   intended window, not a covered or stale browser tab.
+2. **AX semantic targets**: `get_hit_targets(scope=page)`, `window_view`,
+   `page_state`, `text_snapshot`, and `find_element` are the preferred path for
+   native apps and accessible web UI. `get_hit_targets` returns labels, roles,
+   safe click zones, action modes, risk, selected tab, visibility, and a
+   `ui_epoch` fingerprint so stale coordinates can be discarded after a move,
+   resize, tab switch, or user interaction.
+3. **Targeted probes**: `analyze_region_ax` and `visual_change_probe` inspect one
+   region when a full AX refresh is too broad or not moving.
+4. **OCR fallback**: `read_text_detailed(content_only=true)`, `find_ocr_text`,
+   `extract_ocr_cards`, `detect_modal`, and `dismiss_modal` handle web canvases,
+   cards, popups, and pages that expose only a root group.
+5. **Pixel/chart fallback**: `read_shapes`, `scan_chart`, `read_at`, and
+   `read_series` are for custom-drawn UI, charts, and hover surfaces.
+6. **Raw input fallback**: `click_at`, `press_key`, `hotkey`, and `type_keys` are
+   gated, audited, and should follow a visibility check plus a postcondition.
+
+## Why The AX Slice Still Matters
+
+The full vision path (Tile/Foveal/OCR/ScreenCaptureKit, drag and drop, replay)
+is large. This POC proves the load-bearing hypothesis: the macOS Accessibility
+tree is rich enough to build the first affordance graph without pixels or OCR.
+
+Validated on Notes (pure AX, no screenshot): 427 elements, each actionable one
+already carrying `role`, native `actions`, `label`/`help`, an identifier, and
+risk signals in the label text (`Supprimer`, `Éteindre`, ...). Vision and OCR
+are now fallbacks for non-AX surfaces, not the entrypoint.
 
 ## Workspace
 
@@ -173,11 +209,35 @@ Display/window view tools:
 - `arrange_windows` tiles selected windows on a display as `grid`, `columns`,
   `rows`, `cascade`, or `maximize`; selection must be explicit through
   `window_ids`, `app`, or `all:true`.
+- `target_visibility` reports whether the attached target is frontmost,
+  visible, covered, fully covered, or missing from the desktop stack.
+- `get_hit_targets` returns semantic click/type/drag targets with safe inset
+  click zones, action modes, risk, selected browser tab, target visibility, and
+  a `ui_epoch` fingerprint. Pass `previous_epoch` to detect that a cached plan is
+  stale before clicking or dragging.
+- `expose_target_window` raises the attached target and verifies whether it is
+  still covered before OCR, screenshots, or raw pointer input.
 
 Display bounds use macOS global screen points; external displays can have
 negative `x`/`y` coordinates depending on Arrangement. Window moves require
 Accessibility permission and can fail if an app or Space refuses AX position/size
 changes.
+
+OCR and custom-surface tools:
+
+- `read_text` returns OCR lines; `content_only:true` filters browser chrome and
+  low-confidence noise.
+- `read_text_detailed` adds target-visibility diagnostics, warnings, and
+  recommended next steps to the OCR result.
+- `find_ocr_text` returns ranked OCR hits with bbox and center point.
+- `click_near_text` clicks a selected OCR hit and can verify an `expected_text`
+  postcondition afterward.
+- `extract_ocr_cards` groups OCR lines into card-like candidates with title,
+  rating, reviews, ETA, fee, promo, and bbox when visible.
+- `detect_modal` and `dismiss_modal` handle blocking popups conservatively:
+  dismissal only clicks recognized close/dismiss candidates.
+- `read_shapes` and `scan_chart` cover geometric primitives and charts that AX
+  and OCR do not model well.
 
 Performance controls:
 
