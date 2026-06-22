@@ -447,21 +447,58 @@ fn raw_input_gate_requires_pending_synthetic_approval() {
 #[test]
 fn raw_user_active_failure_preserves_approval_for_retry() {
     let (mut eng, _) = engine_with_counter();
-    let target = "keyboard@scroll:down:2";
+    for (target, action, argument, reasoning) in [
+        (
+            "keyboard@scroll:down:2",
+            SemanticAction::Scroll,
+            "scroll down x2",
+            "background web scroll",
+        ),
+        (
+            "wheel@scroll:down:2:3424,898",
+            SemanticAction::Scroll,
+            "wheel scroll down x2",
+            "background wheel scroll",
+        ),
+        (
+            "keyboard@press:PageDown:1",
+            SemanticAction::KeyPress,
+            "PageDown",
+            "raw key press",
+        ),
+        (
+            "screen@3424,898:click",
+            SemanticAction::Click,
+            "click 3424,898",
+            "raw screen click",
+        ),
+    ] {
+        assert_raw_user_active_failure_preserves_approval_for_retry(
+            &mut eng, target, action, argument, reasoning,
+        );
+    }
+}
 
+fn assert_raw_user_active_failure_preserves_approval_for_retry(
+    eng: &mut Engine,
+    target: &str,
+    action: SemanticAction,
+    argument: &str,
+    reasoning: &str,
+) {
     eng.pending_gate_ids.insert(target.to_string());
     eng.approve(target).unwrap();
     assert!(eng.raw_approval_available_for_test(target));
     assert!(
         eng.gate_raw_input(
             target,
-            SemanticAction::Scroll,
-            Some("scroll down x2".to_string()),
-            Some("background web scroll"),
+            action,
+            Some(argument.to_string()),
+            Some(reasoning),
             Engine::raw_input_risk(Vec::new()),
         )
         .is_none(),
-        "approved scroll should pass the raw gate"
+        "approved raw input {target} should pass the raw gate"
     );
 
     let outcome = Err(DunstError::Execution(
@@ -470,9 +507,9 @@ fn raw_user_active_failure_preserves_approval_for_retry() {
     let err = eng
         .audit_raw_input(
             target.to_string(),
-            SemanticAction::Scroll,
-            Some("scroll down x2".to_string()),
-            Some("background web scroll"),
+            action,
+            Some(argument.to_string()),
+            Some(reasoning),
             Engine::raw_input_risk(Vec::new()),
             outcome,
         )
@@ -480,6 +517,17 @@ fn raw_user_active_failure_preserves_approval_for_retry() {
     assert!(err.to_string().contains("user-active guard blocked"));
     assert!(
         eng.raw_approval_available_for_test(target),
-        "user-active guard should not consume an already approved raw action"
+        "user-active guard should not consume already approved raw action {target}"
+    );
+    assert!(
+        eng.gate_raw_input(
+            target,
+            action,
+            Some(argument.to_string()),
+            Some(reasoning),
+            Engine::raw_input_risk(Vec::new()),
+        )
+        .is_none(),
+        "retry for {target} should not ask for a fresh approval"
     );
 }

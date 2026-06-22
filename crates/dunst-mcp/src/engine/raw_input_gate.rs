@@ -121,7 +121,7 @@ impl Engine {
     }
 
     pub(super) fn approve_raw_input(&mut self, target_id: &str) {
-        let expires_at = Instant::now() + Duration::from_secs(30);
+        let expires_at = Instant::now() + Duration::from_secs(RAW_APPROVAL_TTL_SECS);
         for policy in raw_approval_policy(target_id) {
             self.raw_approvals.insert(
                 policy.key,
@@ -248,6 +248,8 @@ impl Engine {
         outcome.map(|()| entry)
     }
 }
+
+const RAW_APPROVAL_TTL_SECS: u64 = 120;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct RawApprovalKey {

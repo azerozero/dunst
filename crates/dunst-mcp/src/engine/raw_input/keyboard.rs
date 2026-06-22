@@ -127,13 +127,8 @@ impl Engine {
     ) -> dunst_core::Result<AuditEntry> {
         if let Some(id) = focus_id {
             if let Some(page_direction) = page_scroll_target_direction(id) {
-                let window = self.current_window_bounds();
-                return self.scroll_at(
-                    window.x + window.w / 2.0,
-                    window.y + window.h / 2.0,
-                    page_direction.unwrap_or(direction),
-                    pages,
-                );
+                return self
+                    .scroll_with_background_keys(page_direction.unwrap_or(direction), pages);
             }
             let can_scroll = self
                 .affordance_graph()

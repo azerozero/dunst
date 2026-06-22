@@ -341,6 +341,7 @@ pub struct OpenUrlAttachResult {
     pub selected_tab: Option<BrowserTab>,
     pub candidates: Vec<WindowSummary>,
     pub verified: bool,
+    pub verified_by: Option<String>,
     pub verification_hint: Option<String>,
 }
 

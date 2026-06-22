@@ -254,10 +254,14 @@ fn hit_targets_return_safe_click_zones_and_action_modes() {
             .find(|target| target.id == target_id)
             .unwrap_or_else(|| panic!("{target_id} pseudo-target should be returned"));
         assert_eq!(page_scroll.source, "page");
+        assert_eq!(page_scroll.risk.level, RiskLevel::High);
+        assert!(page_scroll.risk.requires_approval);
         assert!(page_scroll.action_modes.iter().any(|mode| {
             mode.action == SemanticAction::Scroll
                 && mode.tool_hint == "scroll"
                 && mode.target_id.as_deref() == Some(target_id.as_str())
+                && mode.risk.level == RiskLevel::High
+                && mode.risk.requires_approval
                 && mode
                     .arguments
                     .as_ref()
@@ -266,6 +270,42 @@ fn hit_targets_return_safe_click_zones_and_action_modes() {
                     == Some(direction)
         }));
     }
+}
+
+#[test]
+fn query_affordances_lists_page_scroll_pseudo_targets() {
+    let (eng, _) = engine_with_counter();
+    let ids = eng.query_affordances_scoped(SemanticAction::Scroll, false, "page");
+
+    for direction in ["down", "up", "top", "bottom"] {
+        let target_id = format!("page@scroll:{direction}");
+        assert!(
+            ids.iter().any(|id| id == &target_id),
+            "missing {target_id} from scroll affordances: {ids:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn page_scroll_pseudo_target_uses_keyboard_scroll_gate() {
+    let (mut eng, _) = engine_with_counter();
+
+    let entry = eng
+        .scroll("down", 2, Some("page@scroll:down"))
+        .expect("pseudo page scroll should gate before platform input");
+
+    assert_eq!(entry.result, ActionResult::PendingApproval);
+    assert_eq!(entry.target_id, "keyboard@scroll:down:2");
+    assert!(
+        entry
+            .risk
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("raw input is not bound")),
+        "keyboard scroll stays explicit raw input: {:?}",
+        entry.risk.reasons
+    );
 }
 
 #[test]

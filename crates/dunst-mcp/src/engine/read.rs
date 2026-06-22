@@ -46,7 +46,8 @@ impl Engine {
         let window_rect = self.cached_window_rect;
         let menubar = self.cached_menubar_root.as_deref();
         let g = self.scene_graph();
-        self.affordance_graph()
+        let mut ids: Vec<String> = self
+            .affordance_graph()
             .affordances
             .values()
             .filter(|a| a.actions.contains(&action))
@@ -62,7 +63,11 @@ impl Engine {
                     .unwrap_or(false)
             })
             .map(|a| a.id.clone())
-            .collect()
+            .collect();
+        if action == SemanticAction::Scroll && matches!(scope, "all" | "page" | "content") {
+            ids.extend(["down", "up", "bottom", "top"].map(page_scroll_target_id));
+        }
+        ids
     }
 
     /// WP-J/J2: the affordance graph as JSON, latent nodes omitted unless
@@ -745,6 +750,7 @@ fn append_page_scroll_targets(targets: &mut Vec<HitTarget>, window: Bbox) {
     if window.w <= 0.0 || window.h <= 0.0 {
         return;
     }
+    let risk = page_scroll_risk();
     let bbox = Bbox {
         x: window.x + window.w * 0.08,
         y: window.y + window.h * 0.16,
@@ -776,10 +782,21 @@ fn append_page_scroll_targets(targets: &mut Vec<HitTarget>, window: Bbox) {
                     "pages": if matches!(direction, "top" | "bottom") { 1 } else { 3 },
                 })),
                 drop_targets: Vec::new(),
-                risk: RiskAssessment::low(),
+                risk: risk.clone(),
             }],
-            risk: RiskAssessment::low(),
+            risk: risk.clone(),
         });
+    }
+}
+
+fn page_scroll_risk() -> RiskAssessment {
+    RiskAssessment {
+        level: RiskLevel::High,
+        requires_approval: true,
+        reasons: vec![
+            "page pseudo-scroll uses raw keyboard input when no AX scroll container is available"
+                .into(),
+        ],
     }
 }
 

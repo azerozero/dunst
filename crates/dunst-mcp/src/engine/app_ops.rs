@@ -261,12 +261,21 @@ impl Engine {
         let mut attached_window_title = None;
         let mut selected_tab = None;
         let mut verified = false;
+        let mut verified_by = None;
         if let Some(window) = selected {
             if self.attach_window(window.window_id).is_ok() {
                 let tabs = self.list_browser_tabs(None, true);
                 selected_tab = tabs.into_iter().find(|tab| tab.selected);
                 let title = self.scene_graph().window.title.clone();
-                verified = window_or_tab_matches_terms(&title, selected_tab.as_ref(), &terms);
+                let page_state = self.page_state(20);
+                verified_by = verification_source_for_url(
+                    &title,
+                    selected_tab.as_ref(),
+                    page_state.url.as_deref(),
+                    &terms,
+                )
+                .map(str::to_string);
+                verified = verified_by.is_some();
                 attached_window_title = Some(title);
                 attached = Some(TargetState {
                     pid: self.target.pid,
@@ -279,7 +288,7 @@ impl Engine {
         let verification_hint = if verified {
             None
         } else if attached.is_some() {
-            Some("URL was opened and a browser window was attached, but the selected tab/window title did not verify against the URL; call list_browser_tabs/window_view before acting.".into())
+            Some("URL was opened and a browser window was attached, but the selected tab/title/page URL did not verify against the URL; call list_browser_tabs/window_view before acting, or read_text_detailed(content_only=false) when Firefox hides browser chrome from AX.".into())
         } else {
             Some("URL was opened but no matching browser window could be attached unambiguously; use list_windows and attach explicitly.".into())
         };
@@ -291,6 +300,7 @@ impl Engine {
             selected_tab,
             candidates,
             verified,
+            verified_by,
             verification_hint,
         }
     }
@@ -310,6 +320,7 @@ impl Engine {
             attached_window_title: None,
             selected_tab: None,
             verified: false,
+            verified_by: None,
             verification_hint: Some("open_url_and_attach_tab requires a macOS backend".into()),
         }
     }
@@ -374,16 +385,111 @@ fn best_window_for_url(windows: &[WindowSummary], terms: &[String]) -> Option<Wi
         .cloned()
 }
 
-fn window_or_tab_matches_terms(
+fn verification_source_for_url(
     window_title: &str,
     selected_tab: Option<&BrowserTab>,
+    page_url: Option<&str>,
     terms: &[String],
-) -> bool {
+) -> Option<&'static str> {
+    if normalized_contains_any(page_url.unwrap_or_default(), terms) {
+        return Some("page_url");
+    }
+    if selected_tab
+        .and_then(|tab| tab.url.as_deref())
+        .is_some_and(|url| normalized_contains_any(url, terms))
+    {
+        return Some("selected_tab_url");
+    }
     let window = normalize_match(window_title);
     let tab = selected_tab
         .map(|tab| normalize_match(&tab.title))
         .unwrap_or_default();
-    terms
-        .iter()
-        .any(|term| window.contains(term) || tab.contains(term))
+    if terms.iter().any(|term| tab.contains(term)) {
+        return Some("selected_tab_title");
+    }
+    if terms.iter().any(|term| window.contains(term)) {
+        return Some("window_title");
+    }
+    None
+}
+
+fn normalized_contains_any(value: &str, terms: &[String]) -> bool {
+    let normalized = normalize_match(value);
+    !normalized.is_empty() && terms.iter().any(|term| normalized.contains(term))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab(title: &str, url: Option<&str>) -> BrowserTab {
+        BrowserTab {
+            id: "tab_1".into(),
+            url: url.map(str::to_string),
+            title: title.into(),
+            selected: true,
+            bbox: None,
+        }
+    }
+
+    #[test]
+    fn url_verification_accepts_page_url_when_firefox_title_is_generic() {
+        let terms = url_match_terms("https://www.linkedin.com/in/cl%C3%A9ment-liard/");
+
+        assert_eq!(
+            verification_source_for_url(
+                "Mozilla Firefox",
+                None,
+                Some("https://www.linkedin.com/in/cl%C3%A9ment-liard/"),
+                &terms,
+            ),
+            Some("page_url")
+        );
+    }
+
+    #[test]
+    fn url_verification_reports_the_signal_that_matched() {
+        let terms = url_match_terms("https://github.com/AlexsJones/llmfit");
+
+        assert_eq!(
+            verification_source_for_url(
+                "Mozilla Firefox",
+                Some(&tab("GitHub - AlexsJones/llmfit", None)),
+                None,
+                &terms,
+            ),
+            Some("selected_tab_title")
+        );
+        assert_eq!(
+            verification_source_for_url(
+                "Mozilla Firefox",
+                Some(&tab(
+                    "New Tab",
+                    Some("https://github.com/AlexsJones/llmfit")
+                )),
+                None,
+                &terms,
+            ),
+            Some("selected_tab_url")
+        );
+        assert_eq!(
+            verification_source_for_url("GitHub - AlexsJones/llmfit", None, None, &terms),
+            Some("window_title")
+        );
+    }
+
+    #[test]
+    fn url_verification_rejects_generic_browser_state() {
+        let terms = url_match_terms("https://www.linkedin.com/in/cl%C3%A9ment-liard/");
+
+        assert_eq!(
+            verification_source_for_url(
+                "Mozilla Firefox",
+                Some(&tab("New Tab", None)),
+                None,
+                &terms
+            ),
+            None
+        );
+    }
 }

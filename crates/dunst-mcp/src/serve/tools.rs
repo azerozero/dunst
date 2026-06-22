@@ -528,7 +528,7 @@ fn window_app_tools() -> Vec<Value> {
         ),
         tool(
             "open_url_and_attach_tab",
-            "Open a URL in an app, then attach Dunst to the best matching browser window and report whether the selected tab/window verifies against the URL. Use this instead of launch_app + manual tab guessing for browser navigation.",
+            "Open a URL in an app, then attach Dunst to the best matching browser window and report whether the selected tab/window/page URL verifies against the URL, including verified_by when a signal matched. Use this instead of launch_app + manual tab guessing for browser navigation.",
             schema(json!({ "app": {"type":"string"}, "url": {"type":"string"}, "args": {"type":"array","items":{"type":"string"},"description":"extra argv passed when launching the app"} }), &["app", "url"]),
         ),
         tool(
@@ -573,12 +573,12 @@ fn keyboard_menu_tools() -> Vec<Value> {
         ),
         tool(
             "scroll",
-            "Scroll the focused page/container. With a real AX id, uses direct AX scrollbar value changes on that element or an ancestor exposing AXVerticalScrollBar. With a page@scroll:* pseudo-target from get_hit_targets, wheel-scrolls the page center. Without id, falls back to background Page/Home/End keys. direction: down|up|top|bottom; pages: number of pages (default 3). Action responses are compact by default; set include_diff=true for the full scene diff.",
+            "Scroll the focused page/container. With a real AX id, uses direct AX scrollbar value changes on that element or an ancestor exposing AXVerticalScrollBar. With a page@scroll:* pseudo-target from get_hit_targets, uses background Page/Home/End keys and remains raw-approval-gated. Without id, uses the same background Page/Home/End key path. direction: down|up|top|bottom; pages: number of pages (default 3). Action responses are compact by default; set include_diff=true for the full scene diff.",
             schema(json!({ "direction": {"type":"string","enum":["down","up","top","bottom"]}, "pages": {"type":"integer"}, "id": {"type":"string","description":"optional scrollable element id; requires an AXVerticalScrollBar on the element or an ancestor"}, "include_diff": {"type":"boolean"} }), &[]),
         ),
         tool(
             "scroll_at",
-            "Wheel-scroll at a concrete screen point inside the target window. Use when get_hit_targets returns a page/card pseudo-target or when AX exposes no scrollbar for the desired container. direction: down|up|top|bottom; pages defaults to 3. Raw wheel input is approval-gated.",
+            "Wheel-scroll at a concrete screen point inside the target window. Use only when a point-specific scroll container is needed and AX/page-key scrolling did not work. direction: down|up|top|bottom; pages defaults to 3. Raw wheel input is approval-gated.",
             schema(json!({ "x": {"type":"number"}, "y": {"type":"number"}, "direction": {"type":"string","enum":["down","up","top","bottom"]}, "pages": {"type":"integer"}, "include_diff": {"type":"boolean"} }), &["x", "y"]),
         ),
         tool(
