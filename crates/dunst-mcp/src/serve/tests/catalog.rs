@@ -216,6 +216,17 @@ fn tools_list_exposes_click_at_and_press_key() {
     assert_eq!(paste["inputSchema"]["type"], "object");
     assert_eq!(paste["inputSchema"]["required"], json!(["text"]));
 
+    let right_click = tools
+        .iter()
+        .find(|t| t["name"] == "right_click_at")
+        .expect("right_click_at tool present");
+    let right_click_description = right_click["description"]
+        .as_str()
+        .expect("right_click_at description");
+    assert!(right_click_description.contains("real-cursor warp/restore"));
+    assert!(right_click_description.contains("hardware cursor"));
+    assert!(!right_click_description.contains("Background web via SkyLight"));
+
     let select_file = tools
         .iter()
         .find(|t| t["name"] == "select_file")
@@ -232,6 +243,12 @@ fn tools_list_exposes_click_at_and_press_key() {
         reveal_hover_click["inputSchema"]["required"],
         json!(["x", "y", "query"])
     );
+    let reveal_description = reveal_hover_click["description"]
+        .as_str()
+        .expect("reveal_hover_click description");
+    assert!(reveal_description.contains("already-visible target-window point"));
+    assert!(reveal_description.contains("refuses covered target pixels"));
+    assert!(!reveal_description.contains("raises the target window"));
 
     let read_at = tools
         .iter()

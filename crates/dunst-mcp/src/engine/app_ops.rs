@@ -149,7 +149,8 @@ impl Engine {
         None
     }
 
-    /// Launch an app **without bringing it to the foreground** (`open -g`),
+    /// Launch an app **without bringing it to the foreground** when the platform
+    /// backend supports it,
     /// optionally opening `url` in it. Closes the last external dependency — the
     /// agent can now start a target itself, then list_windows + attach.
     ///
@@ -162,39 +163,15 @@ impl Engine {
     /// `--disable-renderer-backgrounding` `--disable-background-timer-throttling`
     /// `--disable-backgrounding-occluded-windows` keeps it painting while it stays
     /// in the background (verified: TradingView curve renders, frontmost ≠ Chrome).
-    #[cfg(target_os = "macos")]
     pub fn launch_app(
         &self,
         app: &str,
         url: Option<&str>,
         extra_args: &[String],
     ) -> LaunchAppResult {
-        let mut cmd = std::process::Command::new("/usr/bin/open");
-        cmd.args(["-g", "-a", app]);
-        // `open` treats paths/URLs before `--args` as documents to open, and
-        // everything after `--args` as application argv. Keep the URL before
-        // `--args`; otherwise Chrome/Firefox can launch but stay on a new tab.
-        if let Some(u) = url {
-            cmd.arg(u);
-        }
-        if !extra_args.is_empty() {
-            cmd.arg("--args");
-            cmd.args(extra_args);
-        }
-        let launched = cmd.status().map(|s| s.success()).unwrap_or(false);
+        let launched = dunst_platform::launch_app(app, url, extra_args);
         std::thread::sleep(Duration::from_millis(350));
         self.launch_app_result(app, url, launched)
-    }
-
-    /// Non-macOS stub.
-    #[cfg(not(target_os = "macos"))]
-    pub fn launch_app(
-        &self,
-        app: &str,
-        url: Option<&str>,
-        _extra_args: &[String],
-    ) -> LaunchAppResult {
-        self.launch_app_result(app, url, false)
     }
 
     fn launch_app_result(&self, app: &str, url: Option<&str>, launched: bool) -> LaunchAppResult {
@@ -245,7 +222,7 @@ impl Engine {
         let terms = url_match_terms(url);
 
         // Prefer an already-open matching tab/window before calling `open`.
-        // Repeated `/usr/bin/open -g -a Browser <url>` calls can create/select
+        // Repeated platform URL-open calls can create/select
         // tabs depending on browser preferences, which is the wrong primitive
         // for continuing inside an already-attached page.
         let existing_candidates = self.matching_windows_for_app(app);
@@ -364,27 +341,8 @@ impl Engine {
     }
 
     /// Quit an app gracefully (no foreground) by name.
-    #[cfg(target_os = "macos")]
     pub fn close_app(&self, app: &str) -> bool {
-        std::process::Command::new("/usr/bin/osascript")
-            .args([
-                "-e",
-                "on run argv",
-                "-e",
-                "quit application (item 1 of argv)",
-                "-e",
-                "end run",
-                app,
-            ])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
-    /// Non-macOS stub.
-    #[cfg(not(target_os = "macos"))]
-    pub fn close_app(&self, _app: &str) -> bool {
-        false
+        dunst_platform::close_app(app)
     }
 }
 

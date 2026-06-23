@@ -188,6 +188,15 @@ impl Engine {
         x: f64,
         y: f64,
     ) -> dunst_core::Result<()> {
+        self.ensure_real_cursor_point_visible(x, y, "scroll_at borrow_cursor=true")
+    }
+
+    pub(super) fn ensure_real_cursor_point_visible(
+        &self,
+        x: f64,
+        y: f64,
+        operation: &str,
+    ) -> dunst_core::Result<()> {
         if off_target_raw_allowed() {
             return Ok(());
         }
@@ -201,7 +210,7 @@ impl Engine {
             return Ok(());
         }
         Err(DunstError::Execution(format!(
-            "scroll_at borrow_cursor=true requires the target window to be visible under ({x:.1},{y:.1}), but that point is covered by {:?}; use expose_target_window/arrange_windows or use the background SkyLight scroll path",
+            "{operation} requires the target window to be visible under ({x:.1},{y:.1}), but that point is covered by {:?}; use expose_target_window/arrange_windows or a background path when available",
             blockers
                 .iter()
                 .map(|window| window.window_id)

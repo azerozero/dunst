@@ -109,10 +109,8 @@ impl Engine {
 
     /// Paste `text` into the focused element by temporarily replacing the
     /// clipboard, sending Cmd+V to the target window, then restoring the
-    /// previous plain-text clipboard contents. This avoids shell-managed
-    /// pbcopy/type races while keeping the mutation on the guarded raw-input
-    /// path.
-    #[cfg(target_os = "macos")]
+    /// previous plain-text clipboard contents. This keeps the platform clipboard
+    /// mutation on the guarded raw-input path.
     pub fn paste_text(
         &mut self,
         text: &str,
@@ -154,17 +152,6 @@ impl Engine {
     pub fn type_keys(&mut self, _text: &str) -> dunst_core::Result<AuditEntry> {
         Err(DunstError::Execution(
             "type_keys requires a macOS backend".into(),
-        ))
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    pub fn paste_text(
-        &mut self,
-        _text: &str,
-        _restore_clipboard: bool,
-    ) -> dunst_core::Result<AuditEntry> {
-        Err(DunstError::Execution(
-            "paste_text requires a macOS backend".into(),
         ))
     }
 
@@ -638,79 +625,15 @@ impl Engine {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn paste_text_via_clipboard(
     pid: i32,
     window_id: u32,
     text: &str,
     restore_clipboard: bool,
 ) -> dunst_core::Result<()> {
-    let previous = if restore_clipboard {
-        Some(read_clipboard_bytes()?)
-    } else {
-        None
-    };
-    write_clipboard_bytes(text.as_bytes())?;
-    let (flags, keycode) = parse_combo("cmd+v")
-        .ok_or_else(|| DunstError::Execution("internal cmd+v keycode unavailable".into()))?;
-    let paste = retry_user_active_guard(|| {
-        dunst_platform::key_web_background(pid, window_id, keycode, flags)
-    });
-    let restore = previous
-        .as_deref()
-        .map(write_clipboard_bytes)
-        .unwrap_or(Ok(()));
-    match (paste, restore) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(paste_err), Ok(())) => Err(paste_err),
-        (Ok(()), Err(restore_err)) => Err(DunstError::Execution(format!(
-            "paste completed, but clipboard restore failed: {restore_err}"
-        ))),
-        (Err(paste_err), Err(restore_err)) => Err(DunstError::Execution(format!(
-            "paste failed: {paste_err}; clipboard restore also failed: {restore_err}"
-        ))),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn read_clipboard_bytes() -> dunst_core::Result<Vec<u8>> {
-    let output = std::process::Command::new("pbpaste")
-        .output()
-        .map_err(|err| DunstError::Execution(format!("read clipboard with pbpaste: {err}")))?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        Err(DunstError::Execution(format!(
-            "read clipboard with pbpaste exited with status {}",
-            output.status
-        )))
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn write_clipboard_bytes(bytes: &[u8]) -> dunst_core::Result<()> {
-    use std::io::Write as _;
-
-    let mut child = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|err| DunstError::Execution(format!("start pbcopy: {err}")))?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| DunstError::Execution("pbcopy stdin unavailable".into()))?
-        .write_all(bytes)
-        .map_err(|err| DunstError::Execution(format!("write clipboard with pbcopy: {err}")))?;
-    let status = child
-        .wait()
-        .map_err(|err| DunstError::Execution(format!("wait for pbcopy: {err}")))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(DunstError::Execution(format!(
-            "write clipboard with pbcopy exited with status {status}"
-        )))
-    }
+    retry_user_active_guard(|| {
+        dunst_platform::paste_text_background(pid, window_id, text, restore_clipboard)
+    })
 }
 
 pub(in crate::engine) fn page_scroll_target_id(direction: &str) -> String {

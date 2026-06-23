@@ -42,12 +42,9 @@ impl Engine {
             // screen grab includes it — and it's app/browser agnostic + fast.
             // A small move INTO the point (a delta, not a circle) makes the
             // crosshair render; then let it paint before the composited grab.
-            let _ = retry_user_active_guard(|| {
-                dunst_platform::hover_at_point(self.target.pid, x - 8.0, y)
-            });
+            let _ = dunst_platform::cursor_borrow_move_to(x - 8.0, y);
             std::thread::sleep(std::time::Duration::from_millis(30));
-            let _ =
-                retry_user_active_guard(|| dunst_platform::hover_at_point(self.target.pid, x, y));
+            let _ = dunst_platform::cursor_borrow_move_to(x, y);
             std::thread::sleep(std::time::Duration::from_millis(320));
             match self.ocr_screen_fovea(x, y) {
                 Ok(hits) => out.push(hits),

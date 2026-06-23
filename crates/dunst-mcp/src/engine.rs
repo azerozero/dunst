@@ -69,13 +69,11 @@ use window_geometry::*;
 
 pub use types::*;
 
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const READ_REFRESH_TTL: Duration = Duration::from_millis(500);
 const DISPLAY_CACHE_TTL: Duration = Duration::from_millis(1_000);
 const OCR_CACHE_TTL: Duration = Duration::from_millis(250);
 const SCREENSHOT_CACHE_TTL: Duration = Duration::from_millis(250);
-#[cfg(target_os = "macos")]
-const SELECT_FILE_OSASCRIPT_TIMEOUT: Duration = Duration::from_secs(12);
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub struct Engine {
     perceptor: Box<dyn Perceptor>,

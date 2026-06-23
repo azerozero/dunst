@@ -1,11 +1,11 @@
 use super::{
     base64_encode, char_keycode, is_axis_token, is_press_key_name, launchable_app_from_info_json,
     layout_sensitive_hotkey_message, looks_like_clock, parse_combo, parse_value,
-    typed_target_value_matches_expected, Engine, TEMP_COUNTER,
+    typed_target_value_matches_expected,
 };
 use dunst_core::{GraphDiff, NodeChange};
 use serde_json::json;
-use std::{collections::BTreeSet, path::Path, sync::atomic::Ordering};
+use std::{collections::BTreeSet, path::Path};
 
 #[test]
 fn base64_matches_known_vectors() {
@@ -92,56 +92,6 @@ fn char_and_axis_helpers() {
     assert!(!is_axis_token("À la clôture de 17:35"));
     assert_eq!(parse_value("8 220,00"), Some(8220.0));
     assert_eq!(parse_value("8161,84'"), Some(8161.84));
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn select_file_script_handles_native_panel_process_variants() {
-    let script = Engine::select_file_osascript_lines().join("\n");
-
-    assert!(script.contains("Open and Save Panel Service"));
-    assert!(script.contains("targetPid"));
-    assert!(script.contains("frontmost of p is true"));
-    assert!(script.contains("previousFrontPid"));
-    assert!(script.contains("panelishWindow"));
-    assert!(script.contains("AXDialog"));
-    assert!(script.contains("Envoi du fichier"));
-    assert!(script.contains("AXIdentifier"));
-    assert!(script.contains("OKButton"));
-    assert!(script.contains("skip non-panel window"));
-    assert!(script.contains("pressChooserButton"));
-    assert!(script.contains("native file chooser stayed open after file selection"));
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn select_file_script_compiles_as_applescript() {
-    let script = format!("{}\n", Engine::select_file_osascript_lines().join("\n"));
-    let stem = format!(
-        "dunst_select_file_{}_{}",
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    );
-    let source = std::env::temp_dir().join(format!("{stem}.applescript"));
-    let compiled = std::env::temp_dir().join(format!("{stem}.scpt"));
-    std::fs::write(&source, script).expect("write temporary AppleScript source");
-
-    let output = std::process::Command::new("/usr/bin/osacompile")
-        .arg("-o")
-        .arg(&compiled)
-        .arg(&source)
-        .output()
-        .expect("run osacompile");
-
-    let _ = std::fs::remove_file(&source);
-    let _ = std::fs::remove_file(&compiled);
-
-    assert!(
-        output.status.success(),
-        "select_file AppleScript must compile:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[test]

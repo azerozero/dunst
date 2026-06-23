@@ -17,26 +17,14 @@ pub(super) fn unique_png_path(prefix: &str) -> PathBuf {
 #[cfg(target_os = "macos")]
 pub(super) struct BorrowedHoverUiGuard {
     saved_cursor: Option<(f64, f64)>,
-    previous_front_pid: Option<String>,
 }
 
 #[cfg(target_os = "macos")]
 impl BorrowedHoverUiGuard {
-    pub(super) fn start(target: &WindowRef, x: f64, y: f64) -> dunst_core::Result<Self> {
-        let previous_front_pid = Engine::borrow_target_frontmost(target)?;
-        std::thread::sleep(Duration::from_millis(120));
-        let saved_cursor = match dunst_platform::cursor_borrow_to(x, y) {
-            Ok(saved) => saved,
-            Err(err) => {
-                if let Some(pid) = previous_front_pid.as_deref() {
-                    let _ = Engine::restore_frontmost_pid(pid);
-                }
-                return Err(err);
-            }
-        };
+    pub(super) fn start(x: f64, y: f64) -> dunst_core::Result<Self> {
+        let saved_cursor = dunst_platform::cursor_borrow_to(x, y)?;
         Ok(Self {
             saved_cursor: Some(saved_cursor),
-            previous_front_pid,
         })
     }
 }
@@ -46,9 +34,6 @@ impl Drop for BorrowedHoverUiGuard {
     fn drop(&mut self) {
         if let Some((x, y)) = self.saved_cursor.take() {
             let _ = dunst_platform::cursor_restore(x, y);
-        }
-        if let Some(pid) = self.previous_front_pid.take() {
-            let _ = Engine::restore_frontmost_pid(&pid);
         }
     }
 }

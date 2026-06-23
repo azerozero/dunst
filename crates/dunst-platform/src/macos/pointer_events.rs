@@ -117,6 +117,49 @@ pub(super) fn click_at_point_impl(
     result.and(restore)
 }
 
+pub fn right_click_at_point(_pid: i32, x: f64, y: f64) -> Result<()> {
+    right_click_at_point_impl(x, y).map_err(ActionFailure::into)
+}
+
+pub(super) fn right_click_at_point_impl(x: f64, y: f64) -> std::result::Result<(), ActionFailure> {
+    ensure_user_idle_action("right_click_at")?;
+    let point = clamp_point_to_bounds(CGPoint::new(x, y), all_displays_bounds());
+    let source = event_source("create right-click CGEventSource")?;
+    let saved_cursor = current_cursor_position(&source)?;
+    let mut mouse_down_posted = false;
+
+    let result = (|| {
+        CGDisplay::warp_mouse_cursor_position(point)
+            .map_err(|err| ActionFailure::Execution(format!("warp for right-click: {err:?}")))?;
+        thread::sleep(Duration::from_millis(40));
+        let down = CGEvent::new_mouse_event(
+            source.clone(),
+            CGEventType::RightMouseDown,
+            point,
+            CGMouseButton::Right,
+        )
+        .map_err(|err| ActionFailure::Execution(format!("create right-click down: {err:?}")))?;
+        down.post(CGEventTapLocation::HID);
+        mouse_down_posted = true;
+        thread::sleep(Duration::from_millis(20));
+        let up = CGEvent::new_mouse_event(
+            source.clone(),
+            CGEventType::RightMouseUp,
+            point,
+            CGMouseButton::Right,
+        )
+        .map_err(|err| ActionFailure::Execution(format!("create right-click up: {err:?}")))?;
+        up.post(CGEventTapLocation::HID);
+        mouse_down_posted = false;
+        Ok(())
+    })();
+    if result.is_err() && mouse_down_posted {
+        let _ = release_mouse_buttons(point);
+    }
+    let restore = restore_cursor_position(saved_cursor);
+    result.and(restore)
+}
+
 pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
     hover_at_point_impl(pid, x, y).map_err(ActionFailure::into)
 }
@@ -143,6 +186,10 @@ pub(super) fn hover_at_point_impl(
             .map_err(|err| ActionFailure::Execution(format!("create hover CGEvent: {err:?}")))?;
     event.post(CGEventTapLocation::HID);
     Ok(())
+}
+
+pub fn cursor_borrow_move_to(x: f64, y: f64) -> Result<()> {
+    cursor_borrow_move_to_impl(x, y).map_err(ActionFailure::into)
 }
 
 pub fn scroll_at_point(x: f64, y: f64, delta_y: i32) -> Result<()> {
@@ -226,6 +273,20 @@ pub(super) fn cursor_borrow_to_impl(
         };
     event.post(CGEventTapLocation::HID);
     Ok((saved.x, saved.y))
+}
+
+pub(super) fn cursor_borrow_move_to_impl(x: f64, y: f64) -> std::result::Result<(), ActionFailure> {
+    let source = event_source("create borrowed cursor move CGEventSource")?;
+    let point = clamp_point_to_bounds(CGPoint::new(x, y), all_displays_bounds());
+    CGDisplay::warp_mouse_cursor_position(point)
+        .map_err(|err| ActionFailure::Execution(format!("warp borrowed cursor: {err:?}")))?;
+    let event =
+        CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
+            .map_err(|err| {
+                ActionFailure::Execution(format!("create borrowed cursor move: {err:?}"))
+            })?;
+    event.post(CGEventTapLocation::HID);
+    Ok(())
 }
 
 pub fn cursor_restore(x: f64, y: f64) -> Result<()> {

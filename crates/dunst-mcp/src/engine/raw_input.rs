@@ -18,9 +18,9 @@ impl Engine {
         self.click_at_button(x, y, 0, "click")
     }
 
-    /// Briefly raise the target window and borrow the real cursor to reveal
+    /// Borrow the real cursor on an already-visible target point to reveal
     /// hover-only controls, then click the first visible element matching
-    /// `query` through AX and restore the user's previous frontmost app/cursor.
+    /// `query` through AX and restore the user's cursor.
     #[cfg(target_os = "macos")]
     pub fn reveal_hover_click(
         &mut self,
@@ -31,6 +31,7 @@ impl Engine {
         reasoning: Option<&str>,
     ) -> dunst_core::Result<AuditEntry> {
         self.ensure_point_in_target_window(x, y, "reveal_hover_click")?;
+        self.ensure_real_cursor_point_visible(x, y, "reveal_hover_click")?;
         let query = query.trim();
         if query.is_empty() {
             return Err(DunstError::Execution(
@@ -39,7 +40,7 @@ impl Engine {
         }
         let target_id = format!("hover-reveal@{x:.0},{y:.0}:{query}:click");
         let risk = Self::raw_input_risk(vec![
-            "temporarily raises the target window".to_string(),
+            "requires the target window to be visible under the borrowed cursor".to_string(),
             "briefly borrows the real OS cursor".to_string(),
             "clicks a hover-revealed control".to_string(),
         ]);
@@ -74,7 +75,7 @@ impl Engine {
                     Err(err),
                 );
                 Err(DunstError::Execution(format!(
-                    "reveal_hover_click failed ({detail}); cursor/window restore was attempted"
+                    "reveal_hover_click failed ({detail}); cursor restore was attempted"
                 )))
             }
         }
@@ -90,7 +91,7 @@ impl Engine {
         reasoning: Option<&str>,
     ) -> dunst_core::Result<AuditEntry> {
         let settle = settle_ms.clamp(50, 1_500);
-        let _guard = BorrowedHoverUiGuard::start(&self.window, x, y)?;
+        let _guard = BorrowedHoverUiGuard::start(x, y)?;
         std::thread::sleep(Duration::from_millis(settle));
         self.refresh()?;
 
@@ -116,7 +117,8 @@ impl Engine {
         )))
     }
 
-    /// Right-click at a raw screen point (context menus). Background web via SkyLight.
+    /// Right-click at a raw screen point (context menus). Uses the real cursor
+    /// so macOS positions the menu at the requested point, then restores it.
     #[cfg(target_os = "macos")]
     pub fn right_click_at(&mut self, x: f64, y: f64) -> dunst_core::Result<AuditEntry> {
         self.click_at_button(x, y, 1, "right-click")
@@ -248,6 +250,12 @@ impl Engine {
 
     #[cfg(target_os = "macos")]
     pub(super) fn raw_click_outcome(&self, x: f64, y: f64, button: u8) -> dunst_core::Result<()> {
+        if button == 1 {
+            self.ensure_real_cursor_point_visible(x, y, "right_click_at")?;
+            return retry_user_active_guard(|| {
+                dunst_platform::right_click_at_point(self.target.pid, x, y)
+            });
+        }
         retry_user_active_guard(|| {
             let (ox, oy) = dunst_vision::capture::window_bounds(self.target.window_id)
                 .map(|(x, y, _, _)| (x, y))

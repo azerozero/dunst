@@ -94,6 +94,10 @@ Raw pointer and keyboard tools are high-risk. Keep these rules:
 - Include `expected_text` when clicking or focusing by OCR.
 - Treat `visible_background` as usable for background SkyLight input, but verify
   target visibility before raw pointer or real-cursor actions.
+- Real-cursor actions such as `right_click_at`, `scroll_at(borrow_cursor=true)`,
+  `read_at(borrow_cursor=true)`, and `reveal_hover_click` require visible target
+  pixels at the requested point. They should restore the cursor and must not
+  raise the target window as a side effect.
 - If `user-active guard blocked` appears, wait for operator idle and retry the
   same approved action. The raw grant is restored for user-active failures.
 - Do not use `javascript:` in the browser address bar as a fallback.

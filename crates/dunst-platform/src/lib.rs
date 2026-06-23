@@ -14,11 +14,20 @@ use dunst_core::{
     ActionExecutor, Perceptor, RawAxNode, Result, SceneNode, SemanticAction, Target, WindowRef,
 };
 
+mod app_control;
 mod capabilities;
+mod clipboard;
+mod file_chooser;
+
+pub use app_control::{close_app, launch_app};
 pub use capabilities::{
     AppCapabilities, ClipboardCapabilities, InputCapabilities, PerceptionCapabilities,
     PlatformCapabilities, PlatformKind, WindowCapabilities,
 };
+pub use clipboard::{paste_text_background, read_clipboard_bytes, write_clipboard_bytes};
+#[cfg(target_os = "macos")]
+pub use file_chooser::select_file_osascript_lines;
+pub use file_chooser::{borrow_target_frontmost, restore_frontmost_pid, select_file};
 
 pub fn platform_kind() -> PlatformKind {
     capabilities::current_platform_kind()
@@ -47,6 +56,13 @@ pub fn click_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
     macos::click_at_point(pid, x, y)
 }
 
+/// Post a real-cursor right-click at a screen point. Context menus on macOS
+/// position from the real cursor, so this path briefly warps and restores it.
+#[cfg(target_os = "macos")]
+pub fn right_click_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
+    macos::right_click_at_point(pid, x, y)
+}
+
 /// Post a named keyboard key to a macOS window without touching the mouse.
 #[cfg(target_os = "macos")]
 pub fn press_key(pid: i32, window_id: u32, key: &str) -> Result<()> {
@@ -70,6 +86,14 @@ pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
 #[cfg(target_os = "macos")]
 pub fn cursor_borrow_to(x: f64, y: f64) -> Result<(f64, f64)> {
     macos::cursor_borrow_to(x, y)
+}
+
+/// Move an already-borrowed cursor without re-running the user-idle guard.
+/// Callers must first use [`cursor_borrow_to`] and must restore with
+/// [`cursor_restore`].
+#[cfg(target_os = "macos")]
+pub fn cursor_borrow_move_to(x: f64, y: f64) -> Result<()> {
+    macos::cursor_borrow_move_to(x, y)
 }
 
 /// End a [`cursor_borrow_to`]: release mouse buttons defensively, warp the

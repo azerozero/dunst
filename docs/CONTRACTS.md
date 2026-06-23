@@ -81,6 +81,20 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   `dunst_platform::capabilities::tests::macos_groups_related_capabilities_by_call_type`,
   `serve::tests::platform_capabilities_tool_reports_grouped_backend_surface`,
   `serve::tests::tools_list_exposes_read_text_with_object_schema`.
+- **Native OS side effects stay behind platform adapters.** Clipboard paste,
+  native file chooser driving, app launch/close, and real-cursor pointer paths
+  are exposed through `dunst-platform` facades. MCP code gates, audits, and
+  validates visibility, then calls the platform facade instead of owning
+  OS-specific shell scripts or FFI directly.
+  — `dunst_platform::clipboard::tests::paste_shortcut_uses_command_v`,
+  `dunst_platform::file_chooser::tests::select_file_script_handles_native_panel_process_variants`,
+  `dunst_platform::file_chooser::tests::select_file_script_compiles_as_applescript`.
+- **Real-cursor actions require visible target pixels and preserve focus when
+  possible.** `right_click_at` uses a real-cursor context-click because macOS
+  positions context menus from the hardware cursor; borrowed-cursor reads move
+  within a single borrow without re-running the user-active guard on their own
+  synthetic moves; hover-reveal does not raise the target window.
+  — `serve::tests::tools_list_exposes_read_text_with_object_schema`.
 
 ## Scene-graph projection (WP-J)
 

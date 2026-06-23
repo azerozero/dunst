@@ -382,7 +382,7 @@ fn element_tools() -> Vec<Value> {
         ),
         tool(
             "reveal_hover_click",
-            "Temporarily borrow the target window and real cursor to reveal hover-only controls, click the first visible element matching query by AX id, then restore both cursor and the previously-frontmost app. Use for UIs where edit/delete buttons appear only while the real mouse hovers a card. High-risk: requires approval, mutates UI, and briefly raises the target window. settle_ms is clamped to 50-1500 ms (default 250).",
+            "Temporarily borrow the real cursor on an already-visible target-window point to reveal hover-only controls, click the first visible element matching query by AX id, then restore the cursor. Use for UIs where edit/delete buttons appear only while the real mouse hovers a card. High-risk: requires approval, mutates UI, and refuses covered target pixels. settle_ms is clamped to 50-1500 ms (default 250).",
             schema(
                 json!({
                     "x": {"type":"number", "description":"screen x inside the target window/card to hover"},
@@ -397,7 +397,7 @@ fn element_tools() -> Vec<Value> {
         ),
         tool(
             "select_file",
-            "Select a local file in a native macOS file chooser for browser upload controls. Provide path plus either trigger_id (an existing upload/dropzone/link element to real-click first) or x/y (screen point to real-click first); omit trigger_id/x/y only when the file chooser is already open. High-risk: uses System Events to click inside the target window and drive the chooser. Off-target trigger points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
+            "Select a local file in the native platform file chooser for browser upload controls. Provide path plus either trigger_id (an existing upload/dropzone/link element to real-click first) or x/y (screen point to real-click first); omit trigger_id/x/y only when the file chooser is already open. High-risk: may real-click inside the target window and drive a native chooser through the platform backend. Off-target trigger points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1.",
             schema(
                 json!({
                     "path": { "type": "string", "description": "absolute or working-directory-relative local file path to select" },
@@ -530,7 +530,7 @@ fn window_app_tools() -> Vec<Value> {
         ),
         tool(
             "launch_app",
-            "Launch an app WITHOUT bringing it to the foreground (open -g), optionally opening a url in it. Returns launched plus matching_windows, the current target, and a verification_hint because browsers may reuse another window/tab; after URL opens, call refresh + list_browser_tabs/window_view and attach if needed before acting. args: extra argv passed to the app (only applies when this call actually launches it). To read a Chromium chart in pure background, launch with args [\"--disable-features=CalculateNativeWinOcclusion\",\"--disable-renderer-backgrounding\",\"--disable-background-timer-throttling\",\"--disable-backgrounding-occluded-windows\"] so the <canvas> keeps painting while backgrounded (otherwise scan_chart sees a blank plot).",
+            "Launch an app without bringing it to the foreground when the platform backend supports that, optionally opening a url in it. Returns launched plus matching_windows, the current target, and a verification_hint because browsers may reuse another window/tab; after URL opens, call refresh + list_browser_tabs/window_view and attach if needed before acting. args: extra argv passed to the app (only applies when this call actually launches it). To read a Chromium chart in pure background, launch with args [\"--disable-features=CalculateNativeWinOcclusion\",\"--disable-renderer-backgrounding\",\"--disable-background-timer-throttling\",\"--disable-backgrounding-occluded-windows\"] so the <canvas> keeps painting while backgrounded (otherwise scan_chart sees a blank plot).",
             schema(json!({ "app": {"type":"string"}, "url": {"type":"string"}, "args": {"type":"array","items":{"type":"string"},"description":"extra argv for the app (e.g. Chromium background-paint flags)"} }), &["app"]),
         ),
         tool(
@@ -555,7 +555,7 @@ fn keyboard_menu_tools() -> Vec<Value> {
     vec![
         tool(
             "right_click_at",
-            "Right-click at a raw screen point (x,y) — context menus. Background web via SkyLight (no cursor, no foreground). Raw input is high-risk; if approval is unavailable or denied, switch to ui_fallback_hint and prefer element-bound actions. If the user-active guard blocks it, wait until the operator is idle and retry once.",
+            "Right-click at a raw screen point (x,y) — context menus. Uses a brief real-cursor warp/restore on visible target pixels because macOS positions context menus from the hardware cursor. Raw input is high-risk; if approval is unavailable or denied, switch to ui_fallback_hint and prefer element-bound actions. If the user-active guard blocks it, wait until the operator is idle and retry once.",
             schema(json!({ "x": {"type":"number"}, "y": {"type":"number"} }), &["x", "y"]),
         ),
         tool(
