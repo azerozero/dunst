@@ -122,6 +122,7 @@ fn audit_entry_full_diff_also_reports_meaningful_summary() {
                 after: "Toujours afficher".into(),
             }],
         },
+        caller: None,
     };
 
     let value = audit_entry_value(entry, true);
@@ -152,6 +153,7 @@ fn bbox_only_generated_wrapper_click_gets_verification_hint() {
                 after: "Some(Bbox { x: 721.5, y: 947.0, w: 61.0, h: 61.0 })".into(),
             }],
         },
+        caller: None,
     };
 
     let value = audit_entry_value(entry, false);
@@ -181,6 +183,7 @@ fn typed_audit_summary_reports_whether_target_value_changed() {
                 after: "nouvelle description".into(),
             }],
         },
+        caller: None,
     };
     let value = audit_entry_value(changed, false);
     assert_eq!(
@@ -208,6 +211,7 @@ fn typed_audit_summary_reports_whether_target_value_changed() {
                 after: "Some(Bbox { x: 2.0, y: 2.0, w: 1.0, h: 1.0 })".into(),
             }],
         },
+        caller: None,
     };
     let value = audit_entry_value(unchanged, false);
     assert_eq!(
@@ -238,6 +242,7 @@ fn typed_audit_summary_rejects_partial_target_value() {
                 after: "uvelle description".into(),
             }],
         },
+        caller: None,
     };
 
     let value = audit_entry_value(partial, false);
@@ -262,6 +267,7 @@ fn failed_type_audit_includes_do_not_save_hint() {
         reasoning: None,
         result: ActionResult::Failed,
         graph_diff: GraphDiff::default(),
+        caller: None,
     };
 
     let value = audit_entry_value(entry, false);
@@ -290,6 +296,7 @@ fn failed_checkbox_click_includes_toggle_hint() {
         reasoning: None,
         result: ActionResult::Failed,
         graph_diff: GraphDiff::default(),
+        caller: None,
     };
 
     let value = audit_entry_value(entry, false);
@@ -310,6 +317,7 @@ fn failed_latent_menu_item_includes_open_menu_hint() {
         reasoning: None,
         result: ActionResult::Failed,
         graph_diff: GraphDiff::default(),
+        caller: None,
     };
 
     let value = audit_entry_value(entry, false);
@@ -334,6 +342,7 @@ fn successful_click_without_meaningful_diff_includes_verification_hint() {
         reasoning: None,
         result: ActionResult::Success,
         graph_diff: GraphDiff::default(),
+        caller: None,
     };
 
     let value = audit_entry_value(entry, false);
@@ -354,6 +363,7 @@ fn successful_raw_click_without_meaningful_diff_warns_not_to_retry_same_point() 
         reasoning: None,
         result: ActionResult::Success,
         graph_diff: GraphDiff::default(),
+        caller: None,
     };
 
     let value = audit_entry_value(entry, false);

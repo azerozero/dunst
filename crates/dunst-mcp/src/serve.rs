@@ -9,6 +9,7 @@ use std::{
     any::Any,
     io::{self, BufRead, Write},
     panic::{catch_unwind, AssertUnwindSafe},
+    process::Command,
     time::{Duration, Instant},
 };
 
@@ -27,7 +28,7 @@ use response::{
 use tools::tools_list;
 
 use crate::engine::{Engine, SceneView};
-use dunst_core::{Bbox, SceneNode, SemanticAction};
+use dunst_core::{Bbox, SceneNode, SemanticAction, SessionIdentity};
 
 #[cfg(test)]
 use dunst_core::{ActionResult, AuditEntry, GraphDiff, NodeChange};
@@ -43,11 +44,16 @@ const DIFF_SUMMARY_VALUE_LIMIT: usize = 160;
 
 /// Run the stdio server loop until stdin closes.
 pub fn serve(mut engine: Engine) -> i32 {
+    let mut session_identity = initial_session_identity();
+    engine.set_session_identity(session_identity.clone());
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = stdout.lock();
     eprintln!(
-        "dunst-mcp: stdio MCP server ready (version {}, git {}, dirty {}, built {}, {} tools)",
+        "dunst-mcp: stdio MCP server ready (session {}, agent {}, parent {}, version {}, git {}, dirty {}, built {}, {} tools)",
+        session_identity.session_id,
+        session_identity.agent_id.as_deref().unwrap_or("-"),
+        parent_process_label(&session_identity),
         SERVER_VERSION,
         build_git_sha(),
         build_git_dirty(),
@@ -74,10 +80,42 @@ pub fn serve(mut engine: Engine) -> i32 {
         let method = req.get("method").and_then(Value::as_str).unwrap_or("");
 
         match method {
-            "initialize" => send(&mut out, result_obj(id, initialize_result())),
+            "initialize" => {
+                if let Some((client_name, client_version)) = client_info_from_initialize(&req) {
+                    session_identity.client_name = client_name;
+                    session_identity.client_version = client_version;
+                    engine.set_session_identity(session_identity.clone());
+                    eprintln!(
+                        "dunst-mcp: initialized session {} client {} {} agent {}",
+                        session_identity.session_id,
+                        session_identity.client_name.as_deref().unwrap_or("-"),
+                        session_identity.client_version.as_deref().unwrap_or("-"),
+                        session_identity.agent_id.as_deref().unwrap_or("-")
+                    );
+                }
+                send(
+                    &mut out,
+                    result_obj(id, initialize_result(&session_identity)),
+                );
+            }
             "notifications/initialized" => { /* notification: no reply */ }
-            "ping" => send(&mut out, result_obj(id, json!({}))),
-            "tools/list" => send(&mut out, result_obj(id, json!({ "tools": tools_list() }))),
+            "ping" => send(
+                &mut out,
+                result_obj(
+                    id,
+                    json!({ "_meta": { "dunst": dunst_meta(&session_identity) } }),
+                ),
+            ),
+            "tools/list" => send(
+                &mut out,
+                result_obj(
+                    id,
+                    json!({
+                        "tools": tools_list(),
+                        "_meta": { "dunst": dunst_meta(&session_identity) }
+                    }),
+                ),
+            ),
             "tools/call" => {
                 let resp = handle_tool_call_safely(&mut engine, id, &req);
                 send(&mut out, resp);
@@ -104,11 +142,13 @@ fn handle_tool_call_safely(engine: &mut Engine, id: Value, req: &Value) -> Value
         .unwrap_or("<unknown>")
         .to_string();
 
+    let session = engine.session_identity().cloned();
+    log_tool_call(&tool_name, session.as_ref());
     match catch_unwind(AssertUnwindSafe(|| {
         handle_tool_call(engine, id.clone(), req)
     })) {
         Ok(resp) => resp,
-        Err(payload) => panic_tool_response(id, &tool_name, started, payload),
+        Err(payload) => panic_tool_response(id, &tool_name, started, session.as_ref(), payload),
     }
 }
 
@@ -116,6 +156,7 @@ fn panic_tool_response(
     id: Value,
     tool_name: &str,
     started: Instant,
+    session: Option<&SessionIdentity>,
     payload: Box<dyn Any + Send>,
 ) -> Value {
     let msg = panic_payload_message(payload.as_ref());
@@ -132,6 +173,7 @@ fn panic_tool_response(
             }),
             tool_name,
             started,
+            session,
         ),
     )
 }
@@ -146,7 +188,7 @@ fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
     "<non-string panic payload>".to_string()
 }
 
-fn initialize_result() -> Value {
+fn initialize_result(session: &SessionIdentity) -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": {} },
@@ -155,9 +197,104 @@ fn initialize_result() -> Value {
             "version": server_version_label()
         },
         "_meta": {
-            "dunst": build_info()
+            "dunst": dunst_meta(session)
         }
     })
+}
+
+fn dunst_meta(session: &SessionIdentity) -> Value {
+    let mut dunst = build_info();
+    if let Value::Object(obj) = &mut dunst {
+        obj.insert("session".into(), json!(session));
+    }
+    dunst
+}
+
+fn initial_session_identity() -> SessionIdentity {
+    let (parent_pid, parent_process) = parent_process_info();
+    SessionIdentity {
+        session_id: format!("dunst-{}-{}", std::process::id(), dunst_core::now_ms()),
+        client_name: None,
+        client_version: None,
+        agent_id: env_non_empty("DUNST_MCP_AGENT_ID"),
+        parent_pid,
+        parent_process,
+    }
+}
+
+fn env_non_empty(key: &str) -> Option<String> {
+    std::env::var(key).ok().and_then(|value| {
+        let value = value.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    })
+}
+
+fn parent_process_info() -> (Option<u32>, Option<String>) {
+    let pid = std::process::id().to_string();
+    let parent_pid = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid])
+        .output()
+        .ok()
+        .and_then(|output| output.status.success().then_some(output.stdout))
+        .and_then(|stdout| String::from_utf8(stdout).ok())
+        .and_then(|text| text.trim().parse::<u32>().ok());
+
+    let parent_process = parent_pid
+        .and_then(|ppid| {
+            let ppid_arg = ppid.to_string();
+            Command::new("ps")
+                .args(["-o", "comm=", "-p", &ppid_arg])
+                .output()
+                .ok()
+                .and_then(|output| output.status.success().then_some(output.stdout))
+                .and_then(|stdout| String::from_utf8(stdout).ok())
+                .map(|text| text.trim().to_string())
+                .filter(|text| !text.is_empty())
+                .map(|process| (ppid, process))
+        })
+        .map(|(ppid, process)| (Some(ppid), Some(process)))
+        .unwrap_or((parent_pid, None));
+
+    parent_process
+}
+
+fn parent_process_label(identity: &SessionIdentity) -> String {
+    match (identity.parent_pid, identity.parent_process.as_deref()) {
+        (Some(pid), Some(process)) => format!("{pid}:{process}"),
+        (Some(pid), None) => pid.to_string(),
+        _ => "-".into(),
+    }
+}
+
+fn log_tool_call(tool_name: &str, session: Option<&SessionIdentity>) {
+    match session {
+        Some(identity) => eprintln!(
+            "dunst-mcp: tools/call session {} client {} {} agent {} tool {}",
+            identity.session_id,
+            identity.client_name.as_deref().unwrap_or("-"),
+            identity.client_version.as_deref().unwrap_or("-"),
+            identity.agent_id.as_deref().unwrap_or("-"),
+            tool_name
+        ),
+        None => eprintln!("dunst-mcp: tools/call session - client - - agent - tool {tool_name}"),
+    }
+}
+
+fn client_info_from_initialize(req: &Value) -> Option<(Option<String>, Option<String>)> {
+    let client_info = req.get("params")?.get("clientInfo")?;
+    let name = client_info
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let version = client_info
+        .get("version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    (name.is_some() || version.is_some()).then_some((name, version))
 }
 
 fn build_git_sha() -> &'static str {

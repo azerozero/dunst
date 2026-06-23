@@ -1,6 +1,6 @@
 use super::*;
 use dunst_core::mock::MockPerceptor;
-use dunst_core::RiskLevel;
+use dunst_core::{RiskLevel, SessionIdentity};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 

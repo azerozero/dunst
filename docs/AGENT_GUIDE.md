@@ -101,17 +101,43 @@ For repeated key deletion in opaque fields, prefer smaller batches plus OCR
 verification. For long insertion, prefer `paste_text` over long `type_keys`
 payloads.
 
+## Session Provenance
+
+Each MCP server process has a `SessionIdentity`:
+
+- `session_id` is generated when the server starts.
+- `client_name` and `client_version` come from MCP `initialize.clientInfo` when
+  the client sends them.
+- `agent_id` comes from `DUNST_MCP_AGENT_ID` when the operator wants a stable
+  human-readable label for the agent.
+- `parent_pid` and `parent_process` are best-effort process ancestry hints.
+
+The identity appears in `_meta.dunst.session`, every audited `AuditEntry.caller`
+record when known, and stderr `tools/call` logs. Treat it as provenance only: it
+does not authenticate a client and does not replace the approval gate.
+
+For multi-session work, keep the current design pattern:
+
+- Multiple readers are acceptable.
+- UI mutation is still single-writer in practice.
+- Future leases and resource locks should use `SessionIdentity` as the owner and
+  fencing label, then fail explicitly when another session owns the target.
+- Do not run two mutating agents against the same browser window without a
+  coordinator or operator supervision.
+
 ## Live Debug Checklist
 
 When a live MCP flow misbehaves:
 
 1. Confirm the attached target with `target_visibility` and `window_view`.
-2. Compare AX with OCR using `get_hit_targets` and `read_text_detailed`.
-3. If AX is sparse, use OCR-derived targets and label-relative offsets.
-4. If typing succeeds but OCR is unchanged, assume the field was not focused.
-5. If the idle guard blocks repeated keys, pause and retry the same approved
+2. Check `_meta.dunst.session` or stderr logs to identify which MCP session is
+   issuing calls.
+3. Compare AX with OCR using `get_hit_targets` and `read_text_detailed`.
+4. If AX is sparse, use OCR-derived targets and label-relative offsets.
+5. If typing succeeds but OCR is unchanged, assume the field was not focused.
+6. If the idle guard blocks repeated keys, pause and retry the same approved
    action; do not broaden to unguarded automation without explicit permission.
-6. Before saving, verify the final visible text by OCR.
+7. Before saving, verify the final visible text by OCR.
 
 ## Validation Before Handoff
 

@@ -53,6 +53,13 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
 - **Every attempt is audited.** Exactly one `AuditEntry` is appended per attempted
   action (gated or executed).
   — `engine::tests::every_attempt_is_audited`.
+- **Known MCP sessions are carried into provenance.** When the server has a
+  `SessionIdentity`, every appended `AuditEntry` carries it as `caller`, and MCP
+  tool responses expose it under `_meta.dunst.session`. This is diagnostic
+  provenance, not authorization.
+  — `engine::tests::audited_attempts_include_session_identity_when_known`,
+  `serve::tests::tool_call_results_include_session_identity_meta`,
+  `serve::tests::initialize_result_includes_build_and_session_identity`.
 
 ## Scene-graph projection (WP-J)
 

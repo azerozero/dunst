@@ -15,14 +15,21 @@ pub(super) fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> V
     let params = req.get("params").cloned().unwrap_or(Value::Null);
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    let session = engine.session_identity().cloned();
 
     let Some(route) = tool_route(name) else {
-        return text_response(id, name, started, Err(format!("unknown tool: {name}")));
+        return text_response(
+            id,
+            name,
+            started,
+            session.as_ref(),
+            Err(format!("unknown tool: {name}")),
+        );
     };
 
     // screenshot returns an IMAGE content block, not text.
     if route == ToolRoute::Screenshot {
-        return screenshot_response(engine, id, name, started);
+        return screenshot_response(engine, id, name, started, session.as_ref());
     }
 
     let outcome = match route {
@@ -34,10 +41,16 @@ pub(super) fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> V
     }
     .unwrap_or_else(|| Err(format!("registered tool has no handler: {name}")));
 
-    text_response(id, name, started, outcome)
+    text_response(id, name, started, session.as_ref(), outcome)
 }
 
-fn screenshot_response(engine: &Engine, id: Value, name: &str, started: Instant) -> Value {
+fn screenshot_response(
+    engine: &Engine,
+    id: Value,
+    name: &str,
+    started: Instant,
+    session: Option<&SessionIdentity>,
+) -> Value {
     match engine.screenshot() {
         Some(result) => {
             let mut meta = serde_json::to_value(&result).unwrap_or(Value::Null);
@@ -53,6 +66,7 @@ fn screenshot_response(engine: &Engine, id: Value, name: &str, started: Instant)
                     }),
                     name,
                     started,
+                    session,
                 ),
             )
         }
@@ -62,12 +76,19 @@ fn screenshot_response(engine: &Engine, id: Value, name: &str, started: Instant)
                 json!({ "content": [{ "type": "text", "text": "screenshot failed" }], "isError": true }),
                 name,
                 started,
+                session,
             ),
         ),
     }
 }
 
-fn text_response(id: Value, name: &str, started: Instant, outcome: Result<Value, String>) -> Value {
+fn text_response(
+    id: Value,
+    name: &str,
+    started: Instant,
+    session: Option<&SessionIdentity>,
+    outcome: Result<Value, String>,
+) -> Value {
     match outcome {
         Ok(value) => {
             let text = if value.is_string() {
@@ -81,6 +102,7 @@ fn text_response(id: Value, name: &str, started: Instant, outcome: Result<Value,
                     json!({ "content": [{ "type": "text", "text": text }] }),
                     name,
                     started,
+                    session,
                 ),
             )
         }
@@ -90,6 +112,7 @@ fn text_response(id: Value, name: &str, started: Instant, outcome: Result<Value,
                 json!({ "content": [{ "type": "text", "text": message }], "isError": true }),
                 name,
                 started,
+                session,
             ),
         ),
     }

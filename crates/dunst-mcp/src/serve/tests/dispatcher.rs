@@ -32,6 +32,7 @@ fn tool_panic_becomes_mcp_error_response() {
         json!(7),
         "click_element",
         Instant::now(),
+        None,
         Box::new("simulated panic"),
     );
 
@@ -62,6 +63,73 @@ fn tool_call_results_include_timing_meta() {
             .is_some_and(|ms| ms >= 0.0),
         "timing_ms should be numeric: {resp}"
     );
+}
+
+#[test]
+fn tool_call_results_include_session_identity_meta() {
+    let mut e = engine();
+    e.set_session_identity(SessionIdentity {
+        session_id: "dunst-test-session".into(),
+        client_name: Some("codex".into()),
+        client_version: Some("5.5".into()),
+        agent_id: Some("collective-fixer".into()),
+        parent_pid: Some(42),
+        parent_process: Some("codex".into()),
+    });
+
+    let resp = call(&mut e, "get_scene_graph", json!({ "view": "summary" }));
+    let session = &resp["result"]["_meta"]["dunst"]["session"];
+    assert_eq!(session["session_id"], "dunst-test-session");
+    assert_eq!(session["client_name"], "codex");
+    assert_eq!(session["client_version"], "5.5");
+    assert_eq!(session["agent_id"], "collective-fixer");
+    assert_eq!(session["parent_pid"], 42);
+    assert_eq!(session["parent_process"], "codex");
+}
+
+#[test]
+fn initialize_result_includes_build_and_session_identity() {
+    let session = SessionIdentity {
+        session_id: "dunst-init-session".into(),
+        client_name: Some("codex".into()),
+        client_version: Some("5.5".into()),
+        agent_id: Some("collective-fixer".into()),
+        parent_pid: Some(42),
+        parent_process: Some("codex".into()),
+    };
+
+    let result = initialize_result(&session);
+
+    assert_eq!(result["_meta"]["dunst"]["version"], SERVER_VERSION);
+    assert_eq!(
+        result["_meta"]["dunst"]["protocol_version"],
+        PROTOCOL_VERSION
+    );
+    assert_eq!(
+        result["_meta"]["dunst"]["session"]["session_id"],
+        "dunst-init-session"
+    );
+    assert_eq!(result["_meta"]["dunst"]["session"]["client_name"], "codex");
+}
+
+#[test]
+fn initialize_client_info_parser_keeps_client_name_and_version() {
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": {
+                "name": "Codex",
+                "version": "5.5"
+            }
+        }
+    });
+
+    let (name, version) = client_info_from_initialize(&req).expect("clientInfo parsed");
+
+    assert_eq!(name.as_deref(), Some("Codex"));
+    assert_eq!(version.as_deref(), Some("5.5"));
 }
 
 #[test]

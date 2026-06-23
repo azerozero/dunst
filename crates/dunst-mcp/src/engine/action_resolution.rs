@@ -130,7 +130,10 @@ impl Engine {
             })
     }
 
-    pub(super) fn push_entry(&mut self, entry: AuditEntry) -> AuditEntry {
+    pub(super) fn push_entry(&mut self, mut entry: AuditEntry) -> AuditEntry {
+        if entry.caller.is_none() {
+            entry.caller.clone_from(&self.session_identity);
+        }
         self.trace.push(entry.clone());
         entry
     }

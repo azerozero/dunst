@@ -341,6 +341,26 @@ impl GraphDiff {
     }
 }
 
+/// Identifies the MCP session/client responsible for an action.
+///
+/// This is provenance, not authentication. Future inter-process locks and
+/// leases can use it to explain ownership, but risk approval remains a
+/// separate operator-side gate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionIdentity {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_process: Option<String>,
+}
+
 /// A single audited action (the spec's audit-trail record).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuditEntry {
@@ -357,6 +377,9 @@ pub struct AuditEntry {
     /// Diff of the scene graph caused by the action.
     #[serde(default)]
     pub graph_diff: GraphDiff,
+    /// MCP session/client that requested the action, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<SessionIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

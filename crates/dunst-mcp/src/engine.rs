@@ -17,8 +17,8 @@ use std::{
 
 use dunst_core::{
     ActionExecutor, ActionResult, AffordanceGraph, AuditEntry, Bbox, DunstError, GraphDiff,
-    Perceptor, RiskAssessment, RiskLevel, Role, SceneGraph, SceneNode, SemanticAction, Target,
-    WindowRef,
+    Perceptor, RiskAssessment, RiskLevel, Role, SceneGraph, SceneNode, SemanticAction,
+    SessionIdentity, Target, WindowRef,
 };
 use dunst_graph::{audit, derive_affordances, scene, RiskEngine};
 use serde_json::{json, Value};
@@ -116,6 +116,7 @@ pub struct Engine {
     visual_probe_cache: RefCell<Option<VisualProbeCacheEntry>>,
     scroll_strategy_cache: BTreeMap<ScrollStrategyKey, ScrollStrategyMemory>,
     scroll_background_low_signal: BTreeSet<ScrollStrategyKey>,
+    session_identity: Option<SessionIdentity>,
     trace: Vec<AuditEntry>,
 }
 
@@ -169,6 +170,7 @@ impl Engine {
             visual_probe_cache: RefCell::new(None),
             scroll_strategy_cache: BTreeMap::new(),
             scroll_background_low_signal: BTreeSet::new(),
+            session_identity: None,
             trace: Vec::new(),
         };
         e.refresh()?;
@@ -224,6 +226,14 @@ impl Engine {
     /// Whether the current scene graph was captured within `ttl`.
     pub fn graph_recent(&self, ttl: Duration) -> bool {
         self.last_refresh_at.is_some_and(|at| at.elapsed() <= ttl)
+    }
+
+    pub fn set_session_identity(&mut self, identity: SessionIdentity) {
+        self.session_identity = Some(identity);
+    }
+
+    pub fn session_identity(&self) -> Option<&SessionIdentity> {
+        self.session_identity.as_ref()
     }
 
     /// Re-target the engine to a different window at runtime — the MCP client

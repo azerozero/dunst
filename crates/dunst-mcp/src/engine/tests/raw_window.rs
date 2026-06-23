@@ -942,6 +942,7 @@ fn scroll_success_audit(target_id: &str) -> AuditEntry {
         reasoning: None,
         result: ActionResult::Success,
         graph_diff: GraphDiff::default(),
+        caller: None,
     }
 }
 

@@ -1,6 +1,8 @@
 use std::time::Instant;
 
-use dunst_core::{ActionResult, AuditEntry, GraphDiff, NodeChange, SemanticAction};
+use dunst_core::{
+    ActionResult, AuditEntry, GraphDiff, NodeChange, SemanticAction, SessionIdentity,
+};
 use serde_json::{json, Value};
 
 use crate::engine::{ModalDismissResult, OcrClickResult, OptionPickResult};
@@ -10,9 +12,17 @@ use super::{
     DIFF_SUMMARY_VALUE_LIMIT, SERVER_VERSION,
 };
 
-pub(super) fn add_timing_meta(mut result: Value, tool: &str, started: Instant) -> Value {
+pub(super) fn add_timing_meta(
+    mut result: Value,
+    tool: &str,
+    started: Instant,
+    session: Option<&SessionIdentity>,
+) -> Value {
     let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
     if let Value::Object(obj) = &mut result {
+        let session = session
+            .and_then(|identity| serde_json::to_value(identity).ok())
+            .unwrap_or(Value::Null);
         obj.insert(
             "_meta".into(),
             json!({
@@ -23,7 +33,8 @@ pub(super) fn add_timing_meta(mut result: Value, tool: &str, started: Instant) -
                     "version_label": server_version_label(),
                     "git_sha": build_git_sha(),
                     "git_dirty": build_git_dirty(),
-                    "build_time_unix": build_time_unix()
+                    "build_time_unix": build_time_unix(),
+                    "session": session
                 }
             }),
         );

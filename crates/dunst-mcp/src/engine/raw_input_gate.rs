@@ -233,6 +233,7 @@ impl Engine {
             reasoning: reasoning.map(str::to_owned),
             result: ActionResult::PendingApproval,
             graph_diff: GraphDiff::default(),
+            caller: None,
         }))
     }
 
@@ -439,6 +440,7 @@ impl Engine {
             reasoning: reasoning.map(str::to_owned),
             result,
             graph_diff,
+            caller: None,
         });
         outcome.map(|()| entry)
     }

@@ -19,6 +19,30 @@ fn every_attempt_is_audited() {
 }
 
 #[test]
+fn audited_attempts_include_session_identity_when_known() {
+    let (mut eng, _c) = engine_with_counter();
+    eng.set_session_identity(SessionIdentity {
+        session_id: "dunst-test-session".into(),
+        client_name: Some("codex".into()),
+        client_version: Some("5.5".into()),
+        agent_id: Some("collective-fixer".into()),
+        parent_pid: Some(42),
+        parent_process: Some("codex".into()),
+    });
+
+    let _ = eng.click_element(&id_for(&eng, "Nouvelle note"), None);
+    let caller = eng
+        .trace()
+        .last()
+        .and_then(|entry| entry.caller.as_ref())
+        .expect("audit entry has session identity");
+
+    assert_eq!(caller.session_id, "dunst-test-session");
+    assert_eq!(caller.client_name.as_deref(), Some("codex"));
+    assert_eq!(caller.agent_id.as_deref(), Some("collective-fixer"));
+}
+
+#[test]
 fn drag_records_target_bbox_centre() {
     let (mut eng, calls) = engine_with_recorder();
     let source = non_gated_drag_source(&eng);

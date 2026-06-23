@@ -43,6 +43,7 @@ fn raw_pending_approval_includes_ui_mapping_fallback() {
         reasoning: Some("background hotkey".into()),
         result: ActionResult::PendingApproval,
         graph_diff: GraphDiff::default(),
+        caller: None,
     };
 
     let body = audit_entry_value(entry, false);

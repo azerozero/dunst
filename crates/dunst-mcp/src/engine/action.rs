@@ -404,6 +404,7 @@ fn action_audit_entry(
         reasoning: reasoning.map(str::to_owned),
         result: ActionResult::PendingApproval,
         graph_diff: GraphDiff::default(),
+        caller: None,
     }
 }
 
