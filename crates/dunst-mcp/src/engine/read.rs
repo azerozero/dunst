@@ -225,6 +225,7 @@ impl Engine {
         match self.read_text_detailed(None, false, true) {
             Ok(result) => {
                 warnings.extend(result.warnings);
+                append_ocr_form_field_targets(targets, &result.hits, &self.risk, limit.min(20));
                 for (idx, hit) in result.hits.iter().enumerate().take(limit.min(80)) {
                     if hit.confidence < 0.45 || bbox_duplicate_of_existing(hit.bbox, targets) {
                         continue;
@@ -458,6 +459,13 @@ impl Engine {
                 })
                 .then_with(|| a.id.cmp(&b.id))
         });
+        if tabs.is_empty() {
+            if let Some(tab) =
+                fallback_browser_tab_from_window_title(self.scene_graph(), q.as_deref())
+            {
+                tabs.push(tab);
+            }
+        }
         tabs
     }
 
@@ -541,6 +549,23 @@ impl Engine {
 
             if visible_text.len() >= limit && key_elements.len() >= limit && url.is_some() {
                 break;
+            }
+        }
+        if url.is_none() {
+            url = browser_tab.as_ref().and_then(|tab| tab.url.clone());
+        }
+        if visible_text.is_empty() && is_browser_app_name(&g.window.app_name) {
+            if let Ok(result) = self.read_text_detailed(None, false, true) {
+                for hit in result.hits.iter().filter(|hit| hit.confidence >= 0.45) {
+                    let text = hit.text.trim();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    push_unique_string(&mut visible_text, text, limit);
+                    if visible_text.len() >= limit {
+                        break;
+                    }
+                }
             }
         }
 
@@ -712,6 +737,33 @@ impl Engine {
     }
 }
 
+fn fallback_browser_tab_from_window_title(
+    graph: &SceneGraph,
+    query: Option<&str>,
+) -> Option<BrowserTab> {
+    if !is_browser_app_name(&graph.window.app_name) {
+        return None;
+    }
+    let title = graph.window.title.trim();
+    if title.is_empty() {
+        return None;
+    }
+    let id = "tab_fallback_window_title";
+    if let Some(q) = query {
+        let haystack = format!("{id} {}", normalize_match(title));
+        if !normalized_contains_query(&haystack, q) {
+            return None;
+        }
+    }
+    Some(BrowserTab {
+        id: id.into(),
+        url: likely_url(title),
+        title: title.into(),
+        selected: true,
+        bbox: None,
+    })
+}
+
 fn node_matches_scope(
     graph: &SceneGraph,
     node: &SceneNode,
@@ -797,6 +849,166 @@ fn page_scroll_risk() -> RiskAssessment {
             "page pseudo-scroll uses raw keyboard input when no AX scroll container is available"
                 .into(),
         ],
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OcrFormLabel {
+    role: &'static str,
+    max_gap_y: f64,
+}
+
+fn append_ocr_form_field_targets(
+    targets: &mut Vec<HitTarget>,
+    hits: &[TextHit],
+    risk_engine: &RiskEngine,
+    max_fields: usize,
+) {
+    let mut added = 0usize;
+    for (idx, label_hit) in hits.iter().enumerate() {
+        if added >= max_fields {
+            break;
+        }
+        let Some(kind) = ocr_form_label_kind(&label_hit.text) else {
+            continue;
+        };
+        let Some(value_hit) = nearest_ocr_field_value(label_hit, &hits[idx + 1..], kind) else {
+            continue;
+        };
+        if value_hit.confidence < 0.45
+            || bbox_duplicate_of_existing_form_field(value_hit.bbox, targets)
+        {
+            continue;
+        }
+        let label_center = bbox_center(label_hit.bbox);
+        let value_center = bbox_center(value_hit.bbox);
+        let offset = (
+            value_center.0 - label_center.0,
+            value_center.1 - label_center.1,
+        );
+        let text = format!("{} {}", label_hit.text, value_hit.text);
+        let risk = risk_engine.assess_text(&text);
+        targets.push(ocr_form_field_target(
+            idx, kind, label_hit, value_hit, offset, risk,
+        ));
+        added += 1;
+    }
+}
+
+fn ocr_form_label_kind(text: &str) -> Option<OcrFormLabel> {
+    let normalized = normalize_match(text);
+    let compact: String = normalized
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect();
+    if normalized.contains("description") {
+        return Some(OcrFormLabel {
+            role: "text_area",
+            max_gap_y: 120.0,
+        });
+    }
+    if normalized.contains("titre")
+        || normalized.contains("title")
+        || compact.contains("realisation")
+        || compact.contains("realization")
+    {
+        return Some(OcrFormLabel {
+            role: "text_field",
+            max_gap_y: 80.0,
+        });
+    }
+    None
+}
+
+fn nearest_ocr_field_value<'a>(
+    label: &TextHit,
+    candidates: &'a [TextHit],
+    kind: OcrFormLabel,
+) -> Option<&'a TextHit> {
+    candidates
+        .iter()
+        .filter(|candidate| candidate.confidence >= 0.45)
+        .filter(|candidate| ocr_form_label_kind(&candidate.text).is_none())
+        .filter(|candidate| candidate.bbox.y >= label.bbox.y + label.bbox.h * 0.45)
+        .filter(|candidate| candidate.bbox.y - label.bbox.y <= kind.max_gap_y)
+        .filter(|candidate| ocr_form_field_x_aligned(label.bbox, candidate.bbox))
+        .min_by(|a, b| {
+            let ay = (a.bbox.y - label.bbox.y).abs();
+            let by = (b.bbox.y - label.bbox.y).abs();
+            ay.partial_cmp(&by)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    let ax = (a.bbox.x - label.bbox.x).abs();
+                    let bx = (b.bbox.x - label.bbox.x).abs();
+                    ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })
+}
+
+fn ocr_form_field_x_aligned(label: Bbox, value: Bbox) -> bool {
+    let overlap = (label.x + label.w).min(value.x + value.w) - label.x.max(value.x);
+    let overlap_ratio = overlap.max(0.0) / label.w.max(1.0);
+    overlap_ratio >= 0.15 || (value.x - label.x).abs() <= 96.0
+}
+
+fn bbox_center(bbox: Bbox) -> (f64, f64) {
+    (bbox.x + bbox.w / 2.0, bbox.y + bbox.h / 2.0)
+}
+
+fn bbox_duplicate_of_existing_form_field(bbox: Bbox, targets: &[HitTarget]) -> bool {
+    let area = (bbox.w.max(0.0) * bbox.h.max(0.0)).max(1.0);
+    targets.iter().any(|target| {
+        if target.source == "page" || (target.source == "ocr" && target.role == "group") {
+            return false;
+        }
+        target
+            .bbox
+            .map(|existing| rect_intersection_area(existing, bbox) / area > 0.72)
+            .unwrap_or(false)
+    })
+}
+
+fn ocr_form_field_target(
+    idx: usize,
+    kind: OcrFormLabel,
+    label_hit: &TextHit,
+    value_hit: &TextHit,
+    offset: (f64, f64),
+    risk: RiskAssessment,
+) -> HitTarget {
+    let id = format!(
+        "ocr_field_{idx}_{}",
+        compact_synthetic_label(&label_hit.text)
+    );
+    HitTarget {
+        id,
+        source: "ocr".into(),
+        role: kind.role,
+        label: Some(label_hit.text.clone()),
+        value: Some(value_hit.text.clone()),
+        bbox: Some(value_hit.bbox),
+        safe_click: synthetic_safe_zone(
+            value_hit.bbox,
+            "ocr_form_value_bbox_inset",
+            "Use click_near_text with the supplied label-relative offset, then verify with OCR before typing or saving.",
+        ),
+        confidence: label_hit.confidence.min(value_hit.confidence),
+        action_modes: vec![HitActionMode {
+            action: SemanticAction::Click,
+            tool_hint: "click_near_text".into(),
+            target_id: None,
+            arguments: Some(json!({
+                "query": label_hit.text.clone(),
+                "content_only": true,
+                "accurate": false,
+                "offset_x": offset.0,
+                "offset_y": offset.1,
+                "expected_text": value_hit.text.clone(),
+            })),
+            drop_targets: Vec::new(),
+            risk: risk.clone(),
+        }],
+        risk,
     }
 }
 
@@ -1082,5 +1294,36 @@ mod hit_target_tests {
             ),
             "page pseudo-targets are scroll surfaces, not real semantic duplicates"
         );
+    }
+
+    #[test]
+    fn ocr_form_label_maps_to_following_value_target() {
+        let label = TextHit {
+            text: "Titre de la réalisation O".into(),
+            bbox: Bbox {
+                x: 3141.0,
+                y: 722.0,
+                w: 138.0,
+                h: 12.0,
+            },
+            confidence: 1.0,
+        };
+        let value = TextHit {
+            text: "openai/gpt-5.5".into(),
+            bbox: Bbox {
+                x: 3150.0,
+                y: 751.0,
+                w: 98.0,
+                h: 14.0,
+            },
+            confidence: 1.0,
+        };
+
+        let kind = ocr_form_label_kind(&label.text).expect("label detected");
+        let candidates = [value.clone()];
+        let found =
+            nearest_ocr_field_value(&label, &candidates, kind).expect("following value detected");
+        assert_eq!(found.text, value.text);
+        assert!(ocr_form_field_x_aligned(label.bbox, value.bbox));
     }
 }

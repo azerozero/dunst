@@ -5,7 +5,7 @@ use crate::serve::registry::TOOL_REGISTRY;
 fn tools_list_exposes_read_text_with_object_schema() {
     std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
     let tools = tools_list();
-    assert_eq!(tools.len(), 65, "tool count");
+    assert_eq!(tools.len(), 66, "tool count");
     // Every tool must declare a JSON-Schema object input (the type:object fix).
     for t in &tools {
         assert_eq!(
@@ -179,6 +179,13 @@ fn tools_list_exposes_click_at_and_press_key() {
         .expect("press_key tool present");
     assert_eq!(press["inputSchema"]["type"], "object");
     assert_eq!(press["inputSchema"]["required"], json!(["key"]));
+
+    let paste = tools
+        .iter()
+        .find(|t| t["name"] == "paste_text")
+        .expect("paste_text tool present");
+    assert_eq!(paste["inputSchema"]["type"], "object");
+    assert_eq!(paste["inputSchema"]["required"], json!(["text"]));
 
     let select_file = tools
         .iter()

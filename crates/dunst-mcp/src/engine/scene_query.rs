@@ -2,7 +2,9 @@ use super::*;
 
 mod browser_chrome;
 
-pub(in crate::engine) use browser_chrome::{page_state_chrome_node, read_chrome_node};
+pub(in crate::engine) use browser_chrome::{
+    is_browser_app_name, page_state_chrome_node, read_chrome_node,
+};
 
 // --- WP-J / J2: latent (non-actionable) node geometry -----------------------
 

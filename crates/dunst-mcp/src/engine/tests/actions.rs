@@ -608,7 +608,7 @@ fn assert_raw_user_active_failure_preserves_approval_for_retry(
     );
 
     let outcome = Err(DunstError::Execution(
-            "user-active guard blocked background key: last keyboard/mouse input was 244 ms ago (< 300 ms)".into(),
+            "user-active guard blocked background key: last keyboard/mouse input was 144 ms ago (< 150 ms)".into(),
         ));
     let err = eng
         .audit_raw_input(

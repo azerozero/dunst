@@ -63,6 +63,7 @@ pub(super) const TOOL_REGISTRY: &[RegisteredTool] = &[
     tool("open_menu", ToolRoute::Raw),
     tool("press_key", ToolRoute::Raw),
     tool("type_keys", ToolRoute::Raw),
+    tool("paste_text", ToolRoute::Raw),
     tool("scroll", ToolRoute::Raw),
     tool("scroll_at", ToolRoute::Raw),
     tool("zoom", ToolRoute::Raw),

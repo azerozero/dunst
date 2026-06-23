@@ -77,7 +77,7 @@ const IDX_CHILDREN: usize = 11;
 const DRAG_STEPS: usize = 8;
 const DRAG_STEP_DELAY: Duration = Duration::from_millis(8);
 const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.0;
-const DEFAULT_USER_IDLE_GUARD_MS: u64 = 300;
+const DEFAULT_USER_IDLE_GUARD_MS: u64 = 150;
 const TYPE_SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(80);
 
 pub fn screen_capture_trusted() -> bool {

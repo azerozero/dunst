@@ -281,6 +281,9 @@ impl Engine {
         if target_id.starts_with("keyboard@type_keys:") {
             return validate_type_keys_target_id(target_id);
         }
+        if target_id.starts_with("keyboard@paste_text:") {
+            return validate_paste_text_target_id(target_id);
+        }
 
         if let Some(rest) = target_id.strip_prefix("keyboard@scroll:") {
             return validate_scroll_target(rest, false, self);
@@ -479,12 +482,20 @@ pub(super) fn raw_press_key_target_id(key: &str, repeat: usize) -> String {
 }
 
 pub(super) fn raw_type_keys_target_id(text: &str) -> String {
+    raw_text_payload_target_id("type_keys", text)
+}
+
+pub(super) fn raw_paste_text_target_id(text: &str) -> String {
+    raw_text_payload_target_id("paste_text", text)
+}
+
+fn raw_text_payload_target_id(action: &str, text: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in text.as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("keyboard@type_keys:{:016x}:{}", hash, text.chars().count())
+    format!("keyboard@{action}:{:016x}:{}", hash, text.chars().count())
 }
 
 fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
@@ -517,6 +528,15 @@ fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
         }];
     }
     if target_id.starts_with("keyboard@type_keys:") {
+        return vec![RawApprovalPolicy {
+            key: RawApprovalKey {
+                scope: RawApprovalScope::Exact(target_id.to_string()),
+            },
+            grant_events: 1,
+            cost_events: 1,
+        }];
+    }
+    if target_id.starts_with("keyboard@paste_text:") {
         return vec![RawApprovalPolicy {
             key: RawApprovalKey {
                 scope: RawApprovalScope::Exact(target_id.to_string()),
@@ -618,11 +638,23 @@ fn parse_point(point: &str) -> Option<(f64, f64)> {
 }
 
 fn validate_type_keys_target_id(target_id: &str) -> dunst_core::Result<()> {
+    validate_hashed_text_target_id(target_id, "keyboard@type_keys:", "type_keys")
+}
+
+fn validate_paste_text_target_id(target_id: &str) -> dunst_core::Result<()> {
+    validate_hashed_text_target_id(target_id, "keyboard@paste_text:", "paste_text")
+}
+
+fn validate_hashed_text_target_id(
+    target_id: &str,
+    prefix: &str,
+    label: &str,
+) -> dunst_core::Result<()> {
     let rest = target_id
-        .strip_prefix("keyboard@type_keys:")
-        .ok_or_else(|| DunstError::Execution(format!("{target_id} is not a type_keys target")))?;
+        .strip_prefix(prefix)
+        .ok_or_else(|| DunstError::Execution(format!("{target_id} is not a {label} target")))?;
     let (hash, count) = rest.rsplit_once(':').ok_or_else(|| {
-        DunstError::Execution(format!("{target_id} is not a valid type_keys target"))
+        DunstError::Execution(format!("{target_id} is not a valid {label} target"))
     })?;
     let hash_is_hex = hash.len() == 16 && hash.chars().all(|ch| ch.is_ascii_hexdigit());
     let count = count.parse::<usize>().ok();
@@ -630,7 +662,7 @@ fn validate_type_keys_target_id(target_id: &str) -> dunst_core::Result<()> {
         Ok(())
     } else {
         Err(DunstError::Execution(format!(
-            "{target_id} is not a valid type_keys target"
+            "{target_id} is not a valid {label} target"
         )))
     }
 }

@@ -574,6 +574,11 @@ fn keyboard_menu_tools() -> Vec<Value> {
             schema(json!({ "text": {"type":"string"} }), &["text"]),
         ),
         tool(
+            "paste_text",
+            "Paste text into the FOCUSED element by temporarily replacing the system clipboard, sending Cmd+V to the target window, then restoring the previous plain-text clipboard by default. Use for opaque browser fields where type_keys is unreliable after focusing and verifying the field. Raw mutating keyboard input is high-risk and requires approval; rich clipboard formats may not survive, and OCR/page_state verification is required before saving.",
+            schema(json!({ "text": {"type":"string"}, "restore_clipboard": {"type":"boolean","description":"restore the previous plain-text clipboard after pasting; defaults true"}, "include_diff": {"type":"boolean"} }), &["text"]),
+        ),
+        tool(
             "scroll",
             "Scroll the focused page/container. With a real AX id, uses direct AX scrollbar value changes on that element or an ancestor exposing AXVerticalScrollBar. With a page@scroll:* pseudo-target from get_hit_targets, uses background Page/Home/End keys and remains raw-approval-gated, unless this session has learned a validated app/page fallback such as real-cursor wheel scrolling for Firefox+LinkedIn. Without id, uses the same page path. direction: down|up|top|bottom; pages: number of pages (default 3). Action responses are compact by default; set include_diff=true for the full scene diff.",
             schema(json!({ "direction": {"type":"string","enum":["down","up","top","bottom"]}, "pages": {"type":"integer"}, "id": {"type":"string","description":"optional scrollable element id; requires an AXVerticalScrollBar on the element or an ancestor"}, "include_diff": {"type":"boolean"} }), &[]),

@@ -7,7 +7,7 @@ fn user_active_guard_retry_runs_once_before_returning() {
     let result = retry_user_active_guard_after(Duration::from_millis(0), || {
             if attempts_in_closure.fetch_add(1, Ordering::SeqCst) == 0 {
                 Err(DunstError::Execution(
-                    "user-active guard blocked hover_at: last keyboard/mouse input was 1 ms ago (< 300 ms)".into(),
+                    "user-active guard blocked hover_at: last keyboard/mouse input was 1 ms ago (< 150 ms)".into(),
                 ))
             } else {
                 Ok("ok")
@@ -490,6 +490,65 @@ fn raw_type_keys_approval_is_one_shot() {
         )
         .is_some(),
         "type_keys approval should be consumed after one matching payload"
+    );
+}
+
+#[test]
+fn raw_paste_text_approval_is_one_shot() {
+    let (mut eng, _) = engine_with_counter();
+    let first_text = "grob + st4ck - IA souveraine";
+    let second_text = "RFC-HIT";
+    let target_id = raw_paste_text_target_id(first_text);
+    let second_target_id = raw_paste_text_target_id(second_text);
+    let risk = Engine::raw_input_risk(vec![
+        "temporarily writes system clipboard before sending Cmd+V to the focused target".into(),
+    ]);
+
+    assert!(
+        eng.gate_raw_input(
+            &target_id,
+            SemanticAction::Type,
+            Some(first_text.into()),
+            Some("raw clipboard paste into focused element"),
+            risk.clone(),
+        )
+        .is_some(),
+        "first raw paste should gate"
+    );
+
+    eng.approve(&target_id).unwrap();
+    assert!(
+        eng.gate_raw_input(
+            &second_target_id,
+            SemanticAction::Type,
+            Some(second_text.into()),
+            Some("raw clipboard paste into focused element"),
+            risk.clone(),
+        )
+        .is_some(),
+        "approval for one paste_text payload must not cover changed text"
+    );
+    assert!(
+        eng.gate_raw_input(
+            &raw_paste_text_target_id(first_text),
+            SemanticAction::Type,
+            Some(first_text.into()),
+            Some("raw clipboard paste into focused element"),
+            risk.clone(),
+        )
+        .is_none(),
+        "approved paste_text should pass once"
+    );
+    assert!(
+        eng.gate_raw_input(
+            &raw_paste_text_target_id(first_text),
+            SemanticAction::Type,
+            Some(first_text.into()),
+            Some("raw clipboard paste into focused element"),
+            risk,
+        )
+        .is_some(),
+        "paste_text approval should be consumed after one matching payload"
     );
 }
 

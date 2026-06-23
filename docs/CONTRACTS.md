@@ -35,12 +35,13 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   are high-risk because they are not bound to a scene element. The first call
   records `PendingApproval` and does not execute the platform input path.
   Approved raw grants are scoped, count-limited, and TTL-limited: exact pointer
-  and text-entry targets stay one-shot, repeated `press_key` approvals cover a
-  short same-key burst, same-direction scroll approvals tolerate page-count
-  changes, and hotkeys are limited to a short retry window. Raw grants survive
-  ordinary `refresh()` calls but are cleared by `attach`, expiry, or grant
-  exhaustion.
+  and text-entry targets (`type_keys` and `paste_text`) stay one-shot, repeated
+  `press_key` approvals cover a short same-key burst, same-direction scroll
+  approvals tolerate page-count changes, and hotkeys are limited to a short retry
+  window. Raw grants survive ordinary `refresh()` calls but are cleared by
+  `attach`, expiry, or grant exhaustion.
   — `engine::tests::raw_input_gate_requires_pending_synthetic_approval`,
+  `engine::tests::raw_paste_text_approval_is_one_shot`,
   `engine::tests::raw_key_approval_allows_short_repeated_same_key_burst`,
   `engine::tests::raw_scroll_approval_covers_same_direction_count_change`,
   `engine::tests::attach_clears_raw_approval_grants`.

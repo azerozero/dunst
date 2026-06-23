@@ -136,7 +136,7 @@ pub(super) fn node_in_browser_tab_strip(
     false
 }
 
-pub(super) fn is_browser_app_name(app_name: &str) -> bool {
+pub(in crate::engine) fn is_browser_app_name(app_name: &str) -> bool {
     let app = normalize_match(app_name);
     [
         "firefox",
