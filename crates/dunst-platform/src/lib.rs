@@ -1,3 +1,9 @@
+//! Platform backend boundary for Dunst MCP.
+//!
+//! The current implemented backend is macOS, but callers should branch on
+//! grouped capabilities instead of scattering `target_os` checks across MCP
+//! dispatch. OS-specific FFI stays behind this crate.
+//!
 //! macOS platform backend: the **real** [`Perceptor`] (AX tree walk) and
 //! [`ActionExecutor`] (perform AX action / set value / CGEvent).
 //!
@@ -7,6 +13,20 @@
 use dunst_core::{
     ActionExecutor, Perceptor, RawAxNode, Result, SceneNode, SemanticAction, Target, WindowRef,
 };
+
+mod capabilities;
+pub use capabilities::{
+    AppCapabilities, ClipboardCapabilities, InputCapabilities, PerceptionCapabilities,
+    PlatformCapabilities, PlatformKind, WindowCapabilities,
+};
+
+pub fn platform_kind() -> PlatformKind {
+    capabilities::current_platform_kind()
+}
+
+pub fn platform_capabilities() -> PlatformCapabilities {
+    capabilities::current_platform_capabilities()
+}
 
 /// AX-backed perception + action for macOS.
 #[derive(Debug, Default)]

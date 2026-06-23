@@ -19,6 +19,11 @@ fn state_tools() -> Vec<Value> {
             "Return the running dunst-mcp build identity: package version, git commit, dirty flag, build timestamp, and protocol version. Use this after restart to confirm the active server binary.",
             json!({}),
         ),
+        tool(
+            "platform_capabilities",
+            "Return grouped OS backend capabilities for input, clipboard, perception/OCR/CV, window, and app operations. Use this before assuming macOS-only live GUI features are available.",
+            json!({}),
+        ),
         tool("refresh", "Re-perceive the target window and rebuild the scene + affordance graphs.", json!({})),
         tool(
             "get_scene_graph",

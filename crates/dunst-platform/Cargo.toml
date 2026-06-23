@@ -12,6 +12,7 @@ publish = false
 
 [dependencies]
 dunst-core = { workspace = true }
+serde = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 accessibility-sys = "0.2"

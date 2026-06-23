@@ -20,6 +20,9 @@ fn dispatch_state_tools(
 ) -> Option<Result<Value, String>> {
     Some(match name {
         "version" => Ok(build_info()),
+        "platform_capabilities" => Ok(
+            serde_json::to_value(dunst_platform::platform_capabilities()).unwrap_or(Value::Null),
+        ),
         "refresh" => engine
             .refresh()
             .map(|_| json!("ok"))

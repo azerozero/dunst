@@ -17,6 +17,24 @@ fn version_tool_reports_build_identity() {
 }
 
 #[test]
+fn platform_capabilities_tool_reports_grouped_backend_surface() {
+    let mut e = engine();
+    let resp = call(&mut e, "platform_capabilities", json!({}));
+    assert!(!is_error(&resp), "platform capabilities succeeds: {resp}");
+    let body = text_json(&resp);
+
+    assert!(body["kind"].is_string());
+    assert!(body["input"]["focus_without_raise"].is_boolean());
+    assert!(body["input"]["background_keyboard"].is_boolean());
+    assert!(body["clipboard"]["text_read"].is_boolean());
+    assert!(body["clipboard"]["rich_formats_preserved"].is_boolean());
+    assert!(body["perception"]["ocr"].is_boolean());
+    assert!(body["perception"]["vision_shapes"].is_boolean());
+    assert!(body["windows"]["move_resize"].is_boolean());
+    assert!(body["apps"]["file_chooser"].is_boolean());
+}
+
+#[test]
 fn approve_tool_is_disabled_by_default() {
     std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
     let mut e = engine();

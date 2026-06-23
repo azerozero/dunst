@@ -44,15 +44,18 @@ sandboxes. Do not overwrite unrelated local files or revert user changes.
 
 Use the safest available interaction layer first:
 
-1. `get_hit_targets`, `find_element`, `get_affordances`, or `text_snapshot` for
+1. `platform_capabilities` when you need to know whether the current backend can
+   use background input, cursor borrowing, clipboard text, OCR/CV, window ops, or
+   app/file-chooser operations.
+2. `get_hit_targets`, `find_element`, `get_affordances`, or `text_snapshot` for
    AX-exposed elements.
-2. `read_text_detailed`, `find_ocr_text`, or OCR targets from `get_hit_targets`
+3. `read_text_detailed`, `find_ocr_text`, or OCR targets from `get_hit_targets`
    when browser AX is sparse.
-3. `click_near_text` with `expected_text` and, when supplied by
+4. `click_near_text` with `expected_text` and, when supplied by
    `get_hit_targets`, `offset_x`/`offset_y` for adjacent form fields.
-4. `type_into` for real AX text elements.
-5. `paste_text` for focused opaque web fields when `type_keys` is unreliable.
-6. Raw `click_at`, `press_key`, `type_keys`, `hotkey`, or external GUI
+5. `type_into` for real AX text elements.
+6. `paste_text` for focused opaque web fields when `type_keys` is unreliable.
+7. Raw `click_at`, `press_key`, `type_keys`, `hotkey`, or external GUI
    automation only after explicit operator authorization and a fresh OCR or
    screenshot check.
 
@@ -115,6 +118,23 @@ Each MCP server process has a `SessionIdentity`:
 The identity appears in `_meta.dunst.session`, every audited `AuditEntry.caller`
 record when known, and stderr `tools/call` logs. Treat it as provenance only: it
 does not authenticate a client and does not replace the approval gate.
+
+## Platform Capability Groups
+
+Do not infer support from `target_os` in MCP-facing code. Query
+`platform_capabilities` and branch on the grouped surface:
+
+- `input`: AX actions, background pointer/keyboard/hotkeys, focus without raise,
+  real cursor borrowing, and menu-bar actions.
+- `clipboard`: plain-text read/write and whether rich formats are preserved.
+- `perception`: AX tree, screenshots, OCR, CV shapes, and chart scanning.
+- `windows`: listing, visibility, move/resize, arrange, and expose operations.
+- `apps`: running-app listing, launch/open URL/close, installed app metadata, and
+  native file chooser support.
+
+OS-specific implementation belongs in `dunst-platform` or `dunst-vision`. MCP
+dispatch should reason in these capabilities and tool-level contracts, which
+keeps the macOS backend replaceable by Linux/Windows backends later.
 
 For multi-session work, keep the current design pattern:
 

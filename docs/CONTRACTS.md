@@ -72,6 +72,15 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   `serve::tests::stale_fencing_token_is_rejected_for_same_session`,
   `serve::tests::mutating_tool_rejects_stale_expected_epoch`,
   `serve::tests::tools_list_exposes_read_text_with_object_schema`.
+- **OS support is advertised by grouped platform capabilities, not inferred from
+  the current target.** `dunst-platform` owns the platform-kind switch and
+  exposes reusable groups for input, clipboard, perception/OCR/CV, windows, and
+  apps. MCP callers use `platform_capabilities` instead of assuming macOS-only
+  live-GUI features are present.
+  — `dunst_platform::capabilities::tests::current_capabilities_match_current_platform`,
+  `dunst_platform::capabilities::tests::macos_groups_related_capabilities_by_call_type`,
+  `serve::tests::platform_capabilities_tool_reports_grouped_backend_surface`,
+  `serve::tests::tools_list_exposes_read_text_with_object_schema`.
 
 ## Scene-graph projection (WP-J)
 

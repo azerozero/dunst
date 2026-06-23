@@ -15,6 +15,7 @@ pub(super) struct RegisteredTool {
 
 pub(super) const TOOL_REGISTRY: &[RegisteredTool] = &[
     tool("version", ToolRoute::Read),
+    tool("platform_capabilities", ToolRoute::Read),
     tool("refresh", ToolRoute::Read),
     tool("get_scene_graph", ToolRoute::Read),
     tool("page_state", ToolRoute::Read),
