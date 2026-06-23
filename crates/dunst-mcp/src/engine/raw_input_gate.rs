@@ -39,13 +39,87 @@ impl Engine {
                     && node.bbox.map(|b| point_in_bbox(point, b)).unwrap_or(false)
             });
             if !hits_visible_node {
-                reasons.push(
-                    "raw point is not inside any visible scene element; possible backdrop or blank area"
-                        .to_string(),
-                );
+                if self.page_ax_is_sparse() || self.browser_content_point_without_ax(point) {
+                    reasons.push(
+                        "raw point is inside the target window, but the page exposes no AX content element at that point; use OCR/shape verification because the browser AX tree is sparse"
+                            .to_string(),
+                    );
+                } else {
+                    reasons.push(
+                        "raw point is not inside any visible scene element; possible backdrop or blank area"
+                            .to_string(),
+                    );
+                }
             }
         }
         Self::raw_input_risk(reasons)
+    }
+
+    fn page_ax_is_sparse(&self) -> bool {
+        let window = self.cached_window_rect;
+        let menubar = self.cached_menubar_root.as_deref();
+        self.scene_graph()
+            .nodes
+            .values()
+            .filter(|node| node_visible_or_menu(node, window, menubar))
+            .filter(|node| {
+                !matches!(
+                    node.role,
+                    Role::Window | Role::MenuBar | Role::Menu | Role::MenuItem | Role::Toolbar
+                )
+            })
+            .filter(|node| {
+                node.bbox
+                    .is_some_and(|bbox| window.map(|w| bbox_intersects(bbox, w)).unwrap_or(true))
+            })
+            .count()
+            <= 2
+    }
+
+    fn browser_content_point_without_ax(&self, point: (f64, f64)) -> bool {
+        let Some(window) = self.cached_window_rect else {
+            return false;
+        };
+        browser_app_name(&self.window.app_name)
+            && point_in_bbox(point, window)
+            && point.1 >= window.y + 80.0
+    }
+
+    pub(super) fn ocr_point_risk(&self, hit: &OcrTextHit) -> RiskAssessment {
+        let (x, y) = hit.center;
+        let mut reasons = vec![
+            "raw input is bound to a verified OCR text hit, not a hand-picked screen point"
+                .to_string(),
+            format!(
+                "OCR text {:?}, confidence {:.2}, bbox {:?}",
+                hit.text, hit.confidence, hit.bbox
+            ),
+        ];
+        let point = (x, y);
+        if self
+            .cached_window_rect
+            .map(|w| !point_in_bbox(point, w))
+            .unwrap_or(false)
+        {
+            reasons.push("OCR click point is outside the target window".to_string());
+        } else {
+            let visibility = self.target_visibility();
+            if !visibility.covered_by.is_empty() {
+                reasons.push(format!(
+                    "target window is covered by {:?}; verify OCR/screenshot came from the target before using visible coordinates",
+                    visibility
+                        .covered_by
+                        .iter()
+                        .map(|window| window.window_id)
+                        .collect::<Vec<_>>()
+                ));
+            }
+        }
+        RiskAssessment {
+            level: RiskLevel::High,
+            requires_approval: true,
+            reasons,
+        }
     }
 
     pub(super) fn ensure_point_in_target_window(
@@ -93,6 +167,32 @@ impl Engine {
         )))
     }
 
+    pub(super) fn ensure_real_cursor_scroll_point_visible(
+        &self,
+        x: f64,
+        y: f64,
+    ) -> dunst_core::Result<()> {
+        if off_target_raw_allowed() {
+            return Ok(());
+        }
+        let blockers: Vec<_> = self
+            .target_visibility()
+            .covered_by
+            .into_iter()
+            .filter(|window| point_in_bbox((x, y), window.bounds))
+            .collect();
+        if blockers.is_empty() {
+            return Ok(());
+        }
+        Err(DunstError::Execution(format!(
+            "scroll_at borrow_cursor=true requires the target window to be visible under ({x:.1},{y:.1}), but that point is covered by {:?}; use expose_target_window/arrange_windows or use the background SkyLight scroll path",
+            blockers
+                .iter()
+                .map(|window| window.window_id)
+                .collect::<Vec<_>>()
+        )))
+    }
+
     /// Return a pending-approval audit entry when a raw input has not been
     /// explicitly approved. Raw inputs are nameable by synthetic target ids such
     /// as `screen@x,y:click` and `keyboard@hotkey:cmd+l`.
@@ -131,6 +231,72 @@ impl Engine {
                 },
             );
         }
+    }
+
+    pub(super) fn validate_synthetic_raw_approval(
+        &self,
+        target_id: &str,
+    ) -> dunst_core::Result<()> {
+        if let Some(rest) = target_id.strip_prefix("screen@") {
+            let Some((x, y, action)) = parse_point_action(rest) else {
+                return Err(DunstError::Execution(format!(
+                    "{target_id} is not a valid screen raw-input target"
+                )));
+            };
+            if !matches!(action, "click" | "right-click" | "double-click") {
+                return Err(DunstError::Execution(format!(
+                    "{target_id} uses unsupported raw screen action {action:?}"
+                )));
+            }
+            self.ensure_point_in_target_window(x, y, "approve")?;
+            return Ok(());
+        }
+
+        if let Some(rest) = target_id.strip_prefix("keyboard@press:") {
+            let (key, _) = parse_key_with_count(rest);
+            if !is_press_key_name(key) {
+                return Err(DunstError::Execution(format!(
+                    "{target_id} uses unsupported key {key:?}"
+                )));
+            }
+            return Ok(());
+        }
+
+        if target_id.starts_with("keyboard@type_keys:") {
+            return validate_type_keys_target_id(target_id);
+        }
+
+        if let Some(rest) = target_id.strip_prefix("keyboard@scroll:") {
+            return validate_scroll_target(rest, false, self);
+        }
+        if let Some(rest) = target_id.strip_prefix("wheel@scroll:") {
+            return validate_scroll_target(rest, true, self);
+        }
+        if let Some(rest) = target_id.strip_prefix("cursor@scroll:") {
+            return validate_scroll_target(rest, true, self);
+        }
+
+        if let Some(combo) = target_id.strip_prefix("keyboard@hotkey:") {
+            if let Some(message) = layout_sensitive_hotkey_message(combo) {
+                return Err(DunstError::Execution(message));
+            }
+            if parse_combo(combo).is_none() {
+                return Err(DunstError::Execution(format!(
+                    "{target_id} uses unsupported hotkey combo {combo:?}"
+                )));
+            }
+            return Ok(());
+        }
+        if target_id.starts_with("ocr@") && target_id.ends_with(":click") {
+            return Ok(());
+        }
+        if target_id.starts_with("file@") || target_id.starts_with("hover-reveal@") {
+            return Ok(());
+        }
+
+        Err(DunstError::Execution(format!(
+            "{target_id} is not a recognised synthetic raw-input target"
+        )))
     }
 
     fn consume_raw_approval(&mut self, target_id: &str) -> bool {
@@ -260,6 +426,7 @@ pub(super) struct RawApprovalKey {
 enum RawApprovalScope {
     Exact(String),
     KeyPress(String),
+    OcrClick(String),
     ScrollDirection(String),
     Hotkey(String),
 }
@@ -273,6 +440,8 @@ struct RawApprovalPolicy {
 
 pub(super) fn is_synthetic_approval_target_id(target_id: &str) -> bool {
     target_id.starts_with("keyboard@")
+        || target_id.starts_with("cursor@")
+        || target_id.starts_with("ocr@")
         || target_id.starts_with("wheel@")
         || target_id.starts_with("screen@")
         || target_id.starts_with("file@")
@@ -299,7 +468,7 @@ fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
             key: RawApprovalKey {
                 scope: RawApprovalScope::KeyPress(key.to_string()),
             },
-            grant_events: 10,
+            grant_events: cost_events.max(10),
             cost_events,
         }];
     }
@@ -307,6 +476,9 @@ fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
         return scroll_direction_policy(rest);
     }
     if let Some(rest) = target_id.strip_prefix("wheel@scroll:") {
+        return scroll_direction_policy(rest);
+    }
+    if let Some(rest) = target_id.strip_prefix("cursor@scroll:") {
         return scroll_direction_policy(rest);
     }
     if target_id.starts_with("keyboard@hotkey:") {
@@ -322,6 +494,15 @@ fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
         return vec![RawApprovalPolicy {
             key: RawApprovalKey {
                 scope: RawApprovalScope::Exact(target_id.to_string()),
+            },
+            grant_events: 1,
+            cost_events: 1,
+        }];
+    }
+    if let Some(scope) = ocr_click_approval_scope(target_id) {
+        return vec![RawApprovalPolicy {
+            key: RawApprovalKey {
+                scope: RawApprovalScope::OcrClick(scope),
             },
             grant_events: 1,
             cost_events: 1,
@@ -353,6 +534,39 @@ fn scroll_direction_policy(rest: &str) -> Vec<RawApprovalPolicy> {
     }]
 }
 
+fn ocr_click_approval_scope(target_id: &str) -> Option<String> {
+    let rest = target_id.strip_prefix("ocr@")?;
+    let (hit_id, action) = rest.rsplit_once(':')?;
+    (!hit_id.is_empty() && !action.is_empty()).then(|| {
+        format!(
+            "{}:{}",
+            action,
+            stable_ocr_hit_slug(hit_id).to_ascii_lowercase()
+        )
+    })
+}
+
+fn stable_ocr_hit_slug(hit_id: &str) -> String {
+    let Some(rest) = hit_id.strip_prefix("ocr_text_") else {
+        return hit_id.to_string();
+    };
+    let Some((prefix, slug)) = rest.split_once('_') else {
+        return rest.to_string();
+    };
+    if prefix.chars().all(|ch| ch.is_ascii_digit()) && !slug.is_empty() {
+        slug.to_string()
+    } else {
+        rest.to_string()
+    }
+}
+
+fn browser_app_name(app_name: &str) -> bool {
+    let app = app_name.to_ascii_lowercase();
+    ["firefox", "chrome", "chromium", "safari", "edge", "arc"]
+        .iter()
+        .any(|needle| app.contains(needle))
+}
+
 fn parse_key_with_count(rest: &str) -> (&str, usize) {
     match rest.rsplit_once(':') {
         Some((key, count)) if !key.is_empty() => {
@@ -360,4 +574,76 @@ fn parse_key_with_count(rest: &str) -> (&str, usize) {
         }
         _ => (rest, 1),
     }
+}
+
+fn parse_point_action(rest: &str) -> Option<(f64, f64, &str)> {
+    let (point, action) = rest.rsplit_once(':')?;
+    let (x, y) = parse_point(point)?;
+    Some((x, y, action))
+}
+
+fn parse_point(point: &str) -> Option<(f64, f64)> {
+    let (x, y) = point.split_once(',')?;
+    Some((x.parse().ok()?, y.parse().ok()?))
+}
+
+fn validate_type_keys_target_id(target_id: &str) -> dunst_core::Result<()> {
+    let rest = target_id
+        .strip_prefix("keyboard@type_keys:")
+        .ok_or_else(|| DunstError::Execution(format!("{target_id} is not a type_keys target")))?;
+    let (hash, count) = rest.rsplit_once(':').ok_or_else(|| {
+        DunstError::Execution(format!("{target_id} is not a valid type_keys target"))
+    })?;
+    let hash_is_hex = hash.len() == 16 && hash.chars().all(|ch| ch.is_ascii_hexdigit());
+    let count = count.parse::<usize>().ok();
+    if hash_is_hex && count.is_some_and(|count| count > 0) {
+        Ok(())
+    } else {
+        Err(DunstError::Execution(format!(
+            "{target_id} is not a valid type_keys target"
+        )))
+    }
+}
+
+fn validate_scroll_target(
+    rest: &str,
+    expects_point: bool,
+    engine: &Engine,
+) -> dunst_core::Result<()> {
+    let parts: Vec<_> = rest.split(':').collect();
+    if parts.len() < 2 || parts.len() > 3 {
+        return Err(DunstError::Execution(format!(
+            "scroll target {rest:?} must be direction:count[:x,y]"
+        )));
+    }
+    if !matches!(parts[0], "up" | "down" | "top" | "bottom") {
+        return Err(DunstError::Execution(format!(
+            "scroll target {rest:?} has unsupported direction {:?}",
+            parts[0]
+        )));
+    }
+    let Some(count) = parts[1].parse::<usize>().ok() else {
+        return Err(DunstError::Execution(format!(
+            "scroll target {rest:?} has invalid count {:?}",
+            parts[1]
+        )));
+    };
+    if !(1..=20).contains(&count) {
+        return Err(DunstError::Execution(format!(
+            "scroll target {rest:?} count must be in 1..=20"
+        )));
+    }
+    if expects_point {
+        let Some(point) = parts.get(2).and_then(|raw| parse_point(raw)) else {
+            return Err(DunstError::Execution(format!(
+                "scroll target {rest:?} must include x,y"
+            )));
+        };
+        engine.ensure_point_in_target_window(point.0, point.1, "approve")?;
+    } else if parts.len() == 3 {
+        return Err(DunstError::Execution(format!(
+            "keyboard scroll target {rest:?} must not include x,y"
+        )));
+    }
+    Ok(())
 }

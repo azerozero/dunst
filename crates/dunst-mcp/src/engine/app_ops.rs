@@ -242,10 +242,26 @@ impl Engine {
         url: &str,
         extra_args: &[String],
     ) -> OpenUrlAttachResult {
+        let terms = url_match_terms(url);
+
+        // Prefer an already-open matching tab/window before calling `open`.
+        // Repeated `/usr/bin/open -g -a Browser <url>` calls can create/select
+        // tabs depending on browser preferences, which is the wrong primitive
+        // for continuing inside an already-attached page.
+        let existing_candidates = self.matching_windows_for_app(app);
+        if let Some(selected) = best_window_for_url(&existing_candidates, &terms) {
+            let launch = self.launch_app_result(app, Some(url), false);
+            return self.attach_url_window_result(
+                launch,
+                existing_candidates,
+                Some(selected),
+                &terms,
+            );
+        }
+
         let launch = self.launch_app(app, Some(url), extra_args);
         std::thread::sleep(Duration::from_millis(650));
         let candidates = launch.matching_windows.clone();
-        let terms = url_match_terms(url);
         let selected = best_window_for_url(&candidates, &terms).or_else(|| {
             if candidates.len() == 1 {
                 candidates.first().cloned()
@@ -257,6 +273,24 @@ impl Engine {
             }
         });
 
+        self.attach_url_window_result(launch, candidates, selected, &terms)
+    }
+
+    fn matching_windows_for_app(&self, app: &str) -> Vec<WindowSummary> {
+        let app_needle = normalize_match(app);
+        self.list_windows(false)
+            .into_iter()
+            .filter(|window| normalize_match(&window.app).contains(&app_needle))
+            .collect()
+    }
+
+    fn attach_url_window_result(
+        &mut self,
+        launch: LaunchAppResult,
+        candidates: Vec<WindowSummary>,
+        selected: Option<WindowSummary>,
+        terms: &[String],
+    ) -> OpenUrlAttachResult {
         let mut attached = None;
         let mut attached_window_title = None;
         let mut selected_tab = None;
@@ -272,7 +306,7 @@ impl Engine {
                     &title,
                     selected_tab.as_ref(),
                     page_state.url.as_deref(),
-                    &terms,
+                    terms,
                 )
                 .map(str::to_string);
                 verified = verified_by.is_some();
@@ -287,10 +321,14 @@ impl Engine {
 
         let verification_hint = if verified {
             None
-        } else if attached.is_some() {
+        } else if attached.is_some() && launch.launched {
             Some("URL was opened and a browser window was attached, but the selected tab/title/page URL did not verify against the URL; call list_browser_tabs/window_view before acting, or read_text_detailed(content_only=false) when Firefox hides browser chrome from AX.".into())
-        } else {
+        } else if attached.is_some() {
+            Some("An existing browser window was attached without opening a new URL, but the selected tab/title/page URL did not verify against the URL; call list_browser_tabs/window_view before acting, or read_text_detailed(content_only=false) when Firefox hides browser chrome from AX.".into())
+        } else if launch.launched {
             Some("URL was opened but no matching browser window could be attached unambiguously; use list_windows and attach explicitly.".into())
+        } else {
+            Some("No existing matching browser window could be attached unambiguously, and the URL was not opened; use list_windows and attach explicitly or call launch_app/open_url_and_attach_tab only when navigation is intended.".into())
         };
 
         OpenUrlAttachResult {
@@ -351,7 +389,8 @@ impl Engine {
 }
 
 fn url_match_terms(url: &str) -> Vec<String> {
-    let normalized = normalize_match(url);
+    let decoded = percent_decode_lossy(url);
+    let normalized = normalize_match(&decoded);
     let mut terms = Vec::new();
     if let Some(host) = normalized
         .split("://")
@@ -377,12 +416,45 @@ fn url_match_terms(url: &str) -> Vec<String> {
 fn best_window_for_url(windows: &[WindowSummary], terms: &[String]) -> Option<WindowSummary> {
     windows
         .iter()
-        .filter(|window| {
+        .filter_map(|window| {
             let title = normalize_match(&window.title);
-            terms.iter().any(|term| title.contains(term))
+            let score = terms
+                .iter()
+                .filter(|term| title.contains(term.as_str()))
+                .count();
+            (score > 0).then_some((score, window.on_screen, window.window_id, window))
         })
-        .min_by_key(|window| window.window_id)
-        .cloned()
+        .max_by_key(|(score, on_screen, window_id, _)| {
+            (*score, *on_screen, std::cmp::Reverse(*window_id))
+        })
+        .map(|(_, _, _, window)| window.clone())
+}
+
+fn percent_decode_lossy(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2])) {
+                decoded.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn verification_source_for_url(
@@ -448,6 +520,25 @@ mod tests {
     }
 
     #[test]
+    fn url_match_terms_decode_percent_encoded_profile_slugs() {
+        let terms = url_match_terms("https://www.linkedin.com/in/cl%C3%A9ment-liard/");
+
+        assert!(terms.iter().any(|term| term == "clement"));
+        assert!(terms.iter().any(|term| term == "liard"));
+    }
+
+    #[test]
+    fn best_window_for_url_prefers_specific_existing_window() {
+        let terms = url_match_terms("https://www.linkedin.com/in/cl%C3%A9ment-liard/");
+        let windows = vec![
+            window(1, "Feed | LinkedIn"),
+            window(2, "Clément LIARD | LinkedIn"),
+        ];
+
+        assert_eq!(best_window_for_url(&windows, &terms).unwrap().window_id, 2);
+    }
+
+    #[test]
     fn url_verification_reports_the_signal_that_matched() {
         let terms = url_match_terms("https://github.com/AlexsJones/llmfit");
 
@@ -491,5 +582,21 @@ mod tests {
             ),
             None
         );
+    }
+
+    fn window(window_id: u32, title: &str) -> WindowSummary {
+        WindowSummary {
+            window_id,
+            pid: 42,
+            app: "Firefox".into(),
+            title: title.into(),
+            bounds: Bbox {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            on_screen: true,
+        }
     }
 }

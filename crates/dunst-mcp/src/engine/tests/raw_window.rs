@@ -527,6 +527,174 @@ fn raw_key_approval_budget_is_event_based() {
 }
 
 #[test]
+fn raw_key_approval_covers_the_approved_clamped_batch() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+    let target_id = raw_press_key_target_id("Backspace", 20);
+
+    let gated = eng
+        .gate_raw_input(
+            &target_id,
+            SemanticAction::KeyPress,
+            Some("Backspace x20".into()),
+            Some("raw key press"),
+            risk.clone(),
+        )
+        .expect("first max-size key batch should gate");
+    assert_eq!(gated.result, ActionResult::PendingApproval);
+
+    eng.approve(&target_id).unwrap();
+    assert!(
+        eng.gate_raw_input(
+            &target_id,
+            SemanticAction::KeyPress,
+            Some("Backspace x20".into()),
+            Some("raw key press"),
+            risk,
+        )
+        .is_none(),
+        "approving Backspace x20 must cover the exact approved batch"
+    );
+}
+
+#[test]
+fn valid_synthetic_raw_target_can_be_preapproved_after_pending_is_lost() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+    let target_id = "screen@820,320:click";
+
+    eng.gate_raw_input(
+        target_id,
+        SemanticAction::Click,
+        Some("click 820,320".into()),
+        Some("raw screen click"),
+        risk.clone(),
+    )
+    .expect("first raw click should gate");
+    eng.refresh().unwrap();
+    assert!(
+        !eng.pending_gate_ids.contains(target_id),
+        "refresh simulates losing the pending approval token"
+    );
+
+    eng.approve(target_id).unwrap();
+    assert!(
+        eng.gate_raw_input(
+            target_id,
+            SemanticAction::Click,
+            Some("click 820,320".into()),
+            Some("raw screen click"),
+            risk,
+        )
+        .is_none(),
+        "a syntactically valid in-window raw target should be approvable without the stale pending id"
+    );
+}
+
+#[test]
+fn synthetic_raw_preapproval_rejects_off_target_points() {
+    let (mut eng, _) = engine_with_counter();
+    let err = eng.approve("screen@9999,9999:click").unwrap_err();
+    assert!(
+        err.to_string().contains("outside the target window"),
+        "off-window raw approval should stay rejected: {err}"
+    );
+}
+
+#[test]
+fn synthetic_raw_preapproval_rejects_unsupported_hotkeys() {
+    let (mut eng, _) = engine_with_counter();
+    let err = eng.approve("keyboard@hotkey:cmd+a").unwrap_err();
+    assert!(
+        err.to_string().contains("keyboard-layout sensitive"),
+        "layout-sensitive hotkeys should not be preapproved: {err}"
+    );
+
+    let err = eng.approve("keyboard@hotkey:cmd+unknownkey").unwrap_err();
+    assert!(
+        err.to_string().contains("unsupported hotkey combo"),
+        "unsupported hotkeys should be rejected clearly: {err}"
+    );
+}
+
+#[test]
+fn raw_point_risk_reports_sparse_ax_instead_of_backdrop_for_browser_canvas_pages() {
+    let eng = browser_engine("Firefox", "Collective", None);
+    let risk = eng.raw_point_risk(320.0, 240.0);
+
+    assert!(
+        risk.reasons.iter().any(
+            |reason| reason.contains("AX content") && reason.contains("OCR/shape verification")
+        ),
+        "sparse browser AX pages should get an actionable risk reason: {:?}",
+        risk.reasons
+    );
+    assert!(
+        !risk
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("possible backdrop")),
+        "sparse AX pages should not be described as a likely backdrop: {:?}",
+        risk.reasons
+    );
+}
+
+#[test]
+fn browser_content_raw_point_reports_sparse_ax_even_when_chrome_nodes_exist() {
+    let window = raw_node(
+        "AXWindow",
+        Some("Collective"),
+        None,
+        test_bbox(0.0, 0.0, 1200.0, 800.0),
+        &["raise"],
+        vec![
+            raw_node(
+                "AXButton",
+                Some("Back"),
+                None,
+                test_bbox(12.0, 12.0, 30.0, 24.0),
+                &["press"],
+                vec![],
+            ),
+            raw_node(
+                "AXButton",
+                Some("Reload"),
+                None,
+                test_bbox(52.0, 12.0, 30.0, 24.0),
+                &["press"],
+                vec![],
+            ),
+            raw_node(
+                "AXTextField",
+                Some("Address"),
+                Some("https://www.collective.work/profile/clement-liard"),
+                test_bbox(92.0, 12.0, 460.0, 24.0),
+                &[],
+                vec![],
+            ),
+        ],
+    );
+    let eng = engine_from_roots(vec![window], "Firefox", "Collective").0;
+    let risk = eng.raw_point_risk(400.0, 300.0);
+
+    assert!(
+        risk.reasons
+            .iter()
+            .any(|reason| reason.contains("AX content") && reason.contains("browser AX tree")),
+        "browser content point should report sparse page AX despite chrome nodes: {:?}",
+        risk.reasons
+    );
+    assert!(
+        !risk
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("possible backdrop")),
+        "browser chrome nodes should not turn sparse page content into a backdrop warning: {:?}",
+        risk.reasons
+    );
+}
+
+#[test]
 fn hover_reveal_success_cleanup_clears_raw_grant() {
     let (mut eng, _) = engine_with_counter();
     let target_id = "hover-reveal@120,350:\"Edit\":click";
@@ -589,7 +757,7 @@ fn wheel_scroll_approval_covers_same_direction_count_change() {
 
     let gated = eng
         .gate_raw_input(
-            "wheel@scroll:down:1:100,200",
+            "wheel@scroll:down:1:820,320",
             SemanticAction::Scroll,
             Some("wheel scroll down x1".into()),
             Some("background wheel scroll"),
@@ -598,7 +766,7 @@ fn wheel_scroll_approval_covers_same_direction_count_change() {
         .expect("first wheel scroll should gate");
     assert_eq!(gated.result, ActionResult::PendingApproval);
 
-    eng.approve("wheel@scroll:down:1:100,200").unwrap();
+    eng.approve("wheel@scroll:down:1:820,320").unwrap();
     assert!(
         eng.gate_raw_input(
             "wheel@scroll:down:3:140,260",
@@ -609,6 +777,60 @@ fn wheel_scroll_approval_covers_same_direction_count_change() {
         )
         .is_none(),
         "same-direction wheel scroll should not ask again solely because count or point changed"
+    );
+}
+
+#[test]
+fn scroll_strategy_key_scopes_firefox_by_site_title_when_url_is_hidden() {
+    let linkedin = browser_engine("Firefox", "Clément LIARD | LinkedIn", None);
+    let choualbox = browser_engine("Firefox", "Choualbox", None);
+
+    let linkedin_key = linkedin.scroll_strategy_key();
+    let choualbox_key = choualbox.scroll_strategy_key();
+
+    assert_eq!(linkedin_key.app, "firefox");
+    assert_eq!(linkedin_key.page, "title:linkedin");
+    assert_eq!(choualbox_key.app, "firefox");
+    assert_eq!(choualbox_key.page, "title:choualbox");
+    assert_ne!(
+        linkedin_key, choualbox_key,
+        "a learned Firefox+LinkedIn scroll fallback must not apply to another Firefox site"
+    );
+}
+
+#[test]
+fn scroll_strategy_key_prefers_url_host_when_available() {
+    let eng = browser_engine(
+        "Firefox",
+        "Clément LIARD | LinkedIn",
+        Some("https://www.linkedin.com/in/clement-liard/"),
+    );
+
+    let key = eng.scroll_strategy_key();
+
+    assert_eq!(key.app, "firefox");
+    assert_eq!(key.page, "host:linkedin.com");
+}
+
+#[test]
+fn real_cursor_scroll_strategy_is_learned_only_after_low_signal_background() {
+    let mut eng = browser_engine("Firefox", "Clément LIARD | LinkedIn", None);
+    let scope = eng.scroll_strategy_key();
+    let cursor_success = scroll_success_audit("cursor@scroll:down:2:2941,1224");
+
+    eng.note_real_cursor_scroll_result(scope.clone(), &cursor_success);
+    assert!(
+        eng.remembered_scroll_strategy().is_none(),
+        "an isolated explicit real-cursor scroll should not become the default"
+    );
+
+    let background_low_signal = scroll_success_audit("wheel@scroll:down:2:3286,941");
+    eng.note_background_scroll_result(scope.clone(), &background_low_signal);
+    eng.note_real_cursor_scroll_result(scope, &cursor_success);
+
+    assert_eq!(
+        eng.remembered_scroll_strategy(),
+        Some(ScrollStrategy::RealCursorWheel)
     );
 }
 
@@ -626,6 +848,42 @@ fn attach_clears_raw_approval_grants() {
         !eng.raw_approval_available_for_test(&target_id),
         "raw grants are scoped to the attached window"
     );
+}
+
+fn browser_engine(app: &str, title: &str, url: Option<&str>) -> Engine {
+    let mut children = Vec::new();
+    if let Some(url) = url {
+        children.push(raw_node(
+            "AXTextField",
+            Some(url),
+            Some(url),
+            test_bbox(20.0, 20.0, 420.0, 24.0),
+            &[],
+            vec![],
+        ));
+    }
+    let window = raw_node(
+        "AXWindow",
+        Some(title),
+        None,
+        test_bbox(0.0, 0.0, 1200.0, 800.0),
+        &["raise"],
+        children,
+    );
+    engine_from_roots(vec![window], app, title).0
+}
+
+fn scroll_success_audit(target_id: &str) -> AuditEntry {
+    AuditEntry {
+        ts_ms: 0,
+        target_id: target_id.to_string(),
+        action: SemanticAction::Scroll,
+        argument: None,
+        risk: Engine::raw_input_risk(Vec::new()),
+        reasoning: None,
+        result: ActionResult::Success,
+        graph_diff: GraphDiff::default(),
+    }
 }
 
 #[test]

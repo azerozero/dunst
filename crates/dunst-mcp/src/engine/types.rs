@@ -233,9 +233,19 @@ pub struct ExposeTargetWindowResult {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScreenshotResult {
     pub png_base64: String,
+    pub geometry: ScreenshotGeometry,
     pub target_visibility: TargetVisibility,
     pub warnings: Vec<String>,
     pub recommended_next_steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScreenshotGeometry {
+    pub window_screen_points: Bbox,
+    pub image_pixels: Option<PixelSize>,
+    pub scale_x: Option<f64>,
+    pub scale_y: Option<f64>,
+    pub coordinate_hint: String,
 }
 
 /// One geometric primitive returned by [`Engine::read_shapes`](super::Engine::read_shapes).

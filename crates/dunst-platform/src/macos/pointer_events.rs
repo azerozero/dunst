@@ -1,5 +1,9 @@
 use super::*;
 
+extern "C" {
+    fn CGEventSetLocation(event: *const c_void, location: CGPoint);
+}
+
 pub(super) fn hover(pid: i32, node: &SceneNode) -> std::result::Result<(), ActionFailure> {
     ensure_user_idle_action("hover")?;
     let Some(bbox) = node.bbox else {
@@ -15,8 +19,8 @@ pub(super) fn hover(pid: i32, node: &SceneNode) -> std::result::Result<(), Actio
         event.post_to_pid(pid);
         Ok(())
     })();
-    restore_cursor_position(saved_cursor)?;
-    result
+    let restore = restore_cursor_position(saved_cursor);
+    result.and(restore)
 }
 
 pub(super) fn drag(
@@ -61,8 +65,8 @@ pub(super) fn drag(
     if result.is_err() && mouse_down_posted {
         let _ = post_mouse(source.clone(), pid, CGEventType::LeftMouseUp, end);
     }
-    restore_cursor_position(saved_cursor)?;
-    result
+    let restore = restore_cursor_position(saved_cursor);
+    result.and(restore)
 }
 
 pub(super) fn parse_drop_point(
@@ -109,8 +113,8 @@ pub(super) fn click_at_point_impl(
     if result.is_err() && mouse_down_posted {
         let _ = post_mouse(source.clone(), pid, CGEventType::LeftMouseUp, point);
     }
-    restore_cursor_position(saved_cursor)?;
-    result
+    let restore = restore_cursor_position(saved_cursor);
+    result.and(restore)
 }
 
 pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
@@ -141,6 +145,51 @@ pub(super) fn hover_at_point_impl(
     Ok(())
 }
 
+pub fn scroll_at_point(x: f64, y: f64, delta_y: i32) -> Result<()> {
+    scroll_at_point_impl(x, y, delta_y).map_err(ActionFailure::into)
+}
+
+pub(super) fn scroll_at_point_impl(
+    x: f64,
+    y: f64,
+    delta_y: i32,
+) -> std::result::Result<(), ActionFailure> {
+    ensure_user_idle_action("real cursor wheel scroll")?;
+    let source = event_source("create real cursor scroll CGEventSource")?;
+    let saved = current_cursor_position(&source)?;
+    let point = clamp_point_to_bounds(CGPoint::new(x, y), all_displays_bounds());
+
+    let result = (|| {
+        CGDisplay::warp_mouse_cursor_position(point)
+            .map_err(|err| ActionFailure::Execution(format!("warp for wheel scroll: {err:?}")))?;
+        let moved = CGEvent::new_mouse_event(
+            source.clone(),
+            CGEventType::MouseMoved,
+            point,
+            CGMouseButton::Left,
+        )
+        .map_err(|err| {
+            ActionFailure::Execution(format!("create pre-scroll hover CGEvent: {err:?}"))
+        })?;
+        moved.post(CGEventTapLocation::HID);
+        thread::sleep(Duration::from_millis(40));
+
+        let event = CGEvent::new_scroll_event(source, ScrollEventUnit::PIXEL, 1, delta_y, 0, 0)
+            .map_err(|err| {
+                ActionFailure::Execution(format!("create wheel scroll CGEvent: {err:?}"))
+            })?;
+        // SAFETY: `event` is a live CoreGraphics scroll event for the duration of the call,
+        // and `point` has already been clamped to the active display bounds.
+        unsafe { CGEventSetLocation(event.as_ptr().cast(), point) };
+        event.post(CGEventTapLocation::HID);
+        thread::sleep(Duration::from_millis(80));
+        Ok(())
+    })();
+
+    let restore = restore_cursor_position(saved);
+    result.and(restore)
+}
+
 pub fn cursor_borrow_to(x: f64, y: f64) -> Result<(f64, f64)> {
     cursor_borrow_to_impl(x, y).map_err(ActionFailure::into)
 }
@@ -159,11 +208,22 @@ pub(super) fn cursor_borrow_to_impl(
     // fires and the crosshair stays hidden. Keep the mouse coupled (the user
     // just shouldn't fight it during the brief borrow); we restore the cursor
     // afterwards.
-    CGDisplay::warp_mouse_cursor_position(point)
-        .map_err(|err| ActionFailure::Execution(format!("warp for borrowed hover: {err:?}")))?;
+    if let Err(err) = CGDisplay::warp_mouse_cursor_position(point) {
+        return Err(ActionFailure::Execution(format!(
+            "warp for borrowed hover: {err:?}"
+        )));
+    }
     let event =
-        CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
-            .map_err(|err| ActionFailure::Execution(format!("create hover CGEvent: {err:?}")))?;
+        match CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
+        {
+            Ok(event) => event,
+            Err(err) => {
+                let _ = cursor_restore_impl(saved.x, saved.y);
+                return Err(ActionFailure::Execution(format!(
+                    "create hover CGEvent: {err:?}"
+                )));
+            }
+        };
     event.post(CGEventTapLocation::HID);
     Ok((saved.x, saved.y))
 }
@@ -173,12 +233,28 @@ pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
 }
 
 pub(super) fn cursor_restore_impl(x: f64, y: f64) -> std::result::Result<(), ActionFailure> {
-    let warped = CGDisplay::warp_mouse_cursor_position(CGPoint::new(x, y))
+    let point = CGPoint::new(x, y);
+    let _ = release_mouse_buttons(point);
+    let warped = CGDisplay::warp_mouse_cursor_position(point)
         .map_err(|err| ActionFailure::Execution(format!("restore cursor: {err:?}")));
+    let _ = release_mouse_buttons(point);
     // Always re-couple the hardware mouse, even if the warp failed, so we never
     // leave the user's mouse decoupled.
     let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(true);
     warped
+}
+
+fn release_mouse_buttons(point: CGPoint) -> std::result::Result<(), ActionFailure> {
+    let source = event_source("create mouse-button release CGEventSource")?;
+    for (event_type, button) in [
+        (CGEventType::LeftMouseUp, CGMouseButton::Left),
+        (CGEventType::RightMouseUp, CGMouseButton::Right),
+    ] {
+        let event = CGEvent::new_mouse_event(source.clone(), event_type, point, button)
+            .map_err(|err| ActionFailure::Execution(format!("create mouse-up CGEvent: {err:?}")))?;
+        event.post(CGEventTapLocation::HID);
+    }
+    Ok(())
 }
 
 pub fn focus_without_raise(window_id: u32) -> bool {

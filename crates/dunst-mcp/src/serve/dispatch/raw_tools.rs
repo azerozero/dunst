@@ -141,6 +141,7 @@ pub(super) fn dispatch(
                     y,
                     arg(args, "direction").as_deref().unwrap_or("down"),
                     args.get("pages").and_then(Value::as_u64).unwrap_or(3) as usize,
+                    arg_bool(args, "borrow_cursor").unwrap_or(false),
                 )
                 .map(|entry| {
                     audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))

@@ -125,10 +125,18 @@ impl Engine {
         pages: usize,
         focus_id: Option<&str>,
     ) -> dunst_core::Result<AuditEntry> {
+        let direction = normalized_scroll_direction(direction);
         if let Some(id) = focus_id {
             if let Some(page_direction) = page_scroll_target_direction(id) {
-                return self
-                    .scroll_with_background_keys(page_direction.unwrap_or(direction), pages);
+                let direction = page_direction.unwrap_or(direction);
+                if self.remembered_scroll_strategy().is_some() && matches!(direction, "down" | "up")
+                {
+                    let (x, y) = self
+                        .remembered_scroll_point()
+                        .unwrap_or_else(|| self.page_scroll_fallback_point());
+                    return self.scroll_at(x, y, direction, pages, false);
+                }
+                return self.scroll_with_background_keys(direction, pages);
             }
             let can_scroll = self
                 .affordance_graph()
@@ -151,6 +159,12 @@ impl Engine {
             );
         }
 
+        if self.remembered_scroll_strategy().is_some() && matches!(direction, "down" | "up") {
+            let (x, y) = self
+                .remembered_scroll_point()
+                .unwrap_or_else(|| self.page_scroll_fallback_point());
+            return self.scroll_at(x, y, direction, pages, false);
+        }
         self.scroll_with_background_keys(direction, pages)
     }
 
@@ -167,6 +181,7 @@ impl Engine {
             "bottom" => (0x77, 1),
             _ => (0x79, pages.clamp(1, 20)), // down (default)
         };
+        let scope = self.scroll_strategy_key();
         let target_id = format!("keyboard@scroll:{direction}:{count}");
         if let Some(entry) = self.gate_raw_input(
             &target_id,
@@ -192,14 +207,18 @@ impl Engine {
             }
             std::thread::sleep(std::time::Duration::from_millis(380));
         }
-        self.audit_raw_input(
+        let result = self.audit_raw_input(
             target_id,
             SemanticAction::Scroll,
             Some(format!("scroll {direction} x{count}")),
             Some("background web scroll (Page/Home/End keys, auth-signed)"),
             Self::raw_input_risk(Vec::new()),
             outcome,
-        )
+        );
+        if let Ok(entry) = &result {
+            self.note_background_scroll_result(scope, entry);
+        }
+        result
     }
 
     /// Wheel-scroll at a concrete screen point in the target window. This is the
@@ -213,6 +232,7 @@ impl Engine {
         y: f64,
         direction: &str,
         pages: usize,
+        mut borrow_cursor: bool,
     ) -> dunst_core::Result<AuditEntry> {
         self.ensure_point_in_target_window(x, y, "scroll_at")?;
         let direction = normalized_scroll_direction(direction);
@@ -220,53 +240,229 @@ impl Engine {
         if matches!(direction, "top" | "bottom") {
             return self.scroll_with_background_keys(direction, count);
         }
-        let target_id = wheel_scroll_target_id(direction, count, x, y);
-        let argument = format!("wheel scroll {direction} x{count} at {x:.1},{y:.1}");
+        let scope = self.scroll_strategy_key();
+        let remembered_strategy = !borrow_cursor
+            && self
+                .scroll_strategy_cache
+                .get(&scope)
+                .is_some_and(|memory| memory.strategy == ScrollStrategy::RealCursorWheel);
+        if remembered_strategy {
+            borrow_cursor = true;
+        }
+        if borrow_cursor {
+            match self.ensure_real_cursor_scroll_point_visible(x, y) {
+                Ok(()) => {}
+                Err(_) if remembered_strategy => {
+                    self.scroll_strategy_cache.remove(&scope);
+                    borrow_cursor = false;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        let target_id = if borrow_cursor {
+            cursor_scroll_target_id(direction, count, x, y)
+        } else {
+            wheel_scroll_target_id(direction, count, x, y)
+        };
+        let argument = if borrow_cursor {
+            format!("real cursor wheel scroll {direction} x{count} at {x:.1},{y:.1}")
+        } else {
+            format!("wheel scroll {direction} x{count} at {x:.1},{y:.1}")
+        };
+        let reasoning = if remembered_strategy && borrow_cursor {
+            "session-learned real cursor wheel scroll at target point"
+        } else if borrow_cursor {
+            "real cursor wheel scroll at target point"
+        } else {
+            "background wheel scroll at target point"
+        };
+        let mut risk = self.raw_point_risk(x, y);
+        if borrow_cursor {
+            risk.reasons.extend([
+                "briefly moves and restores the real OS cursor".to_string(),
+                "the scroll is delivered to the visible surface under the cursor".to_string(),
+            ]);
+        }
+        if remembered_strategy && borrow_cursor {
+            risk.reasons.push(
+                "session cache selected the previously validated real-cursor scroll fallback for this app/page"
+                    .to_string(),
+            );
+        }
         if let Some(entry) = self.gate_raw_input(
             &target_id,
             SemanticAction::Scroll,
             Some(argument.clone()),
-            Some("background wheel scroll at target point"),
-            self.raw_point_risk(x, y),
+            Some(reasoning),
+            risk.clone(),
         ) {
             return Ok(entry);
         }
-        let (ox, oy) = dunst_vision::capture::window_bounds(self.target.window_id)
-            .map(|(x, y, _, _)| (x, y))
-            .unwrap_or((
-                self.current_window_bounds().x,
-                self.current_window_bounds().y,
-            ));
         let delta = match direction {
             "up" => 720,
             _ => -720,
         };
         let mut outcome = Ok(());
         for _ in 0..count {
-            outcome = retry_user_active_guard(|| {
-                dunst_platform::scroll_web_background(
-                    self.target.pid,
-                    self.target.window_id,
-                    x,
-                    y,
-                    ox,
-                    oy,
-                    delta,
-                )
-            });
+            outcome = if borrow_cursor {
+                retry_user_active_guard(|| dunst_platform::scroll_at_point(x, y, delta))
+            } else {
+                let (ox, oy) = dunst_vision::capture::window_bounds(self.target.window_id)
+                    .map(|(x, y, _, _)| (x, y))
+                    .unwrap_or((
+                        self.current_window_bounds().x,
+                        self.current_window_bounds().y,
+                    ));
+                retry_user_active_guard(|| {
+                    dunst_platform::scroll_web_background(
+                        self.target.pid,
+                        self.target.window_id,
+                        x,
+                        y,
+                        ox,
+                        oy,
+                        delta,
+                    )
+                })
+            };
             if outcome.is_err() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(160));
         }
-        self.audit_raw_input(
+        let result = self.audit_raw_input(
             target_id,
             SemanticAction::Scroll,
             Some(argument),
-            Some("background wheel scroll at target point"),
-            self.raw_point_risk(x, y),
+            Some(reasoning),
+            risk,
             outcome,
-        )
+        );
+        match &result {
+            Ok(entry) if borrow_cursor => {
+                self.note_real_cursor_scroll_result_at(scope, entry, Some((x, y)))
+            }
+            Ok(entry) => self.note_background_scroll_result(scope, entry),
+            Err(_) if remembered_strategy => {
+                self.scroll_strategy_cache.remove(&scope);
+            }
+            Err(_) => {}
+        }
+        result
+    }
+
+    pub(in crate::engine) fn remembered_scroll_strategy(&self) -> Option<ScrollStrategy> {
+        let scope = self.scroll_strategy_key();
+        self.scroll_strategy_cache
+            .get(&scope)
+            .map(|memory| memory.strategy)
+    }
+
+    pub(in crate::engine) fn note_background_scroll_result(
+        &mut self,
+        scope: ScrollStrategyKey,
+        entry: &AuditEntry,
+    ) {
+        if scroll_result_low_signal(entry) {
+            self.scroll_background_low_signal.insert(scope);
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::engine) fn note_real_cursor_scroll_result(
+        &mut self,
+        scope: ScrollStrategyKey,
+        entry: &AuditEntry,
+    ) {
+        self.note_real_cursor_scroll_result_at(scope, entry, None);
+    }
+
+    fn note_real_cursor_scroll_result_at(
+        &mut self,
+        scope: ScrollStrategyKey,
+        entry: &AuditEntry,
+        point: Option<(f64, f64)>,
+    ) {
+        if entry.result != dunst_core::ActionResult::Success {
+            return;
+        }
+        if self.scroll_background_low_signal.remove(&scope)
+            || self
+                .scroll_strategy_cache
+                .get(&scope)
+                .is_some_and(|memory| memory.strategy == ScrollStrategy::RealCursorWheel)
+        {
+            let existing_ratio = self
+                .scroll_strategy_cache
+                .get(&scope)
+                .and_then(|memory| memory.point_ratio);
+            let point_ratio = point
+                .and_then(|(x, y)| self.scroll_point_ratio(x, y))
+                .or(existing_ratio);
+            self.scroll_strategy_cache.insert(
+                scope,
+                ScrollStrategyMemory {
+                    strategy: ScrollStrategy::RealCursorWheel,
+                    point_ratio,
+                },
+            );
+        }
+    }
+
+    fn remembered_scroll_point(&self) -> Option<(f64, f64)> {
+        let scope = self.scroll_strategy_key();
+        let memory = self.scroll_strategy_cache.get(&scope)?;
+        if memory.strategy != ScrollStrategy::RealCursorWheel {
+            return None;
+        }
+        let (rx, ry) = memory.point_ratio?;
+        let window = self.current_window_bounds();
+        Some((window.x + window.w * rx, window.y + window.h * ry))
+    }
+
+    fn page_scroll_fallback_point(&self) -> (f64, f64) {
+        let window = self.current_window_bounds();
+        (window.x + window.w * 0.42, window.y + window.h * 0.54)
+    }
+
+    fn scroll_point_ratio(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let window = self.current_window_bounds();
+        if window.w <= 0.0 || window.h <= 0.0 {
+            return None;
+        }
+        Some((
+            ((x - window.x) / window.w).clamp(0.0, 1.0),
+            ((y - window.y) / window.h).clamp(0.0, 1.0),
+        ))
+    }
+
+    pub(in crate::engine) fn scroll_strategy_key(&self) -> ScrollStrategyKey {
+        let graph = self.scene_graph();
+        let app = scroll_scope_token(&graph.window.app_name)
+            .unwrap_or_else(|| format!("pid:{}", graph.window.pid));
+        let page = self
+            .current_browser_host()
+            .map(|host| format!("host:{host}"))
+            .or_else(|| title_site_scope(&graph.window.title, &graph.window.app_name))
+            .unwrap_or_else(|| format!("window:{}", graph.window.window_id));
+        ScrollStrategyKey { app, page }
+    }
+
+    fn current_browser_host(&self) -> Option<String> {
+        self.list_browser_tabs(None, true)
+            .into_iter()
+            .find(|tab| tab.selected)
+            .and_then(|tab| tab.url)
+            .and_then(|url| host_from_url(&url))
+            .or_else(|| {
+                self.scene_graph().nodes.values().find_map(|node| {
+                    node.value
+                        .as_deref()
+                        .or(node.label.as_deref())
+                        .and_then(likely_url)
+                        .and_then(|url| host_from_url(&url))
+                })
+            })
     }
 
     /// Non-macOS stub.
@@ -290,6 +486,7 @@ impl Engine {
         _y: f64,
         _direction: &str,
         _pages: usize,
+        _borrow_cursor: bool,
     ) -> dunst_core::Result<AuditEntry> {
         Err(DunstError::Execution(
             "scroll_at requires a macOS backend".into(),
@@ -417,4 +614,115 @@ fn wheel_scroll_target_id(direction: &str, count: usize, x: f64, y: f64) -> Stri
         x,
         y
     )
+}
+
+fn cursor_scroll_target_id(direction: &str, count: usize, x: f64, y: f64) -> String {
+    format!(
+        "cursor@scroll:{}:{}:{:.0},{:.0}",
+        normalized_scroll_direction(direction),
+        count.clamp(1, 20),
+        x,
+        y
+    )
+}
+
+fn scroll_result_low_signal(entry: &AuditEntry) -> bool {
+    entry.result == dunst_core::ActionResult::Success
+        && (entry.graph_diff.changes.is_empty()
+            || entry
+                .graph_diff
+                .changes
+                .iter()
+                .all(scroll_low_signal_change))
+}
+
+fn scroll_low_signal_change(change: &dunst_core::NodeChange) -> bool {
+    match change {
+        dunst_core::NodeChange::Added { id, .. } | dunst_core::NodeChange::Removed { id, .. } => {
+            low_signal_menu_id(id)
+        }
+        dunst_core::NodeChange::Changed { id, field, .. } => {
+            low_signal_menu_id(id)
+                && matches!(field.as_str(), "children" | "enabled" | "parent" | "label")
+        }
+    }
+}
+
+fn low_signal_menu_id(id: &str) -> bool {
+    id.starts_with("mi_") || id.starts_with("menu_")
+}
+
+fn host_from_url(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    let after_scheme = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    let host_port = after_scheme
+        .rsplit('@')
+        .next()
+        .unwrap_or(after_scheme)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    let host = host_port
+        .split(':')
+        .next()
+        .unwrap_or(host_port)
+        .trim()
+        .trim_start_matches("www.")
+        .to_ascii_lowercase();
+    (!host.is_empty() && host.contains('.')).then_some(host)
+}
+
+fn title_site_scope(title: &str, app: &str) -> Option<String> {
+    for separator in [" | ", " — ", " – "] {
+        if let Some((_, candidate)) = title.rsplit_once(separator) {
+            if let Some(token) = scroll_scope_token(candidate) {
+                if !generic_title_scope(&token, app) {
+                    return Some(format!("title:{token}"));
+                }
+            }
+        }
+    }
+    if let Some((left, _)) = title.split_once(" - ") {
+        if let Some(token) = scroll_scope_token(left) {
+            if !generic_title_scope(&token, app) {
+                return Some(format!("title:{token}"));
+            }
+        }
+    }
+    scroll_scope_token(title)
+        .filter(|token| !generic_title_scope(token, app))
+        .map(|token| format!("title:{token}"))
+}
+
+fn generic_title_scope(token: &str, app: &str) -> bool {
+    let app = scroll_scope_token(app).unwrap_or_default();
+    token.is_empty()
+        || token == app
+        || matches!(
+            token,
+            "mozilla-firefox" | "navigation-privee" | "private-browsing"
+        )
+}
+
+fn scroll_scope_token(value: &str) -> Option<String> {
+    let normalized = normalize_match(value);
+    let mut token = String::with_capacity(normalized.len().min(80));
+    let mut previous_dash = false;
+    for ch in normalized.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '.' {
+            token.push(ch);
+            previous_dash = false;
+        } else if !previous_dash {
+            token.push('-');
+            previous_dash = true;
+        }
+        if token.len() >= 80 {
+            break;
+        }
+    }
+    let token = token.trim_matches('-').to_string();
+    (!token.is_empty()).then_some(token)
 }

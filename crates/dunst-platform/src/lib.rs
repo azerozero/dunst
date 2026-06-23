@@ -42,17 +42,19 @@ pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
 }
 
 /// Time-multiplex the single OS cursor for a synthetic hover on a non-CDP
-/// surface: save the current position, **decouple the hardware mouse** (so the
-/// user can't fight the warp), warp to `(x, y)` and post a hover. Returns the
-/// saved position to restore with [`cursor_restore`]. The user's mouse is frozen
-/// until restore — keep the borrow brief (~tens of ms).
+/// surface: save the current position, warp to `(x, y)`, and post a hover.
+/// Returns the saved position to restore with [`cursor_restore`]. The hardware
+/// mouse intentionally stays coupled because decoupling prevents web hover
+/// events from reaching the window under the warped cursor. Keep the borrow
+/// brief and always restore.
 #[cfg(target_os = "macos")]
 pub fn cursor_borrow_to(x: f64, y: f64) -> Result<(f64, f64)> {
     macos::cursor_borrow_to(x, y)
 }
 
-/// End a [`cursor_borrow_to`]: warp the cursor back to `(x, y)` and **re-couple**
-/// the hardware mouse so the user controls it again.
+/// End a [`cursor_borrow_to`]: release mouse buttons defensively, warp the
+/// cursor back to `(x, y)`, and re-couple the hardware mouse so the user
+/// controls it again.
 #[cfg(target_os = "macos")]
 pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
     macos::cursor_restore(x, y)
@@ -158,6 +160,16 @@ pub fn scroll_web_background(
     delta_y: i32,
 ) -> Result<()> {
     macos::scroll_web_background(pid, window_id, x, y, origin_x, origin_y, delta_y)
+}
+
+/// Borrow the real OS cursor, move it to `(x, y)`, post a global wheel-scroll
+/// event, and restore the cursor. This is a generic fallback for visible native,
+/// web, Electron, and canvas surfaces that only respond to real pointer wheel
+/// input. `delta_y` follows CoreGraphics convention: positive scrolls up,
+/// negative scrolls down.
+#[cfg(target_os = "macos")]
+pub fn scroll_at_point(x: f64, y: f64, delta_y: i32) -> Result<()> {
+    macos::scroll_at_point(x, y, delta_y)
 }
 
 /// Type `text` into the focused element of a **backgrounded** window's (web)

@@ -573,13 +573,13 @@ fn keyboard_menu_tools() -> Vec<Value> {
         ),
         tool(
             "scroll",
-            "Scroll the focused page/container. With a real AX id, uses direct AX scrollbar value changes on that element or an ancestor exposing AXVerticalScrollBar. With a page@scroll:* pseudo-target from get_hit_targets, uses background Page/Home/End keys and remains raw-approval-gated. Without id, uses the same background Page/Home/End key path. direction: down|up|top|bottom; pages: number of pages (default 3). Action responses are compact by default; set include_diff=true for the full scene diff.",
+            "Scroll the focused page/container. With a real AX id, uses direct AX scrollbar value changes on that element or an ancestor exposing AXVerticalScrollBar. With a page@scroll:* pseudo-target from get_hit_targets, uses background Page/Home/End keys and remains raw-approval-gated, unless this session has learned a validated app/page fallback such as real-cursor wheel scrolling for Firefox+LinkedIn. Without id, uses the same page path. direction: down|up|top|bottom; pages: number of pages (default 3). Action responses are compact by default; set include_diff=true for the full scene diff.",
             schema(json!({ "direction": {"type":"string","enum":["down","up","top","bottom"]}, "pages": {"type":"integer"}, "id": {"type":"string","description":"optional scrollable element id; requires an AXVerticalScrollBar on the element or an ancestor"}, "include_diff": {"type":"boolean"} }), &[]),
         ),
         tool(
             "scroll_at",
-            "Wheel-scroll at a concrete screen point inside the target window. Use only when a point-specific scroll container is needed and AX/page-key scrolling did not work. direction: down|up|top|bottom; pages defaults to 3. Raw wheel input is approval-gated.",
-            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"}, "direction": {"type":"string","enum":["down","up","top","bottom"]}, "pages": {"type":"integer"}, "include_diff": {"type":"boolean"} }), &["x", "y"]),
+            "Wheel-scroll at a concrete screen point inside the target window. By default uses the SkyLight background wheel path, which does not move the OS cursor. Set borrow_cursor=true only when the target surface requires a real cursor wheel gesture; the point must be visibly occupied by the target window and the cursor is restored afterward. Use when a point-specific scroll container is needed and AX/page-key scrolling did not work. direction: down|up|top|bottom; pages defaults to 3. Raw wheel input is approval-gated.",
+            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"}, "direction": {"type":"string","enum":["down","up","top","bottom"]}, "pages": {"type":"integer"}, "borrow_cursor": {"type":"boolean","description":"briefly move and restore the real OS cursor, then post a global wheel event; requires visible target pixels at the point (default false)"}, "include_diff": {"type":"boolean"} }), &["x", "y"]),
         ),
         tool(
             "zoom",

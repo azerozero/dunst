@@ -752,9 +752,9 @@ fn append_page_scroll_targets(targets: &mut Vec<HitTarget>, window: Bbox) {
     }
     let risk = page_scroll_risk();
     let bbox = Bbox {
-        x: window.x + window.w * 0.08,
+        x: window.x + window.w * 0.12,
         y: window.y + window.h * 0.16,
-        w: window.w * 0.84,
+        w: window.w * 0.60,
         h: window.h * 0.76,
     };
     for direction in ["down", "up", "bottom", "top"] {
@@ -769,7 +769,7 @@ fn append_page_scroll_targets(targets: &mut Vec<HitTarget>, window: Bbox) {
             safe_click: synthetic_safe_zone(
                 bbox,
                 "page_scroll_region",
-                "Use the scroll tool with this pseudo-target id, or scroll_at at the center point.",
+                "Use the scroll tool with this pseudo-target id; for scroll_at, prefer an OCR text/card point inside the content instead of a blank gutter.",
             ),
             confidence: 0.65,
             action_modes: vec![HitActionMode {

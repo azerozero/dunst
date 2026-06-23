@@ -112,9 +112,28 @@ pub struct Engine {
     display_cache: RefCell<Option<TimedCache<Vec<DisplaySummary>>>>,
     desktop_cache: RefCell<Option<TimedCache<DesktopCacheEntry>>>,
     ocr_cache: RefCell<Option<TimedCache<OcrCacheEntry>>>,
-    screenshot_cache: RefCell<Option<TimedCache<String>>>,
+    screenshot_cache: RefCell<Option<TimedCache<ScreenshotCacheEntry>>>,
     visual_probe_cache: RefCell<Option<VisualProbeCacheEntry>>,
+    scroll_strategy_cache: BTreeMap<ScrollStrategyKey, ScrollStrategyMemory>,
+    scroll_background_low_signal: BTreeSet<ScrollStrategyKey>,
     trace: Vec<AuditEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct ScrollStrategyKey {
+    app: String,
+    page: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScrollStrategy {
+    RealCursorWheel,
+}
+
+#[derive(Clone, Debug)]
+struct ScrollStrategyMemory {
+    strategy: ScrollStrategy,
+    point_ratio: Option<(f64, f64)>,
 }
 
 impl Engine {
@@ -148,6 +167,8 @@ impl Engine {
             ocr_cache: RefCell::new(None),
             screenshot_cache: RefCell::new(None),
             visual_probe_cache: RefCell::new(None),
+            scroll_strategy_cache: BTreeMap::new(),
+            scroll_background_low_signal: BTreeSet::new(),
             trace: Vec::new(),
         };
         e.refresh()?;
@@ -344,19 +365,26 @@ impl Engine {
 
     // --- approval -----------------------------------------------------------
 
-    /// Whitelist a high-risk element so the **next** gated action on it proceeds.
+    /// Whitelist a high-risk element or validated synthetic raw target so the next gated
+    /// action can proceed.
     ///
-    /// Audit #2 — validated at call time, not blindly stored. The id must exist in
-    /// the current scene (`ElementNotFound` otherwise) and be genuinely gated:
-    /// * its own current risk requires approval (a high-risk element / drop target), **or**
-    /// * it is the subject of a pending contextual gate — e.g. a destructive value
-    ///   typed into an otherwise low-risk field (audit #13).
+    /// Element ids are validated against the current scene and must still be genuinely gated:
+    /// * their own current risk requires approval, **or**
+    /// * they are the subject of a pending contextual gate.
     ///
-    /// Approving a phantom or a plain low-risk id is an error, so a grant can never
-    /// be parked on something that isn't gated. The grant is **one-shot**:
-    /// [`act`](Self::act) consumes it on the next successful action, and every
-    /// [`refresh`](Self::refresh) clears all grants.
+    /// Synthetic raw target ids are validated structurally and, when they carry coordinates,
+    /// bounded to the current target window. That lets an operator re-approve the same raw
+    /// target after a pending response was lost without parking a grant on an arbitrary id.
+    ///
+    /// Element grants are one-shot and refresh-cleared. Raw grants are event-count and
+    /// TTL-limited, and scoped to the currently attached target window.
     pub fn approve(&mut self, id: &str) -> dunst_core::Result<()> {
+        if is_synthetic_approval_target_id(id) {
+            self.validate_synthetic_raw_approval(id)?;
+            self.approve_raw_input(id);
+            return Ok(());
+        }
+
         let is_pending_synthetic = self.pending_gate_ids.contains(id);
         let is_scene_id = self.scene_graph().get(id).is_some();
         if !is_scene_id && !is_pending_synthetic {
@@ -373,11 +401,7 @@ impl Engine {
                 "{id} is not gated; no approval required"
             )));
         }
-        if is_synthetic_approval_target_id(id) {
-            self.approve_raw_input(id);
-        } else {
-            self.approvals.insert(id.to_string());
-        }
+        self.approvals.insert(id.to_string());
         Ok(())
     }
 }

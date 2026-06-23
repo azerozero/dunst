@@ -300,9 +300,33 @@ fn failed_checkbox_click_includes_toggle_hint() {
 }
 
 #[test]
-fn successful_click_without_meaningful_diff_includes_verification_hint() {
+fn failed_latent_menu_item_includes_open_menu_hint() {
     let entry = AuditEntry {
         ts_ms: 46,
+        target_id: "mi_selectall".into(),
+        action: SemanticAction::Click,
+        argument: None,
+        risk: dunst_core::RiskAssessment::low(),
+        reasoning: None,
+        result: ActionResult::Failed,
+        graph_diff: GraphDiff::default(),
+    };
+
+    let value = audit_entry_value(entry, false);
+    assert!(value["failure_hint"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("latent AX menu item"));
+    assert!(value["failure_hint"]["next_step"]
+        .as_str()
+        .unwrap()
+        .contains("Do not keep retrying latent mi_* ids"));
+}
+
+#[test]
+fn successful_click_without_meaningful_diff_includes_verification_hint() {
+    let entry = AuditEntry {
+        ts_ms: 47,
         target_id: "btn_modifier".into(),
         action: SemanticAction::Click,
         argument: None,
@@ -317,6 +341,34 @@ fn successful_click_without_meaningful_diff_includes_verification_hint() {
         .as_str()
         .unwrap()
         .contains("no meaningful AX graph change"));
+}
+
+#[test]
+fn successful_raw_click_without_meaningful_diff_warns_not_to_retry_same_point() {
+    let entry = AuditEntry {
+        ts_ms: 48,
+        target_id: "screen@4020,692:click".into(),
+        action: SemanticAction::Click,
+        argument: Some("click 4020,692".into()),
+        risk: dunst_core::RiskAssessment::low(),
+        reasoning: None,
+        result: ActionResult::Success,
+        graph_diff: GraphDiff::default(),
+    };
+
+    let value = audit_entry_value(entry, false);
+    assert!(value["verification_hint"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("raw click returned success"));
+    assert!(value["verification_hint"]["next_step"]
+        .as_str()
+        .unwrap()
+        .contains("Do not repeat the same raw point"));
+    assert!(value["verification_hint"]["next_step"]
+        .as_str()
+        .unwrap()
+        .contains("screenshots are image pixels"));
 }
 
 #[test]

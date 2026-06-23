@@ -82,6 +82,9 @@ pub(super) fn audit_entry_value(entry: AuditEntry, include_diff: bool) -> Value 
 
 fn raw_input_target(target_id: &str) -> bool {
     target_id.starts_with("keyboard@")
+        || target_id.starts_with("cursor@")
+        || target_id.starts_with("wheel@")
+        || target_id.starts_with("ocr@")
         || target_id.starts_with("screen@")
         || target_id.starts_with("file@")
         || target_id.starts_with("hover-reveal@")
@@ -156,6 +159,15 @@ fn failed_action_hint(entry: &AuditEntry) -> Option<Value> {
             "reason": "The menu-bar item was visible in AX but pressing it did not open the menu.",
             "next_step": "Use open_menu with the exact localized label and verify the menu opened. If another window of the same app is frontmost, raise only after explicit operator approval."
         })),
+        SemanticAction::Click | SemanticAction::Pick
+            if entry.target_id.starts_with("mi_") && entry.result == ActionResult::Failed =>
+        {
+            Some(json!({
+                "reason": "The target looks like a native menu item, but the action failed. If its bbox is empty or the menu is not visibly open, it is a latent AX menu item and cannot be actioned directly.",
+                "next_step": "Open the parent menu visibly first, or use a context-menu item that appears in get_hit_targets/find_element with a real bbox. Do not keep retrying latent mi_* ids.",
+                "verification": "the menu item should have a non-empty on-screen bbox, or the parent menu should be visibly open before click_element/pick_option"
+            }))
+        }
         SemanticAction::Click
             if entry.target_id.starts_with("field_") || entry.target_id.starts_with("text_") =>
         {
@@ -190,10 +202,32 @@ fn success_action_hint(entry: &AuditEntry) -> Option<Value> {
     if entry.action == SemanticAction::Scroll
         && entry.graph_diff.changes.iter().all(low_signal_diff_change)
     {
+        let next_step = if entry.target_id.starts_with("cursor@scroll:") {
+            "Verify with read_text/OCR before relying on the new viewport. If OCR did not move after a real-cursor scroll, do not repeat the same point; choose an OCR text/card point inside the scrollable content, or use expose_target_window/raise_element only after explicit operator approval when foreground focus is acceptable."
+        } else {
+            "Verify with read_text/OCR or window_view before relying on the new viewport. If OCR did not move after background scroll, retry scroll_at at a visible OCR text/card point with borrow_cursor=true; for AX-backed panes, prefer scroll with a scrollable element id."
+        };
         return Some(json!({
-            "reason": "The scroll key sequence returned success, but no meaningful AX graph movement was observed.",
-            "next_step": "Treat the scroll as unverified. Re-read window_view/read_text; if the page did not move, click or focus the intended page/container, use scroll with a scrollable element id when available, or use PageUp/PageDown via press_key after explicit operator approval.",
+            "reason": "The scroll action returned success, but no meaningful AX graph movement was observed.",
+            "next_step": next_step,
             "verification": "visible text, OCR, or key element positions should change before relying on the new viewport"
+        }));
+    }
+    if entry.action == SemanticAction::Click
+        && raw_input_target(&entry.target_id)
+        && entry.graph_diff.changes.iter().all(low_signal_diff_change)
+    {
+        let next_step = if entry.target_id.starts_with("screen@") {
+            "Do not repeat the same raw point. Re-map the UI with screenshot diagnostics, OCR, read_shapes, or analyze_region_ax; remember screenshots are image pixels while raw click tools expect global screen points."
+        } else if entry.target_id.starts_with("hover-reveal@") {
+            "Do not retry the same hover-reveal target blindly. Read the failure detail, then verify whether the target window is visible/topmost and whether the requested hover text appears with OCR before another mutating attempt."
+        } else {
+            "Do not assume the raw action changed UI state. Re-read the target UI and choose an element-bound or OCR-bound action before the next mutation."
+        };
+        return Some(json!({
+            "reason": "The raw click returned success, but no meaningful AX graph change was observed afterward.",
+            "next_step": next_step,
+            "verification": "expected_text_found should be true, or OCR/page_state/detect_modal should show the intended state change before continuing"
         }));
     }
     if entry.action != SemanticAction::Click

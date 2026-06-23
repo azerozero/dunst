@@ -410,14 +410,14 @@ fn approve_rejects_unknown_and_non_gated_ids() {
 }
 
 #[test]
-fn raw_input_gate_requires_pending_synthetic_approval() {
+fn raw_input_gate_accepts_valid_synthetic_raw_approval() {
     let (mut eng, _) = engine_with_counter();
 
     let pending = eng
         .gate_raw_input(
-            "screen@10,20:click",
+            "screen@820,320:click",
             SemanticAction::Click,
-            Some("click 10,20".to_string()),
+            Some("click 820,320".to_string()),
             Some("raw screen click"),
             Engine::raw_input_risk(Vec::new()),
         )
@@ -426,12 +426,12 @@ fn raw_input_gate_requires_pending_synthetic_approval() {
     assert_eq!(pending.risk.level, RiskLevel::High);
     assert!(pending.risk.requires_approval);
 
-    eng.approve("screen@10,20:click").unwrap();
+    eng.approve("screen@820,320:click").unwrap();
     assert!(
         eng.gate_raw_input(
-            "screen@10,20:click",
+            "screen@820,320:click",
             SemanticAction::Click,
-            Some("click 10,20".to_string()),
+            Some("click 820,320".to_string()),
             Some("raw screen click"),
             Engine::raw_input_risk(Vec::new()),
         )
@@ -441,7 +441,75 @@ fn raw_input_gate_requires_pending_synthetic_approval() {
 
     eng.approvals.remove("screen@10,20:click");
     let err = eng.approve("screen@10,20:other").unwrap_err();
-    assert!(matches!(err, DunstError::ElementNotFound(_)));
+    assert!(
+        err.to_string().contains("unsupported raw screen action"),
+        "invalid synthetic screen action should be rejected clearly: {err}"
+    );
+}
+
+#[test]
+fn ocr_raw_input_gate_uses_synthetic_ocr_target_ids() {
+    let (mut eng, _) = engine_with_counter();
+    let target = "ocr@ocr_text_2_clement_liard:click";
+    let risk = eng.ocr_point_risk(&OcrTextHit {
+        id: "ocr_text_2_clement_liard".into(),
+        text: "Clément LIARD".into(),
+        bbox: Bbox {
+            x: 20.0,
+            y: 20.0,
+            w: 140.0,
+            h: 24.0,
+        },
+        confidence: 1.0,
+        center: (90.0, 32.0),
+        score: 100.0,
+    });
+
+    let pending = eng
+        .gate_raw_input(
+            target,
+            SemanticAction::Click,
+            Some("click OCR text \"Clément LIARD\"".to_string()),
+            Some("OCR-bound raw click"),
+            risk,
+        )
+        .expect("unapproved OCR click should gate");
+    assert_eq!(pending.result, ActionResult::PendingApproval);
+    assert!(pending
+        .risk
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("verified OCR text hit")));
+    assert!(!pending
+        .risk
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("possible backdrop")));
+
+    eng.approve(target).unwrap();
+    let refreshed_target = "ocr@ocr_text_99_clement_liard:click";
+    assert!(
+        eng.gate_raw_input(
+            refreshed_target,
+            SemanticAction::Click,
+            Some("click OCR text \"Clément LIARD\"".to_string()),
+            Some("OCR-bound raw click"),
+            Engine::raw_input_risk(Vec::new()),
+        )
+        .is_none(),
+        "approved OCR target should survive refreshed OCR ids for the same text/action"
+    );
+    assert!(
+        eng.gate_raw_input(
+            target,
+            SemanticAction::Click,
+            Some("click OCR text \"Clément LIARD\"".to_string()),
+            Some("OCR-bound raw click"),
+            Engine::raw_input_risk(Vec::new()),
+        )
+        .is_some(),
+        "OCR text/action approval should still be consumed once"
+    );
 }
 
 #[test]
@@ -455,10 +523,16 @@ fn raw_user_active_failure_preserves_approval_for_retry() {
             "background web scroll",
         ),
         (
-            "wheel@scroll:down:2:3424,898",
+            "wheel@scroll:down:2:820,320",
             SemanticAction::Scroll,
             "wheel scroll down x2",
             "background wheel scroll",
+        ),
+        (
+            "cursor@scroll:down:2:820,320",
+            SemanticAction::Scroll,
+            "real cursor wheel scroll down x2",
+            "real cursor wheel scroll",
         ),
         (
             "keyboard@press:PageDown:1",
@@ -467,9 +541,9 @@ fn raw_user_active_failure_preserves_approval_for_retry() {
             "raw key press",
         ),
         (
-            "screen@3424,898:click",
+            "screen@820,320:click",
             SemanticAction::Click,
-            "click 3424,898",
+            "click 820,320",
             "raw screen click",
         ),
     ] {

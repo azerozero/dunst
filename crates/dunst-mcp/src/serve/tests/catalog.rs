@@ -225,6 +225,10 @@ fn tools_list_exposes_click_at_and_press_key() {
         .find(|t| t["name"] == "scroll_at")
         .expect("scroll_at tool present");
     assert_eq!(scroll_at["inputSchema"]["required"], json!(["x", "y"]));
+    assert_eq!(
+        scroll_at["inputSchema"]["properties"]["borrow_cursor"]["type"],
+        "boolean"
+    );
 }
 
 #[test]

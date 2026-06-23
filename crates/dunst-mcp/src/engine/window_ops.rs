@@ -478,7 +478,8 @@ impl Engine {
         {
             let target_visibility = self.target_visibility();
             return Some(ScreenshotResult {
-                png_base64: cached,
+                png_base64: cached.png_base64,
+                geometry: screenshot_geometry(self.current_window_bounds(), cached.image_pixels),
                 warnings: target_visibility.warnings.clone(),
                 recommended_next_steps: target_visibility
                     .fallback_hint
@@ -500,14 +501,20 @@ impl Engine {
         }
         let bytes = std::fs::read(&path).ok();
         let _ = std::fs::remove_file(&path);
-        let encoded = bytes.map(|b| base64_encode(&b))?;
+        let bytes = bytes?;
+        let image_pixels = png_dimensions(&bytes);
+        let encoded = base64_encode(&bytes);
         *self.screenshot_cache.borrow_mut() = Some(TimedCache {
             captured_at: Instant::now(),
-            value: encoded.clone(),
+            value: ScreenshotCacheEntry {
+                png_base64: encoded.clone(),
+                image_pixels: image_pixels.clone(),
+            },
         });
         let target_visibility = self.target_visibility();
         Some(ScreenshotResult {
             png_base64: encoded,
+            geometry: screenshot_geometry(self.current_window_bounds(), image_pixels),
             warnings: target_visibility.warnings.clone(),
             recommended_next_steps: target_visibility
                 .fallback_hint
@@ -528,5 +535,23 @@ impl Engine {
     #[cfg(not(target_os = "macos"))]
     pub fn focus_window(&self) -> bool {
         false
+    }
+}
+
+fn screenshot_geometry(window: Bbox, image_pixels: Option<PixelSize>) -> ScreenshotGeometry {
+    let scale_x = image_pixels
+        .as_ref()
+        .and_then(|size| (window.w > 0.0).then_some(size.width as f64 / window.w))
+        .filter(|scale| scale.is_finite() && *scale > 0.0);
+    let scale_y = image_pixels
+        .as_ref()
+        .and_then(|size| (window.h > 0.0).then_some(size.height as f64 / window.h))
+        .filter(|scale| scale.is_finite() && *scale > 0.0);
+    ScreenshotGeometry {
+        window_screen_points: window,
+        image_pixels,
+        scale_x,
+        scale_y,
+        coordinate_hint: "The PNG is in image pixels, while click_at/read_at/analyze_region_ax expect global screen points. Convert image pixel (px, py) with screen_x = window.x + px / scale_x and screen_y = window.y + py / scale_y, or prefer OCR/shape hits because they already return screen-point bboxes.".to_string(),
     }
 }

@@ -278,7 +278,7 @@ impl Engine {
         accurate: bool,
         occurrence: usize,
         expected_text: Option<&str>,
-        _reasoning: Option<&str>,
+        reasoning: Option<&str>,
     ) -> dunst_core::Result<OcrClickResult> {
         let search = self.find_ocr_text(query, content_only, accurate, occurrence.max(1))?;
         let hit = search
@@ -287,12 +287,7 @@ impl Engine {
             .or_else(|| search.hits.first())
             .cloned()
             .ok_or_else(|| DunstError::ElementNotFound(format!("OCR text {query:?}")))?;
-        let audit = self.click_at_button(
-            hit.center.0,
-            hit.center.1,
-            0,
-            &format!("click_ocr_text:{}", compact_ocr_label(&hit.text)),
-        )?;
+        let audit = self.click_ocr_text_hit(&hit, "click", reasoning)?;
         let (expected_text_found, verification_hint) = if audit.result == ActionResult::Success {
             match expected_text.map(str::trim).filter(|s| !s.is_empty()) {
                 Some(expected) => {
@@ -400,12 +395,7 @@ impl Engine {
                         .into(),
                 )
             })?;
-        let audit = self.click_at_button(
-            clicked.center.0,
-            clicked.center.1,
-            0,
-            &format!("dismiss_modal:{}", compact_ocr_label(&clicked.text)),
-        )?;
+        let audit = self.click_ocr_text_hit(&clicked, "dismiss_modal", reasoning)?;
         let modal_after = (audit.result == ActionResult::Success)
             .then(|| self.detect_modal().ok())
             .flatten();
@@ -421,7 +411,6 @@ impl Engine {
                     .into(),
             ),
         };
-        let _ = reasoning;
         Ok(ModalDismissResult {
             modal_before,
             clicked,

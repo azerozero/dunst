@@ -64,6 +64,7 @@ impl Engine {
                 Ok(entry)
             }
             Err(err) => {
+                let detail = err.to_string();
                 let _ = self.audit_raw_input(
                     target_id,
                     SemanticAction::Click,
@@ -72,9 +73,9 @@ impl Engine {
                     risk,
                     Err(err),
                 );
-                Err(DunstError::Execution(
-                    "reveal_hover_click failed; cursor/window restore was attempted".into(),
-                ))
+                Err(DunstError::Execution(format!(
+                    "reveal_hover_click failed ({detail}); cursor/window restore was attempted"
+                )))
             }
         }
     }
@@ -187,6 +188,39 @@ impl Engine {
     }
 
     #[cfg(target_os = "macos")]
+    pub(super) fn click_ocr_text_hit(
+        &mut self,
+        hit: &OcrTextHit,
+        action_label: &str,
+        reasoning: Option<&str>,
+    ) -> dunst_core::Result<AuditEntry> {
+        let (x, y) = hit.center;
+        self.ensure_point_in_target_window(x, y, action_label)?;
+        let target_id = format!("ocr@{}:{action_label}", hit.id);
+        let risk = self.ocr_point_risk(hit);
+        let argument = Some(format!("{action_label} {:?} at {x:.1},{y:.1}", hit.text));
+        let reasoning = reasoning.or(Some("OCR-bound raw click"));
+        if let Some(entry) = self.gate_raw_input(
+            &target_id,
+            SemanticAction::Click,
+            argument.clone(),
+            reasoning,
+            risk.clone(),
+        ) {
+            return Ok(entry);
+        }
+        let outcome = self.raw_click_outcome(x, y, 0);
+        self.audit_raw_input(
+            target_id,
+            SemanticAction::Click,
+            argument,
+            reasoning,
+            risk,
+            outcome,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
     pub(super) fn raw_click_outcome(&self, x: f64, y: f64, button: u8) -> dunst_core::Result<()> {
         retry_user_active_guard(|| {
             let (ox, oy) = dunst_vision::capture::window_bounds(self.target.window_id)
@@ -248,6 +282,19 @@ impl Engine {
     pub fn double_click_at(&mut self, _x: f64, _y: f64) -> dunst_core::Result<AuditEntry> {
         Err(DunstError::Execution(
             "double_click_at requires a macOS backend".into(),
+        ))
+    }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn click_ocr_text_hit(
+        &mut self,
+        _hit: &OcrTextHit,
+        _action_label: &str,
+        _reasoning: Option<&str>,
+    ) -> dunst_core::Result<AuditEntry> {
+        Err(DunstError::Execution(
+            "click_near_text requires a macOS backend".into(),
         ))
     }
 

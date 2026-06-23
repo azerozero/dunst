@@ -48,7 +48,7 @@ main() {
     fi
   else
     bin="target/debug/dunst-mcp"
-    if [[ ! -x "$bin" ]]; then
+    if [[ ! -x "$bin" ]] || [[ -n "$(find Cargo.toml Cargo.lock crates -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'build.rs' \) -newer "$bin" -print -quit)" ]]; then
       cargo build -q -p dunst-mcp >&2
     fi
     if [[ ! -x "$bin" ]]; then
