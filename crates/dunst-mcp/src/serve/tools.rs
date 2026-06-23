@@ -354,11 +354,13 @@ fn element_tools() -> Vec<Value> {
         ),
         tool(
             "click_near_text",
-            "OCR the target window, choose a ranked text hit by query, click its bbox centre, and optionally verify expected_text afterward. This is still raw input and approval-gated, but safer than manual click_at because the returned audit includes the OCR hit.",
+            "OCR the target window, choose a ranked text hit by query, click its bbox centre or a bounded offset from that centre, and optionally verify expected_text afterward. This is still raw input and approval-gated, but safer than manual click_at because the returned audit includes the OCR hit and any offset used.",
             schema(
                 json!({
                     "query": {"type":"string", "description":"visible OCR text to click"},
                     "occurrence": {"type":"integer", "description":"1-based ranked hit to click (default 1)"},
+                    "offset_x": {"type":"number", "description":"optional x offset in screen points from the OCR bbox centre, clamped to +/-1000; use for adjacent form fields"},
+                    "offset_y": {"type":"number", "description":"optional y offset in screen points from the OCR bbox centre, clamped to +/-1000; use for adjacent form fields"},
                     "expected_text": {"type":"string", "description":"optional text that should be visible after the click"},
                     "content_only": {"type":"boolean", "description":"filter browser chrome/tab strip and low-confidence text (default true)"},
                     "accurate": {"type":"boolean", "description":"use slower accurate OCR (default true)"},

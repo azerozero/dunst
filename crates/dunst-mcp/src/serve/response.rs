@@ -268,6 +268,8 @@ pub(super) fn ocr_click_value(result: OcrClickResult, include_diff: bool) -> Val
     json!({
         "query": result.query,
         "hit": result.hit,
+        "click_point": result.click_point,
+        "offset": result.offset,
         "audit": audit,
         "expected_text": result.expected_text,
         "expected_text_found": result.expected_text_found,

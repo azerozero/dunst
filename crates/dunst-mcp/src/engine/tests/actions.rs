@@ -510,6 +510,38 @@ fn ocr_raw_input_gate_uses_synthetic_ocr_target_ids() {
         .is_some(),
         "OCR text/action approval should still be consumed once"
     );
+
+    let offset_target = "ocr@ocr_text_4_titre_de_la_realisation:click-offset@0,29";
+    eng.approve(offset_target).unwrap();
+    let refreshed_offset_target = "ocr@ocr_text_17_titre_de_la_realisation:click-offset@0,29";
+    let offset_risk = eng.ocr_point_risk_at(
+        &OcrTextHit {
+            id: "ocr_text_17_titre_de_la_realisation".into(),
+            text: "Titre de la réalisation".into(),
+            bbox: Bbox {
+                x: 20.0,
+                y: 20.0,
+                w: 180.0,
+                h: 24.0,
+            },
+            confidence: 1.0,
+            center: (110.0, 32.0),
+            score: 100.0,
+        },
+        (110.0, 61.0),
+        (0.0, 29.0),
+    );
+    assert!(
+        eng.gate_raw_input(
+            refreshed_offset_target,
+            SemanticAction::Click,
+            Some("click offset from OCR text \"Titre de la réalisation\"".to_string()),
+            Some("OCR-offset raw click"),
+            offset_risk,
+        )
+        .is_none(),
+        "approved OCR-offset target should survive refreshed OCR ids for the same text/action/offset"
+    );
 }
 
 #[test]

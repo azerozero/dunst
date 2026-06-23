@@ -85,8 +85,18 @@ impl Engine {
             && point.1 >= window.y + 80.0
     }
 
+    #[cfg(test)]
     pub(super) fn ocr_point_risk(&self, hit: &OcrTextHit) -> RiskAssessment {
-        let (x, y) = hit.center;
+        self.ocr_point_risk_at(hit, hit.center, (0.0, 0.0))
+    }
+
+    pub(super) fn ocr_point_risk_at(
+        &self,
+        hit: &OcrTextHit,
+        click_point: (f64, f64),
+        offset: (f64, f64),
+    ) -> RiskAssessment {
+        let (x, y) = click_point;
         let mut reasons = vec![
             "raw input is bound to a verified OCR text hit, not a hand-picked screen point"
                 .to_string(),
@@ -95,6 +105,12 @@ impl Engine {
                 hit.text, hit.confidence, hit.bbox
             ),
         ];
+        if offset.0.abs() > f64::EPSILON || offset.1.abs() > f64::EPSILON {
+            reasons.push(format!(
+                "click point is offset {:+.1},{:+.1} from the OCR bbox centre; use this for adjacent form fields only after visual verification",
+                offset.0, offset.1
+            ));
+        }
         let point = (x, y);
         if self
             .cached_window_rect
@@ -287,7 +303,17 @@ impl Engine {
             }
             return Ok(());
         }
-        if target_id.starts_with("ocr@") && target_id.ends_with(":click") {
+        if let Some(rest) = target_id.strip_prefix("ocr@") {
+            let Some((_hit_id, action)) = rest.rsplit_once(':') else {
+                return Err(DunstError::Execution(format!(
+                    "{target_id} is not a valid OCR raw-input target"
+                )));
+            };
+            if !is_ocr_raw_action(action) {
+                return Err(DunstError::Execution(format!(
+                    "{target_id} uses unsupported OCR raw action {action:?}"
+                )));
+            }
             return Ok(());
         }
         if target_id.starts_with("file@") || target_id.starts_with("hover-reveal@") {
@@ -544,6 +570,10 @@ fn ocr_click_approval_scope(target_id: &str) -> Option<String> {
             stable_ocr_hit_slug(hit_id).to_ascii_lowercase()
         )
     })
+}
+
+fn is_ocr_raw_action(action: &str) -> bool {
+    action == "click" || action == "dismiss_modal" || action.starts_with("click-offset@")
 }
 
 fn stable_ocr_hit_slug(hit_id: &str) -> String {

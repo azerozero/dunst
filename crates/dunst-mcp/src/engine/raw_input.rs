@@ -194,11 +194,37 @@ impl Engine {
         action_label: &str,
         reasoning: Option<&str>,
     ) -> dunst_core::Result<AuditEntry> {
-        let (x, y) = hit.center;
+        self.click_ocr_text_hit_at(hit, action_label, hit.center, (0.0, 0.0), reasoning)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn click_ocr_text_hit_at(
+        &mut self,
+        hit: &OcrTextHit,
+        action_label: &str,
+        click_point: (f64, f64),
+        offset: (f64, f64),
+        reasoning: Option<&str>,
+    ) -> dunst_core::Result<AuditEntry> {
+        let (x, y) = click_point;
         self.ensure_point_in_target_window(x, y, action_label)?;
-        let target_id = format!("ocr@{}:{action_label}", hit.id);
-        let risk = self.ocr_point_risk(hit);
-        let argument = Some(format!("{action_label} {:?} at {x:.1},{y:.1}", hit.text));
+        let target_id = if offset.0.abs() > f64::EPSILON || offset.1.abs() > f64::EPSILON {
+            format!(
+                "ocr@{}:{action_label}@{:.0},{:.0}",
+                hit.id, offset.0, offset.1
+            )
+        } else {
+            format!("ocr@{}:{action_label}", hit.id)
+        };
+        let risk = self.ocr_point_risk_at(hit, click_point, offset);
+        let argument = if offset.0.abs() > f64::EPSILON || offset.1.abs() > f64::EPSILON {
+            Some(format!(
+                "{action_label} {:?} at {x:.1},{y:.1} offset {:+.1},{:+.1} from OCR bbox centre",
+                hit.text, offset.0, offset.1
+            ))
+        } else {
+            Some(format!("{action_label} {:?} at {x:.1},{y:.1}", hit.text))
+        };
         let reasoning = reasoning.or(Some("OCR-bound raw click"));
         if let Some(entry) = self.gate_raw_input(
             &target_id,

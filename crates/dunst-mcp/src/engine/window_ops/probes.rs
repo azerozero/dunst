@@ -105,18 +105,36 @@ impl Engine {
                     element_key: None,
                     error: Some(err.to_string()),
                 }],
+                warnings: vec!["region rejected before AX hit-testing".into()],
             };
         }
         let columns = columns.clamp(1, 64);
         let rows = rows.clamp(1, 64);
         let mut by_key: BTreeMap<String, RegionAxElement> = BTreeMap::new();
         let mut samples = Vec::with_capacity(columns * rows);
+        let mut warnings = Vec::new();
+        let started = Instant::now();
+        let max_samples = 48usize;
+        let max_elapsed = Duration::from_millis(1_500);
 
-        for row in 0..rows {
+        'rows: for row in 0..rows {
             let y = region.y + (row as f64 + 0.5) * region.h / rows as f64;
             for col in 0..columns {
+                if samples.len() >= max_samples {
+                    warnings.push(format!(
+                        "AX region analysis stopped after {max_samples} samples to avoid overloading browser accessibility hit-testing"
+                    ));
+                    break 'rows;
+                }
+                if started.elapsed() > max_elapsed {
+                    warnings.push(format!(
+                        "AX region analysis stopped after {} ms to keep the MCP transport responsive",
+                        max_elapsed.as_millis()
+                    ));
+                    break 'rows;
+                }
                 let x = region.x + (col as f64 + 0.5) * region.w / columns as f64;
-                match dunst_platform::element_at_point(self.target.pid, x, y) {
+                match guarded_element_at_point(self.target.pid, x, y) {
                     Ok(node) => {
                         let key = region_ax_key(&node);
                         by_key
@@ -139,6 +157,19 @@ impl Engine {
                 }
             }
         }
+        if samples.len() < columns * rows && warnings.is_empty() {
+            warnings.push(format!(
+                "AX region analysis returned {} of {} requested samples",
+                samples.len(),
+                columns * rows
+            ));
+        }
+        if samples.iter().all(|sample| sample.element_key.is_none()) && warnings.is_empty() {
+            warnings.push(
+                "AX hit-testing returned no elements; browser page accessibility may be sparse or temporarily unavailable"
+                    .into(),
+            );
+        }
 
         RegionAxAnalysis {
             region,
@@ -151,6 +182,7 @@ impl Engine {
                 .count(),
             unique_elements: by_key.into_values().collect(),
             samples,
+            warnings,
         }
     }
 
@@ -175,6 +207,31 @@ impl Engine {
             hits: 0,
             unique_elements: Vec::new(),
             samples: Vec::new(),
+            warnings: vec!["analyze_region_ax requires a macOS backend".into()],
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn guarded_element_at_point(pid: i32, x: f64, y: f64) -> dunst_core::Result<dunst_core::RawAxNode> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dunst_platform::element_at_point(pid, x, y)
+    })) {
+        Ok(result) => result,
+        Err(payload) => Err(DunstError::Perception(format!(
+            "AX hit-test panicked at ({x:.1},{y:.1}): {}",
+            panic_payload_message(payload.as_ref())
+        ))),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(msg) = payload.downcast_ref::<&'static str>() {
+        (*msg).to_string()
+    } else if let Some(msg) = payload.downcast_ref::<String>() {
+        msg.clone()
+    } else {
+        "unknown panic payload".into()
     }
 }

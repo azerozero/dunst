@@ -164,10 +164,22 @@ pub struct OcrTextSearchResult {
     pub recommended_next_steps: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct OcrClickOptions<'a> {
+    pub content_only: bool,
+    pub accurate: bool,
+    pub occurrence: usize,
+    pub expected_text: Option<&'a str>,
+    pub reasoning: Option<&'a str>,
+    pub offset: (f64, f64),
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct OcrClickResult {
     pub query: String,
     pub hit: OcrTextHit,
+    pub click_point: (f64, f64),
+    pub offset: (f64, f64),
     pub audit: AuditEntry,
     pub expected_text: Option<String>,
     pub expected_text_found: Option<bool>,
@@ -511,6 +523,7 @@ pub struct RegionAxAnalysis {
     pub hits: usize,
     pub unique_elements: Vec<RegionAxElement>,
     pub samples: Vec<RegionAxSample>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

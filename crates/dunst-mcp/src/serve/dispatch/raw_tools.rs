@@ -1,4 +1,5 @@
 use super::*;
+use crate::engine::OcrClickOptions;
 
 pub(super) fn dispatch(
     engine: &mut Engine,
@@ -35,11 +36,18 @@ pub(super) fn dispatch(
             Some(query) => engine
                 .click_near_text(
                     &query,
-                    arg_bool(args, "content_only").unwrap_or(true),
-                    arg_bool(args, "accurate").unwrap_or(true),
-                    args.get("occurrence").and_then(Value::as_u64).unwrap_or(1) as usize,
-                    arg(args, "expected_text").as_deref(),
-                    arg(args, "reasoning").as_deref(),
+                    OcrClickOptions {
+                        content_only: arg_bool(args, "content_only").unwrap_or(true),
+                        accurate: arg_bool(args, "accurate").unwrap_or(true),
+                        occurrence: args.get("occurrence").and_then(Value::as_u64).unwrap_or(1)
+                            as usize,
+                        expected_text: arg(args, "expected_text").as_deref(),
+                        reasoning: arg(args, "reasoning").as_deref(),
+                        offset: (
+                            args.get("offset_x").and_then(Value::as_f64).unwrap_or(0.0),
+                            args.get("offset_y").and_then(Value::as_f64).unwrap_or(0.0),
+                        ),
+                    },
                 )
                 .map(|result| {
                     ocr_click_value(result, arg_bool(args, "include_diff").unwrap_or(false))

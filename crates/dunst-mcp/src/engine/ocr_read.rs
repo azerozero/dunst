@@ -274,24 +274,38 @@ impl Engine {
     pub fn click_near_text(
         &mut self,
         query: &str,
-        content_only: bool,
-        accurate: bool,
-        occurrence: usize,
-        expected_text: Option<&str>,
-        reasoning: Option<&str>,
+        options: OcrClickOptions<'_>,
     ) -> dunst_core::Result<OcrClickResult> {
-        let search = self.find_ocr_text(query, content_only, accurate, occurrence.max(1))?;
+        let search = self.find_ocr_text(
+            query,
+            options.content_only,
+            options.accurate,
+            options.occurrence.max(1),
+        )?;
         let hit = search
             .hits
-            .get(occurrence.saturating_sub(1))
+            .get(options.occurrence.saturating_sub(1))
             .or_else(|| search.hits.first())
             .cloned()
             .ok_or_else(|| DunstError::ElementNotFound(format!("OCR text {query:?}")))?;
-        let audit = self.click_ocr_text_hit(&hit, "click", reasoning)?;
+        let offset_x = options.offset.0.clamp(-1_000.0, 1_000.0);
+        let offset_y = options.offset.1.clamp(-1_000.0, 1_000.0);
+        let click_point = (hit.center.0 + offset_x, hit.center.1 + offset_y);
+        let audit = if offset_x.abs() > f64::EPSILON || offset_y.abs() > f64::EPSILON {
+            self.click_ocr_text_hit_at(
+                &hit,
+                "click-offset",
+                click_point,
+                (offset_x, offset_y),
+                options.reasoning,
+            )?
+        } else {
+            self.click_ocr_text_hit(&hit, "click", options.reasoning)?
+        };
         let (expected_text_found, verification_hint) = if audit.result == ActionResult::Success {
-            match expected_text.map(str::trim).filter(|s| !s.is_empty()) {
+            match options.expected_text.map(str::trim).filter(|s| !s.is_empty()) {
                 Some(expected) => {
-                    let after = self.read_text_detailed(None, true, content_only)?;
+                    let after = self.read_text_detailed(None, true, options.content_only)?;
                     let found = after
                         .hits
                         .iter()
@@ -317,8 +331,10 @@ impl Engine {
         Ok(OcrClickResult {
             query: query.to_string(),
             hit,
+            click_point,
+            offset: (offset_x, offset_y),
             audit,
-            expected_text: expected_text.map(str::to_owned),
+            expected_text: options.expected_text.map(str::to_owned),
             expected_text_found,
             verification_hint,
         })
