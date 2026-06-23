@@ -60,6 +60,18 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   — `engine::tests::audited_attempts_include_session_identity_when_known`,
   `serve::tests::tool_call_results_include_session_identity_meta`,
   `serve::tests::initialize_result_includes_build_and_session_identity`.
+- **Mutating/resource MCP tools are coordinated per session/window.** When the
+  MCP server knows a `SessionIdentity`, mutating tools and read tools that borrow
+  global UI resources acquire the global mutation lock and a TTL lease for the
+  target `window_id` before dispatching. A different active session on the same
+  window is refused; a stale `fencing_token` is refused; a supplied
+  `expected_epoch` must match the current UI epoch before mutation. Pure
+  read-only tools remain outside this coordination path.
+  — `serve::tests::mutating_tool_adds_window_lease_and_fencing_meta`,
+  `serve::tests::active_window_lease_blocks_other_session`,
+  `serve::tests::stale_fencing_token_is_rejected_for_same_session`,
+  `serve::tests::mutating_tool_rejects_stale_expected_epoch`,
+  `serve::tests::tools_list_exposes_read_text_with_object_schema`.
 
 ## Scene-graph projection (WP-J)
 

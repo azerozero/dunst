@@ -17,27 +17,27 @@ pub(super) fn add_timing_meta(
     tool: &str,
     started: Instant,
     session: Option<&SessionIdentity>,
+    coordination: Option<&Value>,
 ) -> Value {
     let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
     if let Value::Object(obj) = &mut result {
         let session = session
             .and_then(|identity| serde_json::to_value(identity).ok())
             .unwrap_or(Value::Null);
-        obj.insert(
-            "_meta".into(),
-            json!({
-                "dunst": {
-                    "tool": tool,
-                    "timing_ms": elapsed_ms,
-                    "version": SERVER_VERSION,
-                    "version_label": server_version_label(),
-                    "git_sha": build_git_sha(),
-                    "git_dirty": build_git_dirty(),
-                    "build_time_unix": build_time_unix(),
-                    "session": session
-                }
-            }),
-        );
+        let mut dunst = json!({
+            "tool": tool,
+            "timing_ms": elapsed_ms,
+            "version": SERVER_VERSION,
+            "version_label": server_version_label(),
+            "git_sha": build_git_sha(),
+            "git_dirty": build_git_dirty(),
+            "build_time_unix": build_time_unix(),
+            "session": session
+        });
+        if let (Some(coordination), Value::Object(dunst_obj)) = (coordination, &mut dunst) {
+            dunst_obj.insert("coordination".into(), coordination.clone());
+        }
+        obj.insert("_meta".into(), json!({ "dunst": dunst }));
     }
     result
 }

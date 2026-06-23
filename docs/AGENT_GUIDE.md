@@ -119,11 +119,20 @@ does not authenticate a client and does not replace the approval gate.
 For multi-session work, keep the current design pattern:
 
 - Multiple readers are acceptable.
-- UI mutation is still single-writer in practice.
-- Future leases and resource locks should use `SessionIdentity` as the owner and
-  fencing label, then fail explicitly when another session owns the target.
-- Do not run two mutating agents against the same browser window without a
-  coordinator or operator supervision.
+- UI mutation is single-writer. Mutating MCP tools take a global mutation lock
+  before executing pointer, keyboard, focus, clipboard, window, or launch actions.
+- The active target window also gets a TTL lease owned by `SessionIdentity`.
+  Another session mutating the same `window_id` fails with a clear
+  `window_lease_blocked` coordination result until the lease expires.
+- The lease returns a `fencing_token` in `_meta.dunst.coordination.mutation`.
+  Pass it on later mutating calls when you want stale lease ownership to be
+  refused explicitly.
+- Pass `expected_epoch` from `get_hit_targets.ui_epoch.fingerprint` on mutating
+  calls when you are acting from a cached UI plan. Dunst refuses the mutation if
+  the current window/tab/visibility/actionable graph fingerprint changed.
+- Do not bypass Dunst with direct `osascript`/external GUI automation while a
+  Dunst lease is active; the MCP coordinator cannot serialize tools it never
+  sees.
 
 ## Live Debug Checklist
 
@@ -132,12 +141,14 @@ When a live MCP flow misbehaves:
 1. Confirm the attached target with `target_visibility` and `window_view`.
 2. Check `_meta.dunst.session` or stderr logs to identify which MCP session is
    issuing calls.
-3. Compare AX with OCR using `get_hit_targets` and `read_text_detailed`.
-4. If AX is sparse, use OCR-derived targets and label-relative offsets.
-5. If typing succeeds but OCR is unchanged, assume the field was not focused.
-6. If the idle guard blocks repeated keys, pause and retry the same approved
+3. Check `_meta.dunst.coordination` for `window_lease_blocked`,
+   `fencing_token_mismatch`, or stale `expected_epoch` before retrying.
+4. Compare AX with OCR using `get_hit_targets` and `read_text_detailed`.
+5. If AX is sparse, use OCR-derived targets and label-relative offsets.
+6. If typing succeeds but OCR is unchanged, assume the field was not focused.
+7. If the idle guard blocks repeated keys, pause and retry the same approved
    action; do not broaden to unguarded automation without explicit permission.
-7. Before saving, verify the final visible text by OCR.
+8. Before saving, verify the final visible text by OCR.
 
 ## Validation Before Handoff
 

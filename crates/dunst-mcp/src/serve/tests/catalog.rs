@@ -22,6 +22,24 @@ fn tools_list_exposes_read_text_with_object_schema() {
     // `region` is optional → it must not be in `required`.
     assert_eq!(read_text["inputSchema"]["required"], json!([]));
     assert!(
+        read_text["inputSchema"]["properties"]
+            .get("expected_epoch")
+            .is_none(),
+        "read-only tools must not advertise mutation preconditions"
+    );
+    let click_element = tools
+        .iter()
+        .find(|t| t["name"] == "click_element")
+        .expect("click_element tool present");
+    assert_eq!(
+        click_element["inputSchema"]["properties"]["expected_epoch"]["type"],
+        "string"
+    );
+    assert_eq!(
+        click_element["inputSchema"]["properties"]["fencing_token"]["type"],
+        "string"
+    );
+    assert!(
         tools.iter().any(|t| t["name"] == "list_launchable_apps"),
         "installed-app catalogue tool present"
     );

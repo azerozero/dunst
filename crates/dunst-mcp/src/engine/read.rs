@@ -202,6 +202,21 @@ impl Engine {
         }
     }
 
+    pub fn current_ui_epoch_fingerprint(&self) -> String {
+        let browser_tab = self
+            .list_browser_tabs(None, true)
+            .into_iter()
+            .find(|tab| tab.selected);
+        let target_visibility = self.target_visibility();
+        self.ui_epoch(
+            self.current_window_bounds(),
+            browser_tab,
+            target_visibility,
+            self.affordance_graph(),
+        )
+        .fingerprint
+    }
+
     fn append_ocr_hit_targets(
         &self,
         targets: &mut Vec<HitTarget>,

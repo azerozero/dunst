@@ -133,6 +133,155 @@ fn initialize_client_info_parser_keeps_client_name_and_version() {
 }
 
 #[test]
+fn mutating_tool_rejects_stale_expected_epoch() {
+    set_test_coordination_dir();
+    let mut e = engine_with_window(unique_window_id());
+    e.set_session_identity(test_session("epoch-a"));
+    let id = text_json(&call(
+        &mut e,
+        "find_element",
+        json!({ "query": "Nouvelle note", "fresh": false }),
+    ))[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = call(
+        &mut e,
+        "click_element",
+        json!({ "id": id, "expected_epoch": "stale-epoch" }),
+    );
+
+    assert!(is_error(&resp), "stale epoch must refuse mutation: {resp}");
+    assert!(text(&resp).contains("stale UI epoch"));
+    assert_eq!(
+        resp["result"]["_meta"]["dunst"]["coordination"]["epoch"]["status"],
+        "stale"
+    );
+}
+
+#[test]
+fn mutating_tool_adds_window_lease_and_fencing_meta() {
+    set_test_coordination_dir();
+    let mut e = engine_with_window(unique_window_id());
+    e.set_session_identity(test_session("lease-a"));
+    let id = text_json(&call(
+        &mut e,
+        "find_element",
+        json!({ "query": "Nouvelle note", "fresh": false }),
+    ))[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = call(&mut e, "click_element", json!({ "id": id }));
+
+    assert!(
+        !is_error(&resp),
+        "first mutation should acquire lease: {resp}"
+    );
+    let mutation = &resp["result"]["_meta"]["dunst"]["coordination"]["mutation"];
+    assert_eq!(mutation["status"], "lease_acquired");
+    assert_eq!(mutation["owner"]["session_id"], "lease-a");
+    assert!(mutation["fencing_token"]
+        .as_str()
+        .is_some_and(|token| !token.is_empty()));
+}
+
+#[test]
+fn active_window_lease_blocks_other_session() {
+    set_test_coordination_dir();
+    let window_id = unique_window_id();
+    let mut first = engine_with_window(window_id);
+    first.set_session_identity(test_session("lease-owner"));
+    let id = text_json(&call(
+        &mut first,
+        "find_element",
+        json!({ "query": "Nouvelle note", "fresh": false }),
+    ))[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let acquired = call(&mut first, "click_element", json!({ "id": id }));
+    assert!(!is_error(&acquired), "owner acquires lease: {acquired}");
+
+    let mut second = engine_with_window(window_id);
+    second.set_session_identity(test_session("lease-contender"));
+    let id = text_json(&call(
+        &mut second,
+        "find_element",
+        json!({ "query": "Nouvelle note", "fresh": false }),
+    ))[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let blocked = call(&mut second, "click_element", json!({ "id": id }));
+
+    assert!(
+        is_error(&blocked),
+        "other session must be blocked: {blocked}"
+    );
+    let mutation = &blocked["result"]["_meta"]["dunst"]["coordination"]["mutation"];
+    assert_eq!(mutation["status"], "window_lease_blocked");
+    assert_eq!(mutation["blocked_by"]["session_id"], "lease-owner");
+}
+
+#[test]
+fn stale_fencing_token_is_rejected_for_same_session() {
+    set_test_coordination_dir();
+    let mut e = engine_with_window(unique_window_id());
+    e.set_session_identity(test_session("fence-a"));
+    let id = text_json(&call(
+        &mut e,
+        "find_element",
+        json!({ "query": "Nouvelle note", "fresh": false }),
+    ))[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let acquired = call(&mut e, "click_element", json!({ "id": id.clone() }));
+    assert!(
+        !is_error(&acquired),
+        "first call acquires lease: {acquired}"
+    );
+
+    let stale = call(
+        &mut e,
+        "click_element",
+        json!({ "id": id, "fencing_token": "old-token" }),
+    );
+
+    assert!(is_error(&stale), "stale fencing token must fail: {stale}");
+    assert_eq!(
+        stale["result"]["_meta"]["dunst"]["coordination"]["mutation"]["status"],
+        "fencing_token_mismatch"
+    );
+}
+
+fn test_session(session_id: &str) -> SessionIdentity {
+    SessionIdentity {
+        session_id: session_id.into(),
+        client_name: Some("codex".into()),
+        client_version: Some("5.5".into()),
+        agent_id: Some(session_id.into()),
+        parent_pid: Some(std::process::id()),
+        parent_process: Some("cargo-test".into()),
+    }
+}
+
+fn set_test_coordination_dir() {
+    std::env::set_var(
+        "DUNST_MCP_COORDINATION_DIR",
+        format!("/tmp/dunst-mcp-tests-{}", std::process::id()),
+    );
+}
+
+fn unique_window_id() -> u32 {
+    static NEXT: AtomicUsize = AtomicUsize::new(700_000);
+    NEXT.fetch_add(1, Ordering::SeqCst) as u32
+}
+
+#[test]
 fn page_state_returns_compact_orientation_payload() {
     let mut e = engine();
     let resp = call(&mut e, "page_state", json!({ "fresh": false, "limit": 4 }));

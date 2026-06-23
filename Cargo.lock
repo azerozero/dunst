@@ -298,6 +298,7 @@ dependencies = [
  "dunst-graph",
  "dunst-platform",
  "dunst-vision",
+ "libc",
  "serde",
  "serde_json",
 ]

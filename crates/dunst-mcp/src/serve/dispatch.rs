@@ -1,3 +1,4 @@
+use super::coordination::CoordinationGuard;
 use super::*;
 use crate::serve::registry::{tool_route, ToolRoute};
 
@@ -23,13 +24,54 @@ pub(super) fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> V
             name,
             started,
             session.as_ref(),
+            None,
             Err(format!("unknown tool: {name}")),
         );
     };
 
     // screenshot returns an IMAGE content block, not text.
     if route == ToolRoute::Screenshot {
-        return screenshot_response(engine, id, name, started, session.as_ref());
+        return screenshot_response(engine, id, name, started, session.as_ref(), None);
+    }
+
+    let mut coordination_meta = None;
+    let mut _coordination_guard = None;
+    if tool_requires_mutation_coordination(route, name, &args) {
+        if let Err((message, epoch_meta)) = validate_expected_epoch(engine, name, &args) {
+            merge_coordination_meta(&mut coordination_meta, "epoch", epoch_meta);
+            return text_response(
+                id,
+                name,
+                started,
+                session.as_ref(),
+                coordination_meta.as_ref(),
+                Err(message),
+            );
+        }
+        if let Some(session) = session.as_ref() {
+            let (_, window_id) = engine.target();
+            match CoordinationGuard::acquire(session, window_id, name, &args) {
+                Ok(guard) => {
+                    merge_coordination_meta(
+                        &mut coordination_meta,
+                        "mutation",
+                        guard.summary_value(),
+                    );
+                    _coordination_guard = Some(guard);
+                }
+                Err(err) => {
+                    merge_coordination_meta(&mut coordination_meta, "mutation", err.summary);
+                    return text_response(
+                        id,
+                        name,
+                        started,
+                        Some(session),
+                        coordination_meta.as_ref(),
+                        Err(err.message),
+                    );
+                }
+            }
+        }
     }
 
     let outcome = match route {
@@ -41,7 +83,14 @@ pub(super) fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> V
     }
     .unwrap_or_else(|| Err(format!("registered tool has no handler: {name}")));
 
-    text_response(id, name, started, session.as_ref(), outcome)
+    text_response(
+        id,
+        name,
+        started,
+        session.as_ref(),
+        coordination_meta.as_ref(),
+        outcome,
+    )
 }
 
 fn screenshot_response(
@@ -50,6 +99,7 @@ fn screenshot_response(
     name: &str,
     started: Instant,
     session: Option<&SessionIdentity>,
+    coordination: Option<&Value>,
 ) -> Value {
     match engine.screenshot() {
         Some(result) => {
@@ -67,6 +117,7 @@ fn screenshot_response(
                     name,
                     started,
                     session,
+                    coordination,
                 ),
             )
         }
@@ -77,6 +128,7 @@ fn screenshot_response(
                 name,
                 started,
                 session,
+                coordination,
             ),
         ),
     }
@@ -87,6 +139,7 @@ fn text_response(
     name: &str,
     started: Instant,
     session: Option<&SessionIdentity>,
+    coordination: Option<&Value>,
     outcome: Result<Value, String>,
 ) -> Value {
     match outcome {
@@ -103,6 +156,7 @@ fn text_response(
                     name,
                     started,
                     session,
+                    coordination,
                 ),
             )
         }
@@ -113,7 +167,79 @@ fn text_response(
                 name,
                 started,
                 session,
+                coordination,
             ),
         ),
+    }
+}
+
+fn tool_requires_mutation_coordination(route: ToolRoute, name: &str, args: &Value) -> bool {
+    match route {
+        ToolRoute::Read => match name {
+            "read_at" | "read_series" => arg_bool(args, "borrow_cursor").unwrap_or(false),
+            "scan_chart" => true,
+            _ => false,
+        },
+        ToolRoute::Element => !matches!(name, "approve" | "verify_state"),
+        ToolRoute::Raw => !matches!(name, "hover_at"),
+        ToolRoute::WindowApp => matches!(
+            name,
+            "move_window_to_display"
+                | "move_app_to_display"
+                | "arrange_windows"
+                | "expose_target_window"
+                | "launch_app"
+                | "open_url_and_attach_tab"
+                | "close_app"
+        ),
+        ToolRoute::Screenshot => false,
+    }
+}
+
+fn validate_expected_epoch(
+    engine: &mut Engine,
+    tool_name: &str,
+    args: &Value,
+) -> Result<(), (String, Value)> {
+    let Some(expected) = arg(args, "expected_epoch") else {
+        return Ok(());
+    };
+    if expected.trim().is_empty() {
+        return Ok(());
+    }
+    let refresh = engine.refresh_if_stale().map_err(|err| {
+        let meta = json!({
+            "status": "epoch_check_failed",
+            "tool": tool_name,
+            "expected_epoch": expected,
+            "reason": err.to_string()
+        });
+        (format!("expected_epoch check failed: {err}"), meta)
+    })?;
+    let current = engine.current_ui_epoch_fingerprint();
+    let matches = current == expected;
+    let meta = json!({
+        "status": if matches { "matched" } else { "stale" },
+        "tool": tool_name,
+        "expected_epoch": expected,
+        "current_epoch": current,
+        "refreshed": refresh
+    });
+    if matches {
+        Ok(())
+    } else {
+        Err((
+            "stale UI epoch: expected_epoch no longer matches the current target state; call get_hit_targets again before mutating".into(),
+            meta,
+        ))
+    }
+}
+
+fn merge_coordination_meta(meta: &mut Option<Value>, key: &str, value: Value) {
+    if meta.is_none() {
+        *meta = Some(json!({}));
+    }
+    if let Some(Value::Object(obj)) = meta {
+        obj.insert(key.into(), value);
     }
 }

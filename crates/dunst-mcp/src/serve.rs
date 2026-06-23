@@ -15,6 +15,7 @@ use std::{
 
 use serde_json::{json, Value};
 
+mod coordination;
 mod dispatch;
 mod registry;
 mod response;
@@ -174,6 +175,7 @@ fn panic_tool_response(
             tool_name,
             started,
             session,
+            None,
         ),
     )
 }
@@ -546,11 +548,73 @@ fn tool(name: &str, description: &str, mut input_schema: Value) -> Value {
     if input_schema.get("type").is_none() {
         input_schema = json!({ "type": "object", "properties": {} });
     }
+    if tool_accepts_mutation_preconditions(name) {
+        add_mutation_preconditions(&mut input_schema);
+    }
     json!({ "name": name, "description": description, "inputSchema": input_schema })
 }
 
 fn schema(properties: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": properties, "required": required })
+}
+
+fn add_mutation_preconditions(input_schema: &mut Value) {
+    let Some(properties) = input_schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    properties.entry("expected_epoch").or_insert_with(|| {
+        json!({
+            "type": "string",
+            "description": "optional ui_epoch.fingerprint from get_hit_targets; mutating tools refuse if the current UI epoch differs"
+        })
+    });
+    properties.entry("fencing_token").or_insert_with(|| {
+        json!({
+            "type": "string",
+            "description": "optional active window-lease token from _meta.dunst.coordination.mutation.fencing_token; stale tokens are refused"
+        })
+    });
+}
+
+fn tool_accepts_mutation_preconditions(name: &str) -> bool {
+    matches!(
+        name,
+        "click_element"
+            | "raise_element"
+            | "pick_option"
+            | "type_into"
+            | "hover_probe"
+            | "drag_element"
+            | "select_file"
+            | "click_at"
+            | "click_near_text"
+            | "dismiss_modal"
+            | "reveal_hover_click"
+            | "read_at"
+            | "read_series"
+            | "scan_chart"
+            | "focus_window"
+            | "right_click_at"
+            | "double_click_at"
+            | "open_menu"
+            | "press_key"
+            | "type_keys"
+            | "paste_text"
+            | "scroll"
+            | "scroll_at"
+            | "zoom"
+            | "hotkey"
+            | "move_window_to_display"
+            | "move_app_to_display"
+            | "arrange_windows"
+            | "expose_target_window"
+            | "launch_app"
+            | "open_url_and_attach_tab"
+            | "close_app"
+    )
 }
 
 fn result_obj(id: Value, result: Value) -> Value {

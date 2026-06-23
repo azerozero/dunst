@@ -26,6 +26,7 @@ clap = { version = "4.6.1", features = ["derive"] }
 dunst-core = { workspace = true }
 dunst-graph = { workspace = true }
 dunst-platform = { workspace = true }
+libc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
