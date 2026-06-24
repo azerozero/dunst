@@ -59,6 +59,7 @@ pub(super) const TOOL_REGISTRY: &[RegisteredTool] = &[
     tool("reveal_hover_click", ToolRoute::Raw),
     tool("hover_at", ToolRoute::Raw),
     tool("focus_window", ToolRoute::Raw),
+    tool("unstick_cursor", ToolRoute::Raw),
     tool("right_click_at", ToolRoute::Raw),
     tool("double_click_at", ToolRoute::Raw),
     tool("open_menu", ToolRoute::Raw),

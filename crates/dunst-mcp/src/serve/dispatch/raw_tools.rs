@@ -86,6 +86,7 @@ pub(super) fn dispatch(
             None => Err("hover_at requires numeric 'x' and 'y'".into()),
         },
         "focus_window" => Ok(json!({ "focused": engine.focus_window() })),
+        "unstick_cursor" => Ok(json!({ "unstuck": engine.unstick_cursor() })),
         "right_click_at" => match point(args) {
             Some((x, y)) => engine
                 .right_click_at(x, y)

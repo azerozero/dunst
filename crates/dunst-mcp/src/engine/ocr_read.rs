@@ -601,6 +601,13 @@ impl Engine {
     pub fn focus_window(&self) -> bool {
         dunst_platform::focus_without_raise(self.target.window_id)
     }
+
+    /// Unstick the OS cursor via a menu-bar focus cycle (macOS stuck-cursor
+    /// workaround). Returns true if the cycle ran.
+    #[cfg(target_os = "macos")]
+    pub fn unstick_cursor(&self) -> bool {
+        dunst_platform::unstick_cursor().is_ok()
+    }
 }
 
 fn ocr_text_hit(idx: usize, hit: &TextHit, needle: &str) -> Option<OcrTextHit> {

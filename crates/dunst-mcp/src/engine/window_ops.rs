@@ -536,6 +536,12 @@ impl Engine {
     pub fn focus_window(&self) -> bool {
         false
     }
+
+    /// Non-macOS stub.
+    #[cfg(not(target_os = "macos"))]
+    pub fn unstick_cursor(&self) -> bool {
+        false
+    }
 }
 
 fn screenshot_geometry(window: Bbox, image_pixels: Option<PixelSize>) -> ScreenshotGeometry {

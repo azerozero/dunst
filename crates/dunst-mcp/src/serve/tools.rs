@@ -443,6 +443,11 @@ fn pointer_and_chart_tools() -> Vec<Value> {
             "Make the target window AppKit-active WITHOUT raising it or switching Spaces (SkyLight focus-without-raise) so a backgrounded web canvas (e.g. a chart) paints, without foregrounding. Returns true if the SkyLight SPIs applied.",
             json!({}),
         ),
+        tool(
+            "unstick_cursor",
+            "Recover a stuck OS cursor (e.g. a lingering I-beam) left by driving a backgrounded window with synthetic input on macOS — a known macOS focus bug, not fixable in-shape. Briefly opens and closes the Apple menu: a menu-bar focus cycle that makes the window server re-evaluate the cursor; no menu item is ever selected (open + close only). The cursor flashes to the top-left and back. Call after a batch of clicks/scrolls or whenever the cursor looks frozen. Not approval-gated. No-op off macOS.",
+            json!({}),
+        ),
     ]
 }
 

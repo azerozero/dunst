@@ -181,7 +181,7 @@ fn tool_requires_mutation_coordination(route: ToolRoute, name: &str, args: &Valu
             _ => false,
         },
         ToolRoute::Element => !matches!(name, "approve" | "verify_state"),
-        ToolRoute::Raw => !matches!(name, "hover_at"),
+        ToolRoute::Raw => !matches!(name, "hover_at" | "unstick_cursor"),
         ToolRoute::WindowApp => matches!(
             name,
             "move_window_to_display"

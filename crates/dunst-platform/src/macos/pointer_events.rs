@@ -293,6 +293,112 @@ pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
     cursor_restore_impl(x, y).map_err(ActionFailure::into)
 }
 
+pub fn unstick_cursor() -> Result<()> {
+    unstick_cursor_impl().map_err(ActionFailure::into)
+}
+
+/// Double-click the Apple menu (top-left of the menu bar) to open and immediately
+/// re-close it. This drives a menu-bar focus/context cycle that makes the window
+/// server re-evaluate the on-screen cursor shape — the reliable workaround for
+/// the macOS bug where driving a backgrounded window with synthetic input leaves
+/// the cursor stuck (e.g. a lingering I-beam) until a focus change. Only the
+/// Apple *title* is clicked (open, then close), so no menu item is ever
+/// selected and it cannot trigger Restart/Shut Down/etc. The cursor is moved to
+/// the menu bar and restored to where it started.
+pub(super) fn unstick_cursor_impl() -> std::result::Result<(), ActionFailure> {
+    let source = event_source("create unstick CGEventSource")?;
+    let saved = current_cursor_position(&source)?;
+    // Apple menu on a DIFFERENT display than the (frozen) cursor, so the trip
+    // there crosses a screen boundary.
+    let apple = apple_menu_on_other_display(saved);
+    // Travel to that menu bar with a CONTINUOUS path of MouseMoved events (NOT a
+    // warp). The real, boundary-crossing movement is what makes the window server
+    // re-evaluate the cursor — replicating the manual fix (move to the other
+    // screen, double-click the Apple menu, move back). A warp jumps with no
+    // movement event and never triggers the re-evaluation.
+    move_cursor_path(&source, saved, apple, 30);
+    let click = || -> std::result::Result<(), ActionFailure> {
+        let down = CGEvent::new_mouse_event(
+            source.clone(),
+            CGEventType::LeftMouseDown,
+            apple,
+            CGMouseButton::Left,
+        )
+        .map_err(|err| ActionFailure::Execution(format!("unstick mouse down: {err:?}")))?;
+        down.post(CGEventTapLocation::HID);
+        thread::sleep(Duration::from_millis(25));
+        let up = CGEvent::new_mouse_event(
+            source.clone(),
+            CGEventType::LeftMouseUp,
+            apple,
+            CGMouseButton::Left,
+        )
+        .map_err(|err| ActionFailure::Execution(format!("unstick mouse up: {err:?}")))?;
+        up.post(CGEventTapLocation::HID);
+        Ok(())
+    };
+    let result = (|| {
+        click()?; // open the Apple menu on the other screen
+        thread::sleep(Duration::from_millis(90));
+        click()?; // click the Apple title again -> closes it, no item selected
+        Ok(())
+    })();
+    thread::sleep(Duration::from_millis(60));
+    // Travel back to the start with real movement, then pin the exact position.
+    move_cursor_path(&source, apple, saved, 30);
+    let _ = restore_cursor_position(saved);
+    result
+}
+
+/// Post a continuous path of MouseMoved events from `from` to `to` over `steps`
+/// interpolated points, so the cursor physically travels (and crosses any
+/// display boundary in between) rather than teleporting like a warp.
+fn move_cursor_path(source: &CGEventSource, from: CGPoint, to: CGPoint, steps: u32) {
+    let steps = steps.max(1);
+    for i in 1..=steps {
+        let t = f64::from(i) / f64::from(steps);
+        let p = CGPoint::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+        if let Ok(moved) = CGEvent::new_mouse_event(
+            source.clone(),
+            CGEventType::MouseMoved,
+            p,
+            CGMouseButton::Left,
+        ) {
+            moved.post(CGEventTapLocation::HID);
+        }
+        thread::sleep(Duration::from_millis(4));
+    }
+}
+
+/// Apple-menu icon point on an active display DIFFERENT from the one that
+/// contains `point` (so travelling there crosses a screen boundary). Falls back
+/// to the main display's Apple menu when there is only one display.
+fn apple_menu_on_other_display(point: CGPoint) -> CGPoint {
+    let contains = |b: &CGRect, p: CGPoint| {
+        p.x >= b.origin.x
+            && p.x < b.origin.x + b.size.width
+            && p.y >= b.origin.y
+            && p.y < b.origin.y + b.size.height
+    };
+    if let Ok(ids) = CGDisplay::active_displays() {
+        let cursor_origin = ids
+            .iter()
+            .map(|id| CGDisplay::new(*id).bounds())
+            .find(|b| contains(b, point))
+            .map(|b| b.origin);
+        if let Some(co) = cursor_origin {
+            for id in &ids {
+                let b = CGDisplay::new(*id).bounds();
+                if (b.origin.x - co.x).abs() > 1.0 || (b.origin.y - co.y).abs() > 1.0 {
+                    return CGPoint::new(b.origin.x + 14.0, b.origin.y + 11.0);
+                }
+            }
+        }
+    }
+    let m = CGDisplay::main().bounds().origin;
+    CGPoint::new(m.x + 14.0, m.y + 11.0)
+}
+
 pub(super) fn cursor_restore_impl(x: f64, y: f64) -> std::result::Result<(), ActionFailure> {
     let point = CGPoint::new(x, y);
     let _ = release_mouse_buttons(point);
@@ -302,6 +408,10 @@ pub(super) fn cursor_restore_impl(x: f64, y: f64) -> std::result::Result<(), Act
     // Always re-couple the hardware mouse, even if the warp failed, so we never
     // leave the user's mouse decoupled.
     let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(true);
+    // A bare warp does not refresh the cursor IMAGE; nudge the window under the
+    // restored point so a stale shape (e.g. a lingering I-beam) reverts without
+    // waiting for the user to move the mouse.
+    settle_cursor_shape(point);
     warped
 }
 
