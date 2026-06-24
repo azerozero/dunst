@@ -1,7 +1,7 @@
 # Dunst — POC
 
 [![CI](https://github.com/azerozero/dunst/actions/workflows/ci.yml/badge.svg)](https://github.com/azerozero/dunst/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
 
 > MCP-first macOS UI automation: choose the fastest trustworthy read path,
 > then execute only verified, risk-gated actions.
@@ -326,5 +326,5 @@ verify-loop and audit trail — not pixel OCR.
 
 ## License
 
-Licensed under either MIT or Apache-2.0, at your option. See `LICENSE-MIT`,
-`LICENSE-APACHE`, and `LICENSE`.
+Licensed under the **Apache License, Version 2.0**. See [`LICENSE`](LICENSE),
+[`LICENSING.md`](LICENSING.md), and [`NOTICE`](NOTICE).
