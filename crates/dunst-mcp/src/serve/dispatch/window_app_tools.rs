@@ -128,6 +128,10 @@ pub(super) fn dispatch(
             }
             _ => Err("open_url_and_attach_tab requires 'app' and 'url'".into()),
         },
+        "navigate" => match arg(args, "url") {
+            Some(url) => Ok(serde_json::to_value(engine.navigate(&url)).unwrap_or(Value::Null)),
+            None => Err("navigate requires 'url'".into()),
+        },
         "close_app" => match arg(args, "app") {
             Some(app) => Ok(json!({ "closed": engine.close_app(&app) })),
             None => Err("close_app requires 'app'".into()),

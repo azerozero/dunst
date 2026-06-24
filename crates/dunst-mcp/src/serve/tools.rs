@@ -544,6 +544,11 @@ fn window_app_tools() -> Vec<Value> {
             schema(json!({ "app": {"type":"string"}, "url": {"type":"string"}, "args": {"type":"array","items":{"type":"string"},"description":"extra argv passed when launching the app"} }), &["app", "url"]),
         ),
         tool(
+            "navigate",
+            "Load a URL in the ATTACHED browser window and re-verify. Use this to drive a backgrounded browser to a new page: it always forces a fresh load (never re-selects a stale existing tab that merely matches the URL, the way open_url_and_attach_tab can), and it does not rely on the address bar — background keystrokes can't reach browser chrome (a typed URL falls through to the page as in-page shortcuts). Returns the same attach/verify result as open_url_and_attach_tab.",
+            schema(json!({ "url": {"type":"string"} }), &["url"]),
+        ),
+        tool(
             "close_app",
             "Quit an app gracefully by name (no foreground).",
             schema(json!({ "app": {"type":"string"} }), &["app"]),

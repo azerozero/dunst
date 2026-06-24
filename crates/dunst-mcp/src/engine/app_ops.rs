@@ -255,6 +255,38 @@ impl Engine {
         self.attach_url_window_result(launch, candidates, selected, &terms, &host_labels)
     }
 
+    /// Navigate the attached browser to `url` and re-verify. Unlike
+    /// `open_url_and_attach_tab`, this ALWAYS forces a fresh load (it never
+    /// re-selects a stale existing tab/window that merely matches the URL terms —
+    /// the failure mode that lands on the wrong tab) and targets the
+    /// currently-attached app. This is the reliable way to drive a backgrounded
+    /// browser to a new page: address-bar keystrokes are not an option in the
+    /// background, where synthetic keys fall through to page content and arrive as
+    /// in-page shortcuts (e.g. GitHub's `g i` → Issues) instead of the URL bar.
+    #[cfg(target_os = "macos")]
+    pub fn navigate(&mut self, url: &str) -> OpenUrlAttachResult {
+        let app = self.window.app_name.clone();
+        let terms = url_match_terms(url);
+        let host_labels = url_host_labels(url);
+        let launch = self.launch_app(&app, Some(url), &[]);
+        std::thread::sleep(Duration::from_millis(700));
+        let candidates = launch.matching_windows.clone();
+        let selected = best_window_for_url(&candidates, &terms).or_else(|| {
+            candidates
+                .iter()
+                .find(|window| window.window_id == self.target.window_id)
+                .cloned()
+                .or_else(|| candidates.first().cloned())
+        });
+        self.attach_url_window_result(launch, candidates, selected, &terms, &host_labels)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn navigate(&mut self, url: &str) -> OpenUrlAttachResult {
+        let app = self.window.app_name.clone();
+        self.open_url_and_attach_tab(&app, url, &[])
+    }
+
     fn matching_windows_for_app(&self, app: &str) -> Vec<WindowSummary> {
         let app_needle = normalize_match(app);
         self.list_windows(false)
