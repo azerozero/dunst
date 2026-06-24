@@ -169,8 +169,7 @@ impl Engine {
         if let Some(id) = focus_id {
             if let Some(page_direction) = page_scroll_target_direction(id) {
                 let direction = page_direction.unwrap_or(direction);
-                if self.remembered_scroll_strategy().is_some() && matches!(direction, "down" | "up")
-                {
+                if self.prefer_wheel_scroll() && matches!(direction, "down" | "up") {
                     let (x, y) = self
                         .remembered_scroll_point()
                         .unwrap_or_else(|| self.page_scroll_fallback_point());
@@ -199,7 +198,7 @@ impl Engine {
             );
         }
 
-        if self.remembered_scroll_strategy().is_some() && matches!(direction, "down" | "up") {
+        if self.prefer_wheel_scroll() && matches!(direction, "down" | "up") {
             let (x, y) = self
                 .remembered_scroll_point()
                 .unwrap_or_else(|| self.page_scroll_fallback_point());
@@ -396,6 +395,19 @@ impl Engine {
         self.scroll_strategy_cache
             .get(&scope)
             .map(|memory| memory.strategy)
+    }
+
+    /// Prefer the background-wheel `scroll_at` path over Page/Home/End keys when
+    /// we already learned the wheel works here, OR when background keys have
+    /// already produced a no-movement (low-signal) scroll for this scope. Page
+    /// keys only move whatever holds keyboard focus — frequently nothing after a
+    /// click or modal — so a scope that scrolled dead once should switch to the
+    /// focus-independent wheel instead of retrying the dead key path.
+    pub(in crate::engine) fn prefer_wheel_scroll(&self) -> bool {
+        self.remembered_scroll_strategy().is_some()
+            || self
+                .scroll_background_low_signal
+                .contains(&self.scroll_strategy_key())
     }
 
     pub(in crate::engine) fn note_background_scroll_result(
