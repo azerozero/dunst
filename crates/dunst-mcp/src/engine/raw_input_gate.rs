@@ -579,19 +579,18 @@ fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
 }
 
 fn scroll_direction_policy(rest: &str) -> Vec<RawApprovalPolicy> {
-    let mut parts = rest.split(':');
-    let direction = parts.next().unwrap_or("down");
-    let cost_events = parts
-        .next()
-        .and_then(|count| count.parse::<usize>().ok())
-        .unwrap_or(1)
-        .clamp(1, 20);
+    let direction = rest.split(':').next().unwrap_or("down").to_string();
+    // A scroll is one operator gesture regardless of page count or exact point.
+    // Approving "scroll <dir>" therefore grants a batch of same-direction scrolls
+    // — at any point, any page count — within the TTL, so repeated point-scrolls
+    // (scroll_at at successive coordinates) don't re-arm the approval gate on every
+    // call. Each scroll costs exactly one event; the grant covers a working batch.
     vec![RawApprovalPolicy {
         key: RawApprovalKey {
-            scope: RawApprovalScope::ScrollDirection(direction.to_string()),
+            scope: RawApprovalScope::ScrollDirection(direction),
         },
-        grant_events: 5,
-        cost_events,
+        grant_events: 8,
+        cost_events: 1,
     }]
 }
 
