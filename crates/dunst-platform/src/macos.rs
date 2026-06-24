@@ -101,7 +101,8 @@ mod web_events;
 use ax_actions::*;
 use ax_backend::*;
 pub(crate) use ax_backend::{
-    accessibility_trusted, capture, element_at_point, perform, set_window_frame, window_ref,
+    accessibility_trusted, capture, element_at_point, perform, set_focused_field_text,
+    set_window_frame, window_ref,
 };
 use ax_tree::*;
 use cf::*;

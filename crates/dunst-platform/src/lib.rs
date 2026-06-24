@@ -234,6 +234,16 @@ pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> Result<()> 
     macos::type_text_background(pid, window_id, text)
 }
 
+/// Replace the text of the FOCUSED field in `pid` by setting the app's
+/// `AXFocusedUIElement` value directly (AX select-all-replace, with a keyboard
+/// fallback). Robust against the erratic cursor of raw clear-by-keystroke
+/// (End/Backspace), even for sparse-AX web inputs absent from the scene graph.
+/// Focus the field first (e.g. a click on it).
+#[cfg(target_os = "macos")]
+pub fn set_focused_field_text(pid: i32, window_id: u32, text: &str) -> Result<()> {
+    macos::set_focused_field_text(pid, window_id, text)
+}
+
 /// Post a named keycode (down+up) with optional modifier `flags` (CGEventFlags
 /// bits: Shift 0x20000, Control 0x40000, Alternate 0x80000, Command 0x100000) to
 /// a **backgrounded** window's (web) content via the SkyLight auth-signed keyboard

@@ -500,6 +500,10 @@ pub(super) fn raw_paste_text_target_id(text: &str) -> String {
     raw_text_payload_target_id("paste_text", text)
 }
 
+pub(super) fn raw_set_field_text_target_id(text: &str) -> String {
+    raw_text_payload_target_id("set_field_text", text)
+}
+
 fn raw_text_payload_target_id(action: &str, text: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in text.as_bytes() {

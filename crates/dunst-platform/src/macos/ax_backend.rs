@@ -388,6 +388,24 @@ pub(super) fn app_element(pid: i32) -> Result<AxElement> {
     }
 }
 
+/// Replace the text of whatever field currently holds keyboard focus in the app.
+/// Fetches the app's `AXFocusedUIElement` directly (so it works even when the
+/// focused field is a sparse-AX web input absent from the scene graph) and reuses
+/// the robust [`type_text`] path (AX select-all-replace, with a keyboard
+/// fallback). This avoids the erratic cursor results of clearing a field with raw
+/// End/Backspace/double-click keystrokes (which produced garbled values like
+/// "copullntents" when driving a backgrounded browser form).
+pub(crate) fn set_focused_field_text(pid: i32, window_id: u32, text: &str) -> Result<()> {
+    let app = app_element(pid)?;
+    let focused = attr_ax_element(&app, "AXFocusedUIElement").ok_or_else(|| {
+        DunstError::Execution(
+            "no focused field to set text on; click or focus a text field first".into(),
+        )
+    })?;
+    let target = Target { pid, window_id };
+    type_text(&focused, &target, text).map_err(Into::into)
+}
+
 pub(super) fn resolve_window(app: &AxElement, requested_window_id: u32) -> Result<AxElement> {
     let mut windows = attr_array(app, kAXWindowsAttribute)
         .map(|windows| ax_elements(&windows))

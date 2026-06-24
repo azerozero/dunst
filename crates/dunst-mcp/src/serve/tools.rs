@@ -589,6 +589,11 @@ fn keyboard_menu_tools() -> Vec<Value> {
             schema(json!({ "text": {"type":"string"} }), &["text"]),
         ),
         tool(
+            "set_field_text",
+            "Clear the FOCUSED field and set it to text in one robust step. Sets the app's AXFocusedUIElement value directly (AX select-all-replace, with a keyboard fallback) — use this instead of clearing with raw End/Backspace/double-click + type_keys, which gives erratic cursor results on backgrounded web forms (e.g. it garbles to 'copullntents'). Focus the field first (click it). Raw mutating input is high-risk and requires approval.",
+            schema(json!({ "text": {"type":"string"} }), &["text"]),
+        ),
+        tool(
             "paste_text",
             "Paste text into the FOCUSED element by temporarily replacing the system clipboard, sending Cmd+V to the target window, then restoring the previous plain-text clipboard by default. Use for opaque browser fields where type_keys is unreliable after focusing and verifying the field. Raw mutating keyboard input is high-risk and requires approval; rich clipboard formats may not survive, and OCR/page_state verification is required before saving.",
             schema(json!({ "text": {"type":"string"}, "restore_clipboard": {"type":"boolean","description":"restore the previous plain-text clipboard after pasting; defaults true"}, "include_diff": {"type":"boolean"} }), &["text"]),
