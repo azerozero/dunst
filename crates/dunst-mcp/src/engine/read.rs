@@ -230,7 +230,7 @@ impl Engine {
                     if bbox_duplicate_of_existing(card.bbox, targets) {
                         continue;
                     }
-                    let risk = self.risk.assess_text(&card.lines.join(" "));
+                    let risk = raw_ocr_click_risk(self.risk.assess_text(&card.lines.join(" ")));
                     targets.push(card_hit_target(card, risk));
                 }
             }
@@ -245,7 +245,7 @@ impl Engine {
                     if hit.confidence < 0.45 || bbox_duplicate_of_existing(hit.bbox, targets) {
                         continue;
                     }
-                    let risk = self.risk.assess_text(&hit.text);
+                    let risk = raw_ocr_click_risk(self.risk.assess_text(&hit.text));
                     targets.push(ocr_hit_target(idx, hit, risk));
                 }
             }
@@ -867,6 +867,23 @@ fn page_scroll_risk() -> RiskAssessment {
     }
 }
 
+/// OCR-derived hit targets can only be actuated through raw pointer input
+/// (`click_near_text`), which the executor always approval-gates (see
+/// `ocr_point_risk_at`). Floor the advertised affordance risk to that same gate
+/// so `get_hit_targets` never promises a no-approval click that the action layer
+/// then blocks with `pending_approval`. Text-derived reasons (e.g. destructive
+/// keywords) are preserved on top of the raw-input reason.
+fn raw_ocr_click_risk(text_risk: RiskAssessment) -> RiskAssessment {
+    let mut reasons =
+        vec!["click is delivered as approval-gated raw OCR input, not an AX element".to_string()];
+    reasons.extend(text_risk.reasons);
+    RiskAssessment {
+        level: RiskLevel::High,
+        requires_approval: true,
+        reasons,
+    }
+}
+
 #[derive(Clone, Copy)]
 struct OcrFormLabel {
     role: &'static str,
@@ -902,7 +919,7 @@ fn append_ocr_form_field_targets(
             value_center.1 - label_center.1,
         );
         let text = format!("{} {}", label_hit.text, value_hit.text);
-        let risk = risk_engine.assess_text(&text);
+        let risk = raw_ocr_click_risk(risk_engine.assess_text(&text));
         targets.push(ocr_form_field_target(
             idx, kind, label_hit, value_hit, offset, risk,
         ));
@@ -1276,6 +1293,38 @@ fn rounded_i64(value: f64) -> i64 {
 #[cfg(test)]
 mod hit_target_tests {
     use super::*;
+
+    #[test]
+    fn raw_ocr_click_risk_floors_benign_text_to_the_executor_gate() {
+        // A benign OCR label (e.g. a tab title) carries no destructive keyword,
+        // so assess_text returns a no-approval risk. But the only way to click
+        // an OCR hit is raw pointer input, which ocr_point_risk_at always
+        // approval-gates. The advertised affordance risk must match that gate.
+        let benign = RiskAssessment {
+            level: RiskLevel::Low,
+            requires_approval: false,
+            reasons: vec!["benign text".into()],
+        };
+        let floored = raw_ocr_click_risk(benign);
+        assert_eq!(floored.level, RiskLevel::High);
+        assert!(
+            floored.requires_approval,
+            "OCR click affordance must advertise the same approval gate the executor enforces"
+        );
+        assert!(
+            floored
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("raw OCR input")),
+            "floored risk should explain the raw-input delivery: {:?}",
+            floored.reasons
+        );
+        assert!(
+            floored.reasons.iter().any(|reason| reason == "benign text"),
+            "text-derived reasons must be preserved: {:?}",
+            floored.reasons
+        );
+    }
 
     #[test]
     fn page_scroll_bbox_does_not_mask_ocr_targets() {
