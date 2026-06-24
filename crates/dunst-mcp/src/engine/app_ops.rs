@@ -220,6 +220,7 @@ impl Engine {
         extra_args: &[String],
     ) -> OpenUrlAttachResult {
         let terms = url_match_terms(url);
+        let host_labels = url_host_labels(url);
 
         // Prefer an already-open matching tab/window before calling `open`.
         // Repeated platform URL-open calls can create/select
@@ -233,6 +234,7 @@ impl Engine {
                 existing_candidates,
                 Some(selected),
                 &terms,
+                &host_labels,
             );
         }
 
@@ -250,7 +252,7 @@ impl Engine {
             }
         });
 
-        self.attach_url_window_result(launch, candidates, selected, &terms)
+        self.attach_url_window_result(launch, candidates, selected, &terms, &host_labels)
     }
 
     fn matching_windows_for_app(&self, app: &str) -> Vec<WindowSummary> {
@@ -267,6 +269,7 @@ impl Engine {
         candidates: Vec<WindowSummary>,
         selected: Option<WindowSummary>,
         terms: &[String],
+        host_labels: &[String],
     ) -> OpenUrlAttachResult {
         let mut attached = None;
         let mut attached_window_title = None;
@@ -284,6 +287,7 @@ impl Engine {
                     selected_tab.as_ref(),
                     page_state.url.as_deref(),
                     terms,
+                    host_labels,
                 )
                 .map(str::to_string);
                 verified = verified_by.is_some();
@@ -420,7 +424,10 @@ fn verification_source_for_url(
     selected_tab: Option<&BrowserTab>,
     page_url: Option<&str>,
     terms: &[String],
+    host_labels: &[String],
 ) -> Option<&'static str> {
+    // Strong signals: the actual page/tab URL contains a match term. A real URL
+    // identifies the route, so any term (including the host) is a valid match.
     if normalized_contains_any(page_url.unwrap_or_default(), terms) {
         return Some("page_url");
     }
@@ -430,17 +437,57 @@ fn verification_source_for_url(
     {
         return Some("selected_tab_url");
     }
-    let window = normalize_match(window_title);
-    let tab = selected_tab
-        .map(|tab| normalize_match(&tab.title))
-        .unwrap_or_default();
-    if terms.iter().any(|term| tab.contains(term)) {
+    // Weak signals: titles. A site carries its brand/host in the title of every
+    // route (e.g. "Collective" for app.collective.work/<anything>), so a title
+    // only confirms navigation when it matches a term specific to the requested
+    // path/query — never the host/brand alone. Otherwise a generic brand title
+    // would falsely verify any sub-route the SPA never actually loaded.
+    let title_matches_specific_term = |title: &str| {
+        let title = normalize_match(title);
+        terms
+            .iter()
+            .filter(|term| !is_generic_url_term(term, host_labels))
+            .any(|term| title.contains(term.as_str()))
+    };
+    if selected_tab.is_some_and(|tab| title_matches_specific_term(&tab.title)) {
         return Some("selected_tab_title");
     }
-    if terms.iter().any(|term| window.contains(term)) {
+    if title_matches_specific_term(window_title) {
         return Some("window_title");
     }
     None
+}
+
+/// Host labels of a URL (full host plus its dot-separated components), used to
+/// decide which match terms are generic brand/host noise versus specific to the
+/// requested path. E.g. `app.collective.work` -> `["app.collective.work",
+/// "app", "collective", "work"]`.
+fn url_host_labels(url: &str) -> Vec<String> {
+    let decoded = percent_decode_lossy(url);
+    let normalized = normalize_match(&decoded);
+    let mut labels = Vec::new();
+    if let Some(host) = normalized
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+    {
+        let host = host.trim_start_matches("www.");
+        labels.push(host.to_string());
+        for label in host.split('.').filter(|label| !label.is_empty()) {
+            if !labels.iter().any(|existing| existing == label) {
+                labels.push(label.to_string());
+            }
+        }
+    }
+    labels
+}
+
+/// A term is generic (cannot, on its own, confirm a title navigated) when it is
+/// the URL scheme or one of the host labels.
+fn is_generic_url_term(term: &str, host_labels: &[String]) -> bool {
+    matches!(term, "http" | "https") || host_labels.iter().any(|label| label == term)
 }
 
 fn normalized_contains_any(value: &str, terms: &[String]) -> bool {
@@ -464,15 +511,12 @@ mod tests {
 
     #[test]
     fn url_verification_accepts_page_url_when_firefox_title_is_generic() {
-        let terms = url_match_terms("https://www.linkedin.com/in/cl%C3%A9ment-liard/");
+        let url = "https://www.linkedin.com/in/cl%C3%A9ment-liard/";
+        let terms = url_match_terms(url);
+        let host_labels = url_host_labels(url);
 
         assert_eq!(
-            verification_source_for_url(
-                "Mozilla Firefox",
-                None,
-                Some("https://www.linkedin.com/in/cl%C3%A9ment-liard/"),
-                &terms,
-            ),
+            verification_source_for_url("Mozilla Firefox", None, Some(url), &terms, &host_labels,),
             Some("page_url")
         );
     }
@@ -498,7 +542,9 @@ mod tests {
 
     #[test]
     fn url_verification_reports_the_signal_that_matched() {
-        let terms = url_match_terms("https://github.com/AlexsJones/llmfit");
+        let url = "https://github.com/AlexsJones/llmfit";
+        let terms = url_match_terms(url);
+        let host_labels = url_host_labels(url);
 
         assert_eq!(
             verification_source_for_url(
@@ -506,39 +552,82 @@ mod tests {
                 Some(&tab("GitHub - AlexsJones/llmfit", None)),
                 None,
                 &terms,
+                &host_labels,
             ),
             Some("selected_tab_title")
         );
         assert_eq!(
             verification_source_for_url(
                 "Mozilla Firefox",
-                Some(&tab(
-                    "New Tab",
-                    Some("https://github.com/AlexsJones/llmfit")
-                )),
+                Some(&tab("New Tab", Some(url))),
                 None,
                 &terms,
+                &host_labels,
             ),
             Some("selected_tab_url")
         );
         assert_eq!(
-            verification_source_for_url("GitHub - AlexsJones/llmfit", None, None, &terms),
+            verification_source_for_url(
+                "GitHub - AlexsJones/llmfit",
+                None,
+                None,
+                &terms,
+                &host_labels,
+            ),
             Some("window_title")
         );
     }
 
     #[test]
     fn url_verification_rejects_generic_browser_state() {
-        let terms = url_match_terms("https://www.linkedin.com/in/cl%C3%A9ment-liard/");
+        let url = "https://www.linkedin.com/in/cl%C3%A9ment-liard/";
+        let terms = url_match_terms(url);
+        let host_labels = url_host_labels(url);
 
         assert_eq!(
             verification_source_for_url(
                 "Mozilla Firefox",
                 Some(&tab("New Tab", None)),
                 None,
-                &terms
+                &terms,
+                &host_labels,
             ),
             None
+        );
+    }
+
+    #[test]
+    fn url_verification_rejects_brand_only_title_for_spa_subroute() {
+        // app.collective.work shows "Collective" in the title of every route, so
+        // a generic brand title must NOT confirm a specific sub-route the SPA may
+        // never have loaded (the ?tab=2 no-op navigation that read as verified).
+        let url = "https://app.collective.work/collective/clement-liard/profile?tab=2";
+        let terms = url_match_terms(url);
+        let host_labels = url_host_labels(url);
+
+        assert_eq!(
+            verification_source_for_url(
+                "Collective",
+                Some(&tab("Collective", None)),
+                None,
+                &terms,
+                &host_labels,
+            ),
+            None,
+            "brand-only title must not verify a specific sub-route"
+        );
+
+        // A title carrying a path-specific term (the profile slug) does verify.
+        assert_eq!(
+            verification_source_for_url(
+                "Collective",
+                Some(&tab("Clément LIARD | Collective", None)),
+                None,
+                &terms,
+                &host_labels,
+            ),
+            Some("selected_tab_title"),
+            "path-specific title term should still verify"
         );
     }
 

@@ -104,6 +104,14 @@ pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
     macos::cursor_restore(x, y)
 }
 
+/// Unstick the OS cursor after driving a backgrounded window: drives a menu-bar
+/// focus cycle (open + close the Apple menu) so the window server re-evaluates
+/// the cursor shape. Workaround for the macOS stuck-cursor bug. macOS-only.
+#[cfg(target_os = "macos")]
+pub fn unstick_cursor() -> Result<()> {
+    macos::unstick_cursor()
+}
+
 /// Whether the current process has macOS Accessibility permission.
 #[cfg(target_os = "macos")]
 pub fn accessibility_trusted() -> bool {

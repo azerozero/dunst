@@ -476,7 +476,29 @@ pub(super) fn current_cursor_position(
 
 pub(super) fn restore_cursor_position(point: CGPoint) -> std::result::Result<(), ActionFailure> {
     CGDisplay::warp_mouse_cursor_position(point)
-        .map_err(|err| ActionFailure::Execution(format!("restore cursor position: {err:?}")))
+        .map_err(|err| ActionFailure::Execution(format!("restore cursor position: {err:?}")))?;
+    // CGWarpMouseCursorPosition moves the cursor but neither emits an event nor
+    // refreshes the cursor IMAGE, so the window under the cursor keeps whatever
+    // shape it last set — e.g. the I-beam a synthetic click left after landing
+    // in a text field — until the user physically moves the mouse. Post a
+    // MouseMoved at the restored point so the window re-evaluates and resets the
+    // cursor shape right away. Best-effort: never fail the action on this.
+    settle_cursor_shape(point);
+    Ok(())
+}
+
+/// Nudge the window under `point` to re-evaluate its cursor image after a bare
+/// `CGWarpMouseCursorPosition`, which otherwise leaves a stale shape (commonly a
+/// lingering I-beam) until the next real mouse move. Best-effort and silent.
+pub(super) fn settle_cursor_shape(point: CGPoint) {
+    let Ok(source) = event_source("create cursor-settle CGEventSource") else {
+        return;
+    };
+    if let Ok(moved) =
+        CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
+    {
+        moved.post(CGEventTapLocation::HID);
+    }
 }
 
 pub(super) fn event_source(

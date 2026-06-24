@@ -1,0 +1,63 @@
+# cargo-deny configuration for Dunst (Apache-2.0)
+# https://embarkstudios.github.io/cargo-deny/
+
+# ── Advisories ───────────────────────────────────────────────────────────────
+# Checks crates against the RustSec advisory database for known vulnerabilities.
+[advisories]
+version = 2
+# Fail on any known vulnerability. No advisories are ignored: the dependency set
+# is clean (also enforced by the `security` job's `cargo audit --deny warnings`).
+# Add a "RUSTSEC-XXXX-YYYY" with a justification here only if an unfixable
+# transitive advisory ever surfaces.
+ignore = []
+
+# ── Licenses ─────────────────────────────────────────────────────────────────
+# Dunst is Apache-2.0. We allow permissive licenses, weak-copyleft licenses that
+# are acceptable for this distribution model, and a handful of special-purpose
+# licenses commonly found in the Rust ecosystem.
+[licenses]
+version = 2
+# Deny everything not explicitly listed.
+allow = [
+    # ── Permissive ──
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "OpenSSL",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+
+    # ── Public-domain-equivalent ──
+    "Unlicense",
+    "CC0-1.0",
+
+    # ── Weak copyleft ──
+    "MPL-2.0",
+
+    # ── Ecosystem one-offs ──
+    "CDLA-Permissive-2.0",
+]
+# Minimum confidence for SPDX license detection.
+confidence-threshold = 0.8
+
+# ── Bans ─────────────────────────────────────────────────────────────────────
+[bans]
+# Warn (don't fail) when multiple versions of the same crate are pulled in.
+multiple-versions = "warn"
+# Allow wildcard dependencies — common during rapid development.
+wildcards = "allow"
+highlight = "all"
+
+# ── Sources ──────────────────────────────────────────────────────────────────
+# Only allow crates published to crates.io. Warn on anything else.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

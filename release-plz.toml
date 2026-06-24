@@ -1,0 +1,42 @@
+[workspace]
+# Don't publish to crates.io — release via git tags only
+publish = false
+# Determine versions from git tags, not the cargo registry
+git_only = true
+# GitHub Release is created by the Release workflow (not release-plz)
+# to avoid immutable release conflicts when uploading binaries.
+git_release_enable = false
+git_tag_name = "v{{ version }}"
+git_tag_enable = true
+changelog_update = true
+# Binary-only project — no public library API to check
+semver_check = false
+pr_labels = ["release"]
+# Only bump on feat/fix/refactor/perf commits, any scope.
+# Infra changes use chore/docs/test/style/ci prefixes → automatically excluded.
+# No scope allowlist needed: the prefix (feat vs chore) is the gate.
+release_commits = "^(feat|fix|refactor|perf)(\\([^)]+\\))?:"
+
+# Only the binary crate drives the release + changelog.
+[[package]]
+name = "dunst-mcp"
+changelog_path = "CHANGELOG.md"
+git_release_name = "v{{ version }}"
+
+# Internal library crates share the workspace version but are not released
+# (tagged/changelogged) individually.
+[[package]]
+name = "dunst-core"
+release = false
+
+[[package]]
+name = "dunst-graph"
+release = false
+
+[[package]]
+name = "dunst-platform"
+release = false
+
+[[package]]
+name = "dunst-vision"
+release = false

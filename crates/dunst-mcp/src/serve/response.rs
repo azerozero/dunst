@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::engine::{ModalDismissResult, OcrClickResult, OptionPickResult};
 
 use super::{
-    build_git_dirty, build_git_sha, build_time_unix, server_version_label,
+    approval_tool_enabled, build_git_dirty, build_git_sha, build_time_unix, server_version_label,
     DIFF_SUMMARY_VALUE_LIMIT, SERVER_VERSION,
 };
 
@@ -60,19 +60,32 @@ pub(super) fn audit_entry_value(entry: AuditEntry, include_diff: bool) -> Value 
         obj.insert("graph_diff_summary".into(), summary);
         if entry.result == ActionResult::PendingApproval {
             let raw_target = raw_input_target(&entry.target_id);
-            obj.insert(
-                "approval_hint".into(),
-                json!({
-                    "next_step": if raw_target {
-                        "Use approve only after explicit operator authorization for this raw input. Otherwise switch to ui_fallback_hint and drive visible elements by id."
-                    } else {
-                        "If this element-bound action was intended and the approve tool is available, call approve with this target_id, then retry the exact same tool call once."
-                    },
-                    "approve_tool": "approve",
-                    "approve_arguments": { "id": entry.target_id },
-                    "retry_required": true
-                }),
-            );
+            let approve_available = approval_tool_enabled();
+            let next_step = if !approve_available {
+                "The approve tool is disabled on this server (approve_available=false): this gated action cannot be approved in-band. Enable it via enable_with and restart the dunst-mcp server, or switch to ui_fallback_hint and drive visible elements by id."
+            } else if raw_target {
+                "Use approve only after explicit operator authorization for this raw input. Otherwise switch to ui_fallback_hint and drive visible elements by id."
+            } else {
+                "If this element-bound action was intended, call approve with this target_id, then retry the exact same tool call once."
+            };
+            let mut hint = json!({
+                "next_step": next_step,
+                "approve_available": approve_available,
+                "approve_tool": "approve",
+                "approve_arguments": { "id": entry.target_id },
+                "retry_required": true
+            });
+            if !approve_available {
+                if let Value::Object(h) = &mut hint {
+                    h.insert(
+                        "enable_with".into(),
+                        json!(
+                            "set DUNST_MCP_ENABLE_APPROVE_TOOL=1 and restart the dunst-mcp server"
+                        ),
+                    );
+                }
+            }
+            obj.insert("approval_hint".into(), hint);
             if raw_target {
                 obj.insert("ui_fallback_hint".into(), raw_input_fallback_hint(&entry));
             }

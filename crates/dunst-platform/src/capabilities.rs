@@ -94,22 +94,45 @@ pub fn current_platform_kind() -> PlatformKind {
 
 pub fn current_platform_capabilities() -> PlatformCapabilities {
     match current_platform_kind() {
-        PlatformKind::Macos => macos_capabilities(),
+        PlatformKind::Macos => macos_runtime_capabilities(),
         kind => unsupported_capabilities(kind),
     }
 }
 
-fn macos_capabilities() -> PlatformCapabilities {
+/// Probe the live macOS TCC permissions and build capabilities from them, so the
+/// report reflects what the process can actually do rather than a static
+/// compile-time `true`. Without the Accessibility permission, AX read/actions
+/// and synthetic input cannot reach other apps; without Screen Recording,
+/// pixel-perception (screenshot/OCR/vision) returns blank frames.
+#[cfg(target_os = "macos")]
+fn macos_runtime_capabilities() -> PlatformCapabilities {
+    macos_capabilities(
+        crate::accessibility_trusted(),
+        crate::screen_capture_trusted(),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_runtime_capabilities() -> PlatformCapabilities {
+    // current_platform_kind() never reports Macos off-macOS, so this arm is
+    // unreachable at runtime; keep it conservative for cross-compiled probes.
+    macos_capabilities(false, false)
+}
+
+fn macos_capabilities(ax_trusted: bool, screen_trusted: bool) -> PlatformCapabilities {
     PlatformCapabilities {
         kind: PlatformKind::Macos,
         input: InputCapabilities {
-            accessibility_actions: true,
-            background_pointer: true,
-            background_keyboard: true,
-            background_hotkeys: true,
+            // All of these reach into other processes via AX or synthetic event
+            // posting, which macOS gates behind the Accessibility permission.
+            accessibility_actions: ax_trusted,
+            background_pointer: ax_trusted,
+            background_keyboard: ax_trusted,
+            background_hotkeys: ax_trusted,
+            // SkyLight focus-without-raise does not require Accessibility.
             focus_without_raise: true,
-            real_cursor_borrow: true,
-            menu_bar: true,
+            real_cursor_borrow: ax_trusted,
+            menu_bar: ax_trusted,
         },
         clipboard: ClipboardCapabilities {
             text_read: true,
@@ -117,18 +140,22 @@ fn macos_capabilities() -> PlatformCapabilities {
             rich_formats_preserved: false,
         },
         perception: PerceptionCapabilities {
-            accessibility_tree: true,
-            screenshots: true,
-            ocr: true,
-            vision_shapes: true,
-            chart_scan: true,
+            accessibility_tree: ax_trusted,
+            // Pixel perception needs the Screen Recording permission.
+            screenshots: screen_trusted,
+            ocr: screen_trusted,
+            vision_shapes: screen_trusted,
+            chart_scan: screen_trusted,
         },
         windows: WindowCapabilities {
+            // CoreGraphics window listing/visibility needs no special permission.
             list: true,
             visibility: true,
-            move_resize: true,
-            arrange: true,
-            expose: true,
+            // Moving/resizing/arranging/exposing other apps' windows is driven
+            // through AX.
+            move_resize: ax_trusted,
+            arrange: ax_trusted,
+            expose: ax_trusted,
         },
         apps: AppCapabilities {
             list_running: true,
@@ -137,7 +164,8 @@ fn macos_capabilities() -> PlatformCapabilities {
             launch: true,
             open_url: true,
             close: true,
-            file_chooser: true,
+            // Driving the native file chooser dialog goes through AX.
+            file_chooser: ax_trusted,
         },
     }
 }
@@ -204,7 +232,7 @@ mod tests {
 
     #[test]
     fn macos_groups_related_capabilities_by_call_type() {
-        let capabilities = macos_capabilities();
+        let capabilities = macos_capabilities(true, true);
         assert!(capabilities.input.focus_without_raise);
         assert!(capabilities.clipboard.text_read);
         assert!(!capabilities.clipboard.rich_formats_preserved);
@@ -212,5 +240,41 @@ mod tests {
         assert!(capabilities.perception.vision_shapes);
         assert!(capabilities.windows.move_resize);
         assert!(capabilities.apps.file_chooser);
+    }
+
+    #[test]
+    fn macos_capabilities_reflect_missing_tcc_permissions() {
+        // No Accessibility and no Screen Recording: the report must not over-claim
+        // AX/input/perception, but permission-free surfaces stay available.
+        let capabilities = macos_capabilities(false, false);
+
+        assert!(!capabilities.input.accessibility_actions);
+        assert!(!capabilities.input.background_pointer);
+        assert!(!capabilities.input.menu_bar);
+        assert!(!capabilities.perception.accessibility_tree);
+        assert!(!capabilities.perception.screenshots);
+        assert!(!capabilities.perception.ocr);
+        assert!(!capabilities.windows.move_resize);
+        assert!(!capabilities.apps.file_chooser);
+        // No pixel perception without Screen Recording.
+        assert!(!capabilities.can_use_ocr_or_cv());
+
+        // Permission-free surfaces remain advertised (launching apps needs no TCC
+        // grant, so can_mutate_ui stays true via that path).
+        assert!(capabilities.input.focus_without_raise);
+        assert!(capabilities.clipboard.text_read);
+        assert!(capabilities.windows.list);
+        assert!(capabilities.apps.launch);
+    }
+
+    #[test]
+    fn macos_capabilities_separate_ax_and_screen_permissions() {
+        // Accessibility granted but Screen Recording denied: input works, pixel
+        // perception does not.
+        let capabilities = macos_capabilities(true, false);
+        assert!(capabilities.input.accessibility_actions);
+        assert!(capabilities.perception.accessibility_tree);
+        assert!(!capabilities.perception.screenshots);
+        assert!(!capabilities.perception.ocr);
     }
 }

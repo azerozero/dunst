@@ -8,7 +8,16 @@
 #   DUNST_MCP_BIN=/path/to/dunst-mcp  use an explicit binary (must exist + be executable)
 #   DUNST_MCP_MODE=fixture|live       fixture serves the deterministic Notes fixture; live attaches to a window
 #   DUNST_MCP_APP=Chrome              in live mode, attach at startup to the largest window for an app
+#   DUNST_MCP_ENABLE_APPROVE_TOOL=1   expose the operator-side `approve` tool so gated raw input
+#                                     (clicks/keys/scroll) can be approved in-band. Defaults to 1 in
+#                                     this local dev wrapper (a controlled single-operator session);
+#                                     set to 0 to keep raw input hard-gated.
 set -euo pipefail
+
+# Local dev wrapper runs as a controlled single-operator session: expose the
+# approve escape hatch by default so pending_approval raw input is reachable.
+# Overridable by exporting DUNST_MCP_ENABLE_APPROVE_TOOL=0 before launch.
+export DUNST_MCP_ENABLE_APPROVE_TOOL="${DUNST_MCP_ENABLE_APPROVE_TOOL:-1}"
 
 usage() {
   cat <<'USAGE'

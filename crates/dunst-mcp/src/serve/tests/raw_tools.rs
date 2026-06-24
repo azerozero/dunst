@@ -132,6 +132,17 @@ fn raw_input_tools_dispatch_and_error_cleanly() {
             body["approval_hint"]["approve_arguments"]["id"],
             body["target_id"]
         );
+        // approve is disabled by default in tests, so the hint must say so
+        // honestly and explain how to enable it, instead of pointing at a tool
+        // the client cannot reach.
+        assert_eq!(
+            body["approval_hint"]["approve_available"], false,
+            "approval hint must flag the disabled approve tool: {body}"
+        );
+        assert!(
+            body["approval_hint"]["enable_with"].is_string(),
+            "approval hint must explain how to enable approve when disabled: {body}"
+        );
         assert_eq!(body["ui_fallback_hint"]["mode"], "ui_mapping");
     }
 
