@@ -24,7 +24,10 @@ pub use capabilities::{
     AppCapabilities, ClipboardCapabilities, InputCapabilities, PerceptionCapabilities,
     PlatformCapabilities, PlatformKind, WindowCapabilities,
 };
-pub use clipboard::{paste_text_background, read_clipboard_bytes, write_clipboard_bytes};
+pub use clipboard::{
+    paste_replace_field_foreground, paste_text_background, read_clipboard_bytes,
+    write_clipboard_bytes,
+};
 #[cfg(target_os = "macos")]
 pub use file_chooser::select_file_osascript_lines;
 pub use file_chooser::{borrow_target_frontmost, restore_frontmost_pid, select_file};

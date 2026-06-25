@@ -294,6 +294,9 @@ impl Engine {
         if target_id.starts_with("keyboard@paste_text:") {
             return validate_paste_text_target_id(target_id);
         }
+        if target_id.starts_with("keyboard@set_field_text:") {
+            return validate_set_field_text_target_id(target_id);
+        }
 
         if let Some(rest) = target_id.strip_prefix("keyboard@scroll:") {
             return validate_scroll_target(rest, false, self);
@@ -560,6 +563,15 @@ fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
             cost_events: 1,
         }];
     }
+    if target_id.starts_with("keyboard@set_field_text:") {
+        return vec![RawApprovalPolicy {
+            key: RawApprovalKey {
+                scope: RawApprovalScope::Exact(target_id.to_string()),
+            },
+            grant_events: 1,
+            cost_events: 1,
+        }];
+    }
     if let Some(scope) = ocr_click_approval_scope(target_id) {
         return vec![RawApprovalPolicy {
             key: RawApprovalKey {
@@ -657,6 +669,10 @@ fn validate_type_keys_target_id(target_id: &str) -> dunst_core::Result<()> {
 
 fn validate_paste_text_target_id(target_id: &str) -> dunst_core::Result<()> {
     validate_hashed_text_target_id(target_id, "keyboard@paste_text:", "paste_text")
+}
+
+fn validate_set_field_text_target_id(target_id: &str) -> dunst_core::Result<()> {
+    validate_hashed_text_target_id(target_id, "keyboard@set_field_text:", "set_field_text")
 }
 
 fn validate_hashed_text_target_id(

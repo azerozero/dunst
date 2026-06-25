@@ -100,6 +100,55 @@ pub fn paste_text_background(
     ))
 }
 
+/// Replace the focused field's whole content in one layout-safe step: put `text` on
+/// the clipboard, foreground the target process, then native select-all + paste.
+///
+/// AppleScript `keystroke "a"/"v"` is translated to the **current keyboard layout**,
+/// so it works on AZERTY/QWERTY/etc. — unlike a hardcoded keycode, where Cmd+A
+/// (keycode 0x00) becomes **Cmd+Q = Quit** on AZERTY. The native Cmd+A also selects
+/// the field's real DOM content (no AX char-count under-report), so there is no
+/// trailing fragment. Foregrounds the window (not transparent); the field must
+/// already be focused (click it first). Restores the previous clipboard.
+#[cfg(target_os = "macos")]
+pub fn paste_replace_field_foreground(pid: i32, text: &str) -> Result<()> {
+    let previous = read_clipboard_bytes().ok();
+    write_clipboard_bytes(text.as_bytes())?;
+    let script = format!(
+        "tell application \"System Events\"\n\
+         set frontmost of (first process whose unix id is {pid}) to true\n\
+         delay 0.4\n\
+         keystroke \"a\" using command down\n\
+         delay 0.2\n\
+         keystroke \"v\" using command down\n\
+         delay 0.3\n\
+         end tell"
+    );
+    let result = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output();
+    if let Some(prev) = previous {
+        let _ = write_clipboard_bytes(&prev);
+    }
+    match result {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(DunstError::Execution(format!(
+            "osascript paste-replace failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+        Err(err) => Err(DunstError::Execution(format!(
+            "osascript spawn failed: {err}"
+        ))),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn paste_replace_field_foreground(_pid: i32, _text: &str) -> Result<()> {
+    Err(DunstError::Execution(
+        "paste_replace_field_foreground requires a macOS backend".into(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

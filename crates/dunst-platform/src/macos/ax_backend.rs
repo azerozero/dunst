@@ -395,15 +395,18 @@ pub(super) fn app_element(pid: i32) -> Result<AxElement> {
 /// fallback). This avoids the erratic cursor results of clearing a field with raw
 /// End/Backspace/double-click keystrokes (which produced garbled values like
 /// "copullntents" when driving a backgrounded browser form).
-pub(crate) fn set_focused_field_text(pid: i32, window_id: u32, text: &str) -> Result<()> {
+pub(crate) fn set_focused_field_text(pid: i32, _window_id: u32, text: &str) -> Result<()> {
     let app = app_element(pid)?;
-    let focused = attr_ax_element(&app, "AXFocusedUIElement").ok_or_else(|| {
+    // Confirm a text field is focused so we don't select-all + paste into nothing.
+    attr_ax_element(&app, "AXFocusedUIElement").ok_or_else(|| {
         DunstError::Execution(
             "no focused field to set text on; click or focus a text field first".into(),
         )
     })?;
-    let target = Target { pid, window_id };
-    type_text(&focused, &target, text).map_err(Into::into)
+    // Layout-safe replace: foreground + native Cmd+A + Cmd+V (AppleScript translates
+    // the keys to the current keyboard layout — no hardcoded keycode, which on AZERTY
+    // turns Cmd+A into Cmd+Q; native select-all also avoids the AX char-count tail bug).
+    crate::paste_replace_field_foreground(pid, text)
 }
 
 pub(super) fn resolve_window(app: &AxElement, requested_window_id: u32) -> Result<AxElement> {
