@@ -67,3 +67,33 @@ par touches brutes (curseur+Backspace) sur ces champs : passer par l'AX.
 `open_menu("Édition")` → `failed` (item AX visible mais l'AXPress n'ouvre pas),
 même après `focus_window`. Probable : Firefox multi-fenêtres / fenêtre cible pas
 *key window*. Empêche le fallback « Édition → Tout sélectionner ». Basse priorité.
+
+## 5. Pilotage LinkedIn (édition d'expériences) — notes + gotcha « formulaire vide »
+
+Édition des 6 expériences du profil le 2026-06-25 (sync sur le rendu-final). LinkedIn
+est **sparse-AX** comme Collective : crayons par-ligne, textarea Description et scroll
+du modal **absents de l'arbre AX** → tout en raw (`click_at`) + `find_ocr_text` + molette
+réelle (`scroll_at borrow_cursor=true`, fallback appris Firefox+LinkedIn).
+
+**⚠️ Gotcha « formulaire vide » (≠ bug MCP)** : au 1er clic sur le crayon d'une
+expérience, le **modal d'édition peut se charger VIDE** (champs en placeholder
+« Ex. : chef des ventes au détail »), ce qui ressemble à une **création**. Ce n'en
+est PAS une : c'est le **même form-id** (race de chargement LinkedIn). La coordonnée
+était bonne. **Recharger la page** (`Cmd+R`) règle le glitch → le modal se rouvre
+pré-rempli. **NE JAMAIS sauvegarder un modal aux champs requis vides** (ça écraserait
+l'expérience). *Idée d'amélioration MCP* : sur ouverture d'un edit-form, détecter des
+champs requis vides + avertir/retry au lieu de laisser croire à une création.
+
+**Méthode fiable (vérifiée ×6)** :
+1. `find_ocr_text("<Titre de l'expérience>")` → centre `(tx, ty)` de la ligne.
+2. Crayon = `click_at(x≈3603 [bord droit de la carte], y=ty)`. Ne PAS deviner à
+   l'aveugle un y approximatif (risque de taper le « + créer » de la section ou un
+   hotspot inter-cartes).
+3. Modal ouvert pré-rempli → `scroll_at(down, 1, borrow_cursor)` cadre la Description.
+4. `click_at` dans la textarea → `pbcopy <bloc> | osascript Cmd+A + Cmd+V` (layout-safe).
+5. « Enregistrer » → puis fermer **2 pop-ups** post-save : « vérifiez l'emploi »
+   (`Passer`) pour les postes **actuels**, et « personnes que vous pourriez connaître »
+   (`Ignorer`) à chaque save.
+
+**Collage = lignes vides écrasées** (idem bug About) : LinkedIn supprime les lignes
+vides au collage ; les blocs d'expérience n'en ont pas (puces consécutives) donc OK.
