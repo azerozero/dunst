@@ -217,6 +217,22 @@ impl Engine {
         .fingerprint
     }
 
+    /// OCR/vision fallback for the JSON-facing `find_element` read path. Action
+    /// resolution remains AX-only because synthetic hit targets are not
+    /// `SceneNode`s and must be driven through their advertised raw/OCR tools.
+    pub fn find_element_hit_target_fallback(&self, query: &str, limit: usize) -> Vec<HitTarget> {
+        let q = normalize_match(query);
+        let mut targets: Vec<HitTarget> = self
+            .hit_targets(false, "page", 500, None)
+            .targets
+            .into_iter()
+            .filter(|target| matches!(target.source.as_str(), "ocr" | "vision"))
+            .filter(|target| hit_target_matches_find_query(target, &q))
+            .collect();
+        targets.truncate(limit.clamp(1, 500));
+        targets
+    }
+
     fn append_ocr_hit_targets(
         &self,
         targets: &mut Vec<HitTarget>,
@@ -1262,6 +1278,21 @@ fn hit_source_rank(source: &str) -> u8 {
         "vision" => 3,
         _ => 4,
     }
+}
+
+fn hit_target_matches_find_query(target: &HitTarget, query: &str) -> bool {
+    normalized_contains_query(&normalize_match(&target.id), query)
+        || normalized_contains_query(&normalize_match(target.role), query)
+        || target
+            .label
+            .as_deref()
+            .map(|label| normalized_contains_query(&normalize_match(label), query))
+            .unwrap_or(false)
+        || target
+            .value
+            .as_deref()
+            .map(|value| normalized_contains_query(&normalize_match(value), query))
+            .unwrap_or(false)
 }
 
 fn source_name(source: dunst_core::Source) -> &'static str {

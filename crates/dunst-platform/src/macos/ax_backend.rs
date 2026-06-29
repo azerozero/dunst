@@ -56,10 +56,7 @@ pub(super) fn last_input_age_ms() -> Option<u64> {
     // SAFETY: this CoreGraphics query has no pointer arguments or retained
     // ownership; both enum values use documented constants.
     let seconds = unsafe {
-        CGEventSourceSecondsSinceLastEventType(
-            CGEventSourceStateID::CombinedSessionState,
-            any_input,
-        )
+        CGEventSourceSecondsSinceLastEventType(CGEventSourceStateID::HIDSystemState, any_input)
     };
     if seconds.is_finite() && seconds >= 0.0 {
         Some((seconds * 1_000.0).round() as u64)
@@ -77,6 +74,8 @@ pub(super) fn user_idle_block_message(operation: &str) -> Option<String> {
     if age_ms >= guard_ms {
         return None;
     }
+    // Keep this message shape stable: MCP callers parse the age_ms and
+    // guard_ms values from "was {age_ms} ms ago (< {guard_ms} ms)".
     Some(format!(
         "user-active guard blocked {operation}: last keyboard/mouse input was {age_ms} ms ago (< {guard_ms} ms). Retry after the operator is idle, or set DUNST_MCP_USER_IDLE_GUARD_MS=0 to disable this guard."
     ))
@@ -497,5 +496,15 @@ impl From<ActionFailure> for DunstError {
             }
             ActionFailure::Execution(message) => DunstError::Execution(message),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_graphics_exposes_hid_system_state() {
+        assert_eq!(CGEventSourceStateID::HIDSystemState as i32, 1);
     }
 }

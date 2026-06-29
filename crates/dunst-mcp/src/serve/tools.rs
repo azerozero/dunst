@@ -190,7 +190,7 @@ fn query_tools() -> Vec<Value> {
         ),
         tool(
             "find_element",
-            "Find elements whose id/label/role contains the query (case-insensitive). Ensures a recent AX graph by default. Results are ranked with visible enabled targets first; visible_only drops off-window/latent noise.",
+            "Find elements whose id/label/role contains the query (case-insensitive). Ensures a recent AX graph by default. Results are ranked with visible enabled targets first; visible_only drops off-window/latent noise. If AX has no matches, falls back to OCR/vision hit targets tagged by source.",
             schema(
                 json!({
                     "query": { "type": "string" },
