@@ -1,0 +1,69 @@
+# ShellCheck gate: static analysis for the repo's shell scripts.
+#
+# Lints every tracked script under scripts/**, plus any top-level *.sh, with
+# `shellcheck -x` so `source`d files are followed. Runs on push to main and on
+# PRs that touch shell scripts or this workflow.
+#
+# Severity is pinned to `warning`: this still flags genuine bugs while avoiding
+# failures on info-level style notes.
+
+name: ShellCheck
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**.sh"
+      - ".github/workflows/shellcheck.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "**.sh"
+      - ".github/workflows/shellcheck.yml"
+
+concurrency:
+  group: shellcheck-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: read-all
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v6
+      - name: Run shellcheck
+        run: |
+          set -euo pipefail
+          # ubuntu-latest ships shellcheck preinstalled; print the version so
+          # the log records exactly which ruleset produced the result.
+          shellcheck --version
+
+          # Collect scripts/** and any top-level *.sh. `! -path './*/*'` pins
+          # the second alternative to the repo root so it does not pull in
+          # scripts owned by other trees.
+          mapfile -d '' -t scripts < <(
+            find . \
+              -type d -name target -prune -o \
+              -type f -name '*.sh' \
+              \( -path './scripts/*' \
+                 -o \( -path './*.sh' ! -path './*/*' \) \) \
+              -print0
+          )
+
+          if [ "${#scripts[@]}" -eq 0 ]; then
+            echo "::error::No shell scripts found - check the find globs."
+            exit 1
+          fi
+
+          printf 'Linting %d shell script(s):\n' "${#scripts[@]}"
+          printf '  %s\n' "${scripts[@]}"
+
+          # -x follows `source`/`.` directives; --severity=warning fails on
+          # errors and warnings but not info/style notes.
+          shellcheck -x --severity=warning "${scripts[@]}"
