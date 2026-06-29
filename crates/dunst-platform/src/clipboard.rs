@@ -3,6 +3,14 @@ use dunst_core::{DunstError, Result};
 const CMD_FLAG: u64 = 0x0010_0000;
 const V_KEYCODE: u16 = 0x09;
 
+/// Delay between issuing Cmd+V and restoring the previous clipboard. The paste
+/// keystroke is delivered to the target app's event queue and consumed
+/// asynchronously on its run loop, which reads the pasteboard *after*
+/// `key_web_background` returns. Restoring sooner races that read and makes the
+/// app paste the previous (stale) clipboard. 300 ms matches the proven foreground
+/// path (`paste_replace_field_foreground`'s `delay 0.3`).
+const PASTE_CONSUME_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+
 #[cfg(target_os = "macos")]
 pub fn read_clipboard_bytes() -> Result<Vec<u8>> {
     let output = std::process::Command::new("pbpaste")
@@ -72,6 +80,12 @@ pub fn paste_text_background(
     };
     write_clipboard_bytes(text.as_bytes())?;
     let paste = crate::key_web_background(pid, window_id, V_KEYCODE, CMD_FLAG);
+    // Let the target app consume the paste (read the pasteboard) before putting
+    // the old clipboard back; restoring sooner races that read and the app ends
+    // up pasting the previous clipboard. Only matters when we actually restore.
+    if previous.is_some() {
+        std::thread::sleep(PASTE_CONSUME_DELAY);
+    }
     let restore = previous
         .as_deref()
         .map(write_clipboard_bytes)
@@ -157,5 +171,13 @@ mod tests {
     fn paste_shortcut_uses_command_v() {
         assert_eq!(CMD_FLAG, 0x0010_0000);
         assert_eq!(V_KEYCODE, 0x09);
+    }
+
+    #[test]
+    fn paste_consume_delay_outlasts_async_paste() {
+        // Restoring the clipboard before the target app reads the pasteboard
+        // makes it paste stale content; the delay must stay non-zero and at
+        // least as long as the proven foreground path's `delay 0.3`.
+        assert!(PASTE_CONSUME_DELAY >= std::time::Duration::from_millis(300));
     }
 }
