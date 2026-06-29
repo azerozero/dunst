@@ -1,5 +1,8 @@
 use super::*;
 
+const DEFAULT_USER_ACTIVE_GUARD_ATTEMPTS: usize = 4;
+const USER_IDLE_RETRY_MS_ENV: &str = "DUNST_MCP_USER_IDLE_RETRY_MS";
+
 pub(super) fn likely_url(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -109,8 +112,28 @@ where
     retry_user_active_guard_after(Duration::from_millis(400), f)
 }
 
-pub(super) fn retry_user_active_guard_after<T, F>(
+pub(super) fn retry_user_active_guard_after<T, F>(delay: Duration, f: F) -> dunst_core::Result<T>
+where
+    F: FnMut() -> dunst_core::Result<T>,
+{
+    match user_active_guard_retry_budget() {
+        Some(budget) => retry_user_active_guard_for_budget(delay, budget, f),
+        None => {
+            retry_user_active_guard_fixed_attempts(delay, DEFAULT_USER_ACTIVE_GUARD_ATTEMPTS, f)
+        }
+    }
+}
+
+fn user_active_guard_retry_budget() -> Option<Duration> {
+    std::env::var(USER_IDLE_RETRY_MS_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+}
+
+fn retry_user_active_guard_fixed_attempts<T, F>(
     delay: Duration,
+    attempts: usize,
     mut f: F,
 ) -> dunst_core::Result<T>
 where
@@ -118,7 +141,7 @@ where
 {
     let mut next_delay = delay;
     let mut last_guard_err = None;
-    for _ in 0..4 {
+    for _ in 0..attempts.max(1) {
         match f() {
             Err(err) if is_user_active_guard_error(&err) => {
                 last_guard_err = Some(err);
@@ -129,6 +152,31 @@ where
         }
     }
     Err(last_guard_err.expect("guard retry loop stores the last guard error"))
+}
+
+pub(super) fn retry_user_active_guard_for_budget<T, F>(
+    delay: Duration,
+    budget: Duration,
+    mut f: F,
+) -> dunst_core::Result<T>
+where
+    F: FnMut() -> dunst_core::Result<T>,
+{
+    let mut next_delay = delay;
+    let mut waited = Duration::ZERO;
+    loop {
+        match f() {
+            Err(err) if is_user_active_guard_error(&err) => {
+                if next_delay.is_zero() || waited.saturating_add(next_delay) > budget {
+                    return Err(err);
+                }
+                std::thread::sleep(next_delay);
+                waited += next_delay;
+                next_delay += delay;
+            }
+            other => return other,
+        }
+    }
 }
 
 pub(super) fn is_user_active_guard_error(err: &DunstError) -> bool {

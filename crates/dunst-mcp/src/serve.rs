@@ -520,6 +520,16 @@ fn find_matches_value(matches: Vec<&SceneNode>) -> Value {
     serde_json::to_value(matches).unwrap_or(Value::Null)
 }
 
+fn find_matches_value_or_fallback(engine: &Engine, query: &str, matches: Vec<&SceneNode>) -> Value {
+    if matches.is_empty() {
+        let fallback = engine.find_element_hit_target_fallback(query, 80);
+        if !fallback.is_empty() {
+            return serde_json::to_value(fallback).unwrap_or(Value::Null);
+        }
+    }
+    find_matches_value(matches)
+}
+
 fn find_element_value(
     engine: &mut Engine,
     query: &str,
@@ -535,7 +545,9 @@ fn find_element_value(
     }
 
     ensure_recent_graph(engine, fresh, force)?;
-    Ok(find_matches_value(
+    Ok(find_matches_value_or_fallback(
+        engine,
+        query,
         engine.find_element_filtered(query, visible_only),
     ))
 }

@@ -110,7 +110,7 @@ pub(super) fn post_window_bound_text(
             "element-bound typing requires a target window id; process-wide keyboard fallback suppressed".into(),
         ));
     }
-    type_text_background_impl(target.pid, target.window_id, text)
+    type_text_background_with_paste_fallback(target.pid, target.window_id, text)
 }
 
 pub(super) fn wait_for_string_attr(
@@ -166,7 +166,13 @@ pub(super) fn attr_settable(element: &AxElement, attr: &str) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TextInputAtom {
     Char(char),
-    Return,
+    Return { flags: u64 },
+}
+
+pub(super) const TEXT_NEWLINE_KEY_FLAGS: u64 = 0x0002_0000;
+
+pub(super) fn text_contains_line_break(text: &str) -> bool {
+    text.contains('\n') || text.contains('\r')
 }
 
 pub(super) fn for_text_input_atoms<F>(
@@ -180,14 +186,18 @@ where
     for ch in text.chars() {
         match ch {
             '\r' => {
-                f(TextInputAtom::Return)?;
+                f(TextInputAtom::Return {
+                    flags: TEXT_NEWLINE_KEY_FLAGS,
+                })?;
                 previous_was_cr = true;
             }
             '\n' if previous_was_cr => {
                 previous_was_cr = false;
             }
             '\n' => {
-                f(TextInputAtom::Return)?;
+                f(TextInputAtom::Return {
+                    flags: TEXT_NEWLINE_KEY_FLAGS,
+                })?;
                 previous_was_cr = false;
             }
             ch => {
@@ -201,10 +211,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{for_text_input_atoms, ActionFailure, TextInputAtom};
+    use super::{
+        for_text_input_atoms, text_contains_line_break, ActionFailure, TextInputAtom,
+        TEXT_NEWLINE_KEY_FLAGS,
+    };
 
     #[test]
-    pub(super) fn text_input_atoms_map_line_endings_to_return_keypresses() {
+    pub(super) fn text_input_atoms_map_line_endings_to_shift_return_keypresses() {
         let mut atoms = Vec::new();
         let result = for_text_input_atoms("a\nb\r\nc\rd", |atom| {
             atoms.push(atom);
@@ -216,13 +229,27 @@ mod tests {
             atoms,
             vec![
                 TextInputAtom::Char('a'),
-                TextInputAtom::Return,
+                TextInputAtom::Return {
+                    flags: TEXT_NEWLINE_KEY_FLAGS
+                },
                 TextInputAtom::Char('b'),
-                TextInputAtom::Return,
+                TextInputAtom::Return {
+                    flags: TEXT_NEWLINE_KEY_FLAGS
+                },
                 TextInputAtom::Char('c'),
-                TextInputAtom::Return,
+                TextInputAtom::Return {
+                    flags: TEXT_NEWLINE_KEY_FLAGS
+                },
                 TextInputAtom::Char('d'),
             ]
         );
+    }
+
+    #[test]
+    pub(super) fn text_contains_line_break_detects_all_supported_line_endings() {
+        assert!(!text_contains_line_break("single line"));
+        assert!(text_contains_line_break("two\nlines"));
+        assert!(text_contains_line_break("two\rlines"));
+        assert!(text_contains_line_break("two\r\nlines"));
     }
 }

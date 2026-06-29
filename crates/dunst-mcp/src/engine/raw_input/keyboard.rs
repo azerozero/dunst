@@ -107,6 +107,47 @@ impl Engine {
         )
     }
 
+    /// Replace the FOCUSED field's text: clears whatever currently has keyboard
+    /// focus and sets it to `text` via the app's `AXFocusedUIElement` (AX
+    /// select-all-replace, with a keyboard fallback). Robust where raw
+    /// clear-by-keystroke (End/Backspace/double-click) garbles the value when
+    /// driving a backgrounded form. Focus the field first (e.g. click it).
+    #[cfg(target_os = "macos")]
+    pub fn set_field_text(&mut self, text: &str) -> dunst_core::Result<AuditEntry> {
+        let target_id = raw_set_field_text_target_id(text);
+        let risk = Self::raw_input_risk(vec![
+            "replaces the entire contents of whatever field currently holds focus".into(),
+        ]);
+        if let Some(entry) = self.gate_raw_input(
+            &target_id,
+            SemanticAction::Type,
+            Some(text.to_string()),
+            Some("set focused field text (clear + replace)"),
+            risk.clone(),
+        ) {
+            return Ok(entry);
+        }
+        let outcome = retry_user_active_guard(|| {
+            dunst_platform::set_focused_field_text(self.target.pid, self.target.window_id, text)
+        });
+        self.audit_raw_input(
+            target_id,
+            SemanticAction::Type,
+            Some(text.to_string()),
+            Some("set focused field text (AX select-all-replace, keyboard fallback)"),
+            risk,
+            outcome,
+        )
+    }
+
+    /// Non-macOS stub: AX field replacement needs the macOS backend.
+    #[cfg(not(target_os = "macos"))]
+    pub fn set_field_text(&mut self, _text: &str) -> dunst_core::Result<AuditEntry> {
+        Err(DunstError::Execution(
+            "set_field_text requires a macOS backend".into(),
+        ))
+    }
+
     /// Paste `text` into the focused element by temporarily replacing the
     /// clipboard, sending Cmd+V to the target window, then restoring the
     /// previous plain-text clipboard contents. This keeps the platform clipboard

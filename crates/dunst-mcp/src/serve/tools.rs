@@ -190,7 +190,7 @@ fn query_tools() -> Vec<Value> {
         ),
         tool(
             "find_element",
-            "Find elements whose id/label/role contains the query (case-insensitive). Ensures a recent AX graph by default. Results are ranked with visible enabled targets first; visible_only drops off-window/latent noise.",
+            "Find elements whose id/label/role contains the query (case-insensitive). Ensures a recent AX graph by default. Results are ranked with visible enabled targets first; visible_only drops off-window/latent noise. If AX has no matches, falls back to OCR/vision hit targets tagged by source.",
             schema(
                 json!({
                     "query": { "type": "string" },
@@ -544,6 +544,11 @@ fn window_app_tools() -> Vec<Value> {
             schema(json!({ "app": {"type":"string"}, "url": {"type":"string"}, "args": {"type":"array","items":{"type":"string"},"description":"extra argv passed when launching the app"} }), &["app", "url"]),
         ),
         tool(
+            "navigate",
+            "Load a URL in the ATTACHED browser window and re-verify. Use this to drive a backgrounded browser to a new page: it always forces a fresh load (never re-selects a stale existing tab that merely matches the URL, the way open_url_and_attach_tab can), and it does not rely on the address bar — background keystrokes can't reach browser chrome (a typed URL falls through to the page as in-page shortcuts). Returns the same attach/verify result as open_url_and_attach_tab.",
+            schema(json!({ "url": {"type":"string"} }), &["url"]),
+        ),
+        tool(
             "close_app",
             "Quit an app gracefully by name (no foreground).",
             schema(json!({ "app": {"type":"string"} }), &["app"]),
@@ -581,6 +586,11 @@ fn keyboard_menu_tools() -> Vec<Value> {
         tool(
             "type_keys",
             "Type text into the FOCUSED element via the SkyLight auth-signed keyboard path — reaches a backgrounded/occluded window's web content. Focus the field first (prefer click_element on a field; click_at is raw). Raw mutating keyboard input is high-risk and requires approval. If approval is unavailable or denied, switch to ui_fallback_hint and use type_into on a mapped field id. If the user-active guard blocks it, wait until the operator is idle and retry once.",
+            schema(json!({ "text": {"type":"string"} }), &["text"]),
+        ),
+        tool(
+            "set_field_text",
+            "Clear the FOCUSED field and set it to text in one robust step. Sets the app's AXFocusedUIElement value directly (AX select-all-replace, with a keyboard fallback) — use this instead of clearing with raw End/Backspace/double-click + type_keys, which gives erratic cursor results on backgrounded web forms (e.g. it garbles to 'copullntents'). Focus the field first (click it). Raw mutating input is high-risk and requires approval.",
             schema(json!({ "text": {"type":"string"} }), &["text"]),
         ),
         tool(

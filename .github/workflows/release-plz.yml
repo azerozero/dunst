@@ -9,7 +9,7 @@ on:
     branches:
       - main
     paths:
-      - "src/**"
+      - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
   pull_request:

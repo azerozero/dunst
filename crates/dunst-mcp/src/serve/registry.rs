@@ -65,6 +65,7 @@ pub(super) const TOOL_REGISTRY: &[RegisteredTool] = &[
     tool("open_menu", ToolRoute::Raw),
     tool("press_key", ToolRoute::Raw),
     tool("type_keys", ToolRoute::Raw),
+    tool("set_field_text", ToolRoute::Raw),
     tool("paste_text", ToolRoute::Raw),
     tool("scroll", ToolRoute::Raw),
     tool("scroll_at", ToolRoute::Raw),
@@ -81,6 +82,7 @@ pub(super) const TOOL_REGISTRY: &[RegisteredTool] = &[
     tool("attach", ToolRoute::WindowApp),
     tool("launch_app", ToolRoute::WindowApp),
     tool("open_url_and_attach_tab", ToolRoute::WindowApp),
+    tool("navigate", ToolRoute::WindowApp),
     tool("close_app", ToolRoute::WindowApp),
     tool("screenshot", ToolRoute::Screenshot),
 ];

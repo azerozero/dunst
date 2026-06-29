@@ -1,0 +1,44 @@
+name: Security Audit (daily)
+
+# Runs `cargo audit` and `cargo deny` on a fixed cron so newly-published CVEs
+# and dependency policy regressions are caught even if the repository has not
+# been modified.
+
+on:
+  schedule:
+    # 04:17 UTC daily - off-peak for GitHub Actions scheduler.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: audit-cron-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: cargo audit (scheduled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v6
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  deny:
+    name: cargo deny (scheduled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2

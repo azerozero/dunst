@@ -135,6 +135,15 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string()),
             None => Err("missing 'text'".into()),
         },
+        "set_field_text" => match arg(args, "text") {
+            Some(text) => engine
+                .set_field_text(&text)
+                .map(|entry| {
+                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
+                })
+                .map_err(|e| e.to_string()),
+            None => Err("missing 'text'".into()),
+        },
         "paste_text" => match arg(args, "text") {
             Some(text) => engine
                 .paste_text(&text, arg_bool(args, "restore_clipboard").unwrap_or(true))

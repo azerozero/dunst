@@ -24,7 +24,10 @@ pub use capabilities::{
     AppCapabilities, ClipboardCapabilities, InputCapabilities, PerceptionCapabilities,
     PlatformCapabilities, PlatformKind, WindowCapabilities,
 };
-pub use clipboard::{paste_text_background, read_clipboard_bytes, write_clipboard_bytes};
+pub use clipboard::{
+    paste_replace_field_foreground, paste_text_background, read_clipboard_bytes,
+    write_clipboard_bytes,
+};
 #[cfg(target_os = "macos")]
 pub use file_chooser::select_file_osascript_lines;
 pub use file_chooser::{borrow_target_frontmost, restore_frontmost_pid, select_file};
@@ -232,6 +235,16 @@ pub fn scroll_at_point(x: f64, y: f64, delta_y: i32) -> Result<()> {
 #[cfg(target_os = "macos")]
 pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> Result<()> {
     macos::type_text_background(pid, window_id, text)
+}
+
+/// Replace the text of the FOCUSED field in `pid` by setting the app's
+/// `AXFocusedUIElement` value directly (AX select-all-replace, with a keyboard
+/// fallback). Robust against the erratic cursor of raw clear-by-keystroke
+/// (End/Backspace), even for sparse-AX web inputs absent from the scene graph.
+/// Focus the field first (e.g. a click on it).
+#[cfg(target_os = "macos")]
+pub fn set_focused_field_text(pid: i32, window_id: u32, text: &str) -> Result<()> {
+    macos::set_focused_field_text(pid, window_id, text)
 }
 
 /// Post a named keycode (down+up) with optional modifier `flags` (CGEventFlags

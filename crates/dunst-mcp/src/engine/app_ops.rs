@@ -227,7 +227,14 @@ impl Engine {
         // tabs depending on browser preferences, which is the wrong primitive
         // for continuing inside an already-attached page.
         let existing_candidates = self.matching_windows_for_app(app);
-        if let Some(selected) = best_window_for_url(&existing_candidates, &terms) {
+        // TODO: expose this as a public MCP option: reuse = exact | host | never.
+        let reuse_policy = BrowserTabReusePolicy::Host;
+        if let Some(selected) = self.best_existing_window_for_url(
+            &existing_candidates,
+            &terms,
+            &host_labels,
+            reuse_policy,
+        ) {
             let launch = self.launch_app_result(app, Some(url), false);
             return self.attach_url_window_result(
                 launch,
@@ -255,12 +262,119 @@ impl Engine {
         self.attach_url_window_result(launch, candidates, selected, &terms, &host_labels)
     }
 
+    /// Navigate the attached browser to `url` and re-verify. Unlike
+    /// `open_url_and_attach_tab`, this ALWAYS forces a fresh load (it never
+    /// re-selects a stale existing tab/window that merely matches the URL terms —
+    /// the failure mode that lands on the wrong tab) and targets the
+    /// currently-attached app. This is the reliable way to drive a backgrounded
+    /// browser to a new page: address-bar keystrokes are not an option in the
+    /// background, where synthetic keys fall through to page content and arrive as
+    /// in-page shortcuts (e.g. GitHub's `g i` → Issues) instead of the URL bar.
+    #[cfg(target_os = "macos")]
+    pub fn navigate(&mut self, url: &str) -> OpenUrlAttachResult {
+        let app = self.window.app_name.clone();
+        let terms = url_match_terms(url);
+        let host_labels = url_host_labels(url);
+        let launch = self.launch_app(&app, Some(url), &[]);
+        std::thread::sleep(Duration::from_millis(700));
+        let candidates = launch.matching_windows.clone();
+        let selected = best_window_for_url(&candidates, &terms).or_else(|| {
+            candidates
+                .iter()
+                .find(|window| window.window_id == self.target.window_id)
+                .cloned()
+                .or_else(|| candidates.first().cloned())
+        });
+        self.attach_url_window_result(launch, candidates, selected, &terms, &host_labels)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn navigate(&mut self, url: &str) -> OpenUrlAttachResult {
+        let app = self.window.app_name.clone();
+        self.open_url_and_attach_tab(&app, url, &[])
+    }
+
     fn matching_windows_for_app(&self, app: &str) -> Vec<WindowSummary> {
         let app_needle = normalize_match(app);
         self.list_windows(false)
             .into_iter()
             .filter(|window| normalize_match(&window.app).contains(&app_needle))
             .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn best_existing_window_for_url(
+        &mut self,
+        candidates: &[WindowSummary],
+        terms: &[String],
+        host_labels: &[String],
+        reuse_policy: BrowserTabReusePolicy,
+    ) -> Option<WindowSummary> {
+        if matches!(reuse_policy, BrowserTabReusePolicy::Never) {
+            return None;
+        }
+        best_window_for_url(candidates, terms).or_else(|| {
+            self.best_window_with_matching_selected_tab(
+                candidates,
+                terms,
+                host_labels,
+                reuse_policy,
+            )
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn best_window_with_matching_selected_tab(
+        &mut self,
+        candidates: &[WindowSummary],
+        terms: &[String],
+        host_labels: &[String],
+        reuse_policy: BrowserTabReusePolicy,
+    ) -> Option<WindowSummary> {
+        let original = self.target.clone();
+        let mut best = None;
+
+        for window in candidates {
+            if self.target.window_id != window.window_id
+                && self.attach(window.pid, window.window_id).is_err()
+            {
+                continue;
+            }
+            let Some(tab) = self
+                .list_browser_tabs(None, true)
+                .into_iter()
+                .find(|tab| tab.selected)
+            else {
+                continue;
+            };
+            let Some(score) = browser_tab_reuse_score(&tab, terms, host_labels, reuse_policy)
+            else {
+                continue;
+            };
+            let rank = (score, window.on_screen, std::cmp::Reverse(window.window_id));
+            if best
+                .as_ref()
+                .map(|(current, _)| rank > *current)
+                .unwrap_or(true)
+            {
+                best = Some((rank, window.clone()));
+            }
+        }
+
+        if let Some((_, selected)) = best {
+            if self.target.window_id != selected.window_id
+                && self.attach(selected.pid, selected.window_id).is_err()
+            {
+                let _ = self.attach(original.pid, original.window_id);
+                return None;
+            }
+            Some(selected)
+        } else {
+            if self.target != original {
+                let _ = self.attach(original.pid, original.window_id);
+            }
+            None
+        }
     }
 
     fn attach_url_window_result(
@@ -350,6 +464,14 @@ impl Engine {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum BrowserTabReusePolicy {
+    Exact,
+    Host,
+    Never,
+}
+
 fn url_match_terms(url: &str) -> Vec<String> {
     let decoded = percent_decode_lossy(url);
     let normalized = normalize_match(&decoded);
@@ -390,6 +512,37 @@ fn best_window_for_url(windows: &[WindowSummary], terms: &[String]) -> Option<Wi
             (*score, *on_screen, std::cmp::Reverse(*window_id))
         })
         .map(|(_, _, _, window)| window.clone())
+}
+
+fn browser_tab_reuse_score(
+    tab: &BrowserTab,
+    terms: &[String],
+    host_labels: &[String],
+    policy: BrowserTabReusePolicy,
+) -> Option<usize> {
+    if matches!(policy, BrowserTabReusePolicy::Never) {
+        return None;
+    }
+    if let Some(url) = tab.url.as_deref() {
+        let url = normalize_match(url);
+        let score = terms
+            .iter()
+            .filter(|term| url.contains(term.as_str()))
+            .count();
+        if score > 0 {
+            return Some(score + 100);
+        }
+    }
+
+    let title = normalize_match(&tab.title);
+    let score = terms
+        .iter()
+        .filter(|term| {
+            matches!(policy, BrowserTabReusePolicy::Host) || !is_generic_url_term(term, host_labels)
+        })
+        .filter(|term| title.contains(term.as_str()))
+        .count();
+    (score > 0).then_some(score)
 }
 
 fn percent_decode_lossy(value: &str) -> String {
@@ -538,6 +691,40 @@ mod tests {
         ];
 
         assert_eq!(best_window_for_url(&windows, &terms).unwrap().window_id, 2);
+    }
+
+    #[test]
+    fn browser_tab_reuse_policy_matches_host_titles_by_default() {
+        let url = "https://github.com/AlexsJones/llmfit";
+        let terms = url_match_terms(url);
+        let host_labels = url_host_labels(url);
+        let tab = tab("GitHub", None);
+
+        assert_eq!(
+            browser_tab_reuse_score(&tab, &terms, &host_labels, BrowserTabReusePolicy::Host),
+            Some(1)
+        );
+        assert_eq!(
+            browser_tab_reuse_score(&tab, &terms, &host_labels, BrowserTabReusePolicy::Exact),
+            None
+        );
+        assert_eq!(
+            browser_tab_reuse_score(&tab, &terms, &host_labels, BrowserTabReusePolicy::Never),
+            None
+        );
+    }
+
+    #[test]
+    fn browser_tab_reuse_exact_accepts_path_specific_title() {
+        let url = "https://github.com/AlexsJones/llmfit";
+        let terms = url_match_terms(url);
+        let host_labels = url_host_labels(url);
+        let tab = tab("GitHub - AlexsJones/llmfit", None);
+
+        assert_eq!(
+            browser_tab_reuse_score(&tab, &terms, &host_labels, BrowserTabReusePolicy::Exact),
+            Some(2)
+        );
     }
 
     #[test]

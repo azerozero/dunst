@@ -273,7 +273,46 @@ pub(super) fn scroll_web_background_impl(
 /// `SLEventPostToPid`. No cursor, no foreground. Fails if SkyLight is absent
 /// or if any expected key event cannot be created and posted.
 pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> Result<()> {
-    type_text_background_impl(pid, window_id, text).map_err(ActionFailure::into)
+    type_text_background_with_paste_fallback(pid, window_id, text).map_err(ActionFailure::into)
+}
+
+pub(super) fn type_text_background_with_paste_fallback(
+    pid: i32,
+    window_id: u32,
+    text: &str,
+) -> std::result::Result<(), ActionFailure> {
+    if should_prefer_clipboard_paste(text) {
+        match crate::clipboard::paste_text_background(pid, window_id, text, true) {
+            Ok(()) => return Ok(()),
+            Err(err) if paste_error_allows_key_fallback(&err) => {}
+            Err(err) => {
+                return Err(ActionFailure::Execution(format!(
+                    "multi-line clipboard paste failed: {err}"
+                )));
+            }
+        }
+    }
+    type_text_background_impl(pid, window_id, text)
+}
+
+fn should_prefer_clipboard_paste(text: &str) -> bool {
+    text_contains_line_break(text)
+}
+
+fn paste_error_allows_key_fallback(err: &DunstError) -> bool {
+    let DunstError::Execution(message) = err else {
+        return false;
+    };
+    if message.contains("clipboard restore failed") || message.contains("restore also failed") {
+        return false;
+    }
+    message.contains("requires the SkyLight backend")
+        || message.contains("user-active guard blocked")
+        || message.contains("read clipboard")
+        || message.contains("write clipboard")
+        || message.contains("start pbcopy")
+        || message.contains("wait for pbcopy")
+        || message.contains("create background key CGEvent")
 }
 
 pub(super) fn type_text_background_impl(
@@ -297,7 +336,9 @@ pub(super) fn type_text_background_impl(
     for_text_input_atoms(text, |atom| {
         match atom {
             TextInputAtom::Char(ch) => post_background_unicode_char(pid, ch)?,
-            TextInputAtom::Return => post_background_keycode_pair(pid, RETURN_KEYCODE)?,
+            TextInputAtom::Return { flags } => {
+                post_background_keycode_pair(pid, RETURN_KEYCODE, flags)?;
+            }
         }
         thread::sleep(Duration::from_millis(8));
         Ok(())
@@ -324,12 +365,17 @@ pub(super) fn post_background_unicode_char(
 pub(super) fn post_background_keycode_pair(
     pid: i32,
     keycode: CGKeyCode,
+    flags: u64,
 ) -> std::result::Result<(), ActionFailure> {
+    let flags = CGEventFlags::from_bits_truncate(flags);
     for down in [true, false] {
         let source = event_source("skylight key CGEventSource")?;
         let event = CGEvent::new_keyboard_event(source, keycode, down).map_err(|err| {
             ActionFailure::Execution(format!("create background key CGEvent: {err:?}"))
         })?;
+        if !flags.is_empty() {
+            event.set_flags(flags);
+        }
         post_background_key_event(pid, &event)?;
     }
     Ok(())
@@ -386,8 +432,12 @@ pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) ->
 }
 
 pub fn press_key(pid: i32, window_id: u32, key: &str) -> Result<()> {
-    let keycode = named_keycode(key).map_err(DunstError::from)?;
-    key_web_background(pid, window_id, keycode, 0)
+    let (keycode, flags) = named_key_event(key).map_err(DunstError::from)?;
+    key_web_background(pid, window_id, keycode, flags)
+}
+
+pub(super) fn named_key_event(key: &str) -> std::result::Result<(CGKeyCode, u64), ActionFailure> {
+    Ok((named_keycode(key)?, 0))
 }
 
 pub(super) fn named_keycode(key: &str) -> std::result::Result<CGKeyCode, ActionFailure> {
@@ -506,4 +556,40 @@ pub(super) fn event_source(
 ) -> std::result::Result<CGEventSource, ActionFailure> {
     CGEventSource::new(CGEventSourceStateID::HIDSystemState)
         .map_err(|err| ActionFailure::Execution(format!("{operation}: {err:?}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_return_key_event_has_no_modifier_flags() {
+        let (keycode, flags) = match named_key_event("Return") {
+            Ok(event) => event,
+            Err(_) => panic!("Return should resolve to a named key event"),
+        };
+
+        assert_eq!(keycode, KeyCode::RETURN);
+        assert_eq!(flags, 0);
+    }
+
+    #[test]
+    fn multi_line_background_text_prefers_clipboard_paste() {
+        assert!(!should_prefer_clipboard_paste("single line"));
+        assert!(should_prefer_clipboard_paste("first\nsecond"));
+        assert!(should_prefer_clipboard_paste("first\rsecond"));
+    }
+
+    #[test]
+    fn paste_error_fallback_avoids_possible_duplicate_text() {
+        assert!(paste_error_allows_key_fallback(&DunstError::Execution(
+            "key_web_background requires the SkyLight backend".into(),
+        )));
+        assert!(!paste_error_allows_key_fallback(&DunstError::Execution(
+            "post background key CGEvent via SkyLight".into(),
+        )));
+        assert!(!paste_error_allows_key_fallback(&DunstError::Execution(
+            "paste completed, but clipboard restore failed: write clipboard with pbcopy".into(),
+        )));
+    }
 }

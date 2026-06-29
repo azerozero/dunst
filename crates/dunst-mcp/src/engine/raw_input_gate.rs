@@ -294,6 +294,9 @@ impl Engine {
         if target_id.starts_with("keyboard@paste_text:") {
             return validate_paste_text_target_id(target_id);
         }
+        if target_id.starts_with("keyboard@set_field_text:") {
+            return validate_set_field_text_target_id(target_id);
+        }
 
         if let Some(rest) = target_id.strip_prefix("keyboard@scroll:") {
             return validate_scroll_target(rest, false, self);
@@ -500,6 +503,10 @@ pub(super) fn raw_paste_text_target_id(text: &str) -> String {
     raw_text_payload_target_id("paste_text", text)
 }
 
+pub(super) fn raw_set_field_text_target_id(text: &str) -> String {
+    raw_text_payload_target_id("set_field_text", text)
+}
+
 fn raw_text_payload_target_id(action: &str, text: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in text.as_bytes() {
@@ -556,6 +563,15 @@ fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
             cost_events: 1,
         }];
     }
+    if target_id.starts_with("keyboard@set_field_text:") {
+        return vec![RawApprovalPolicy {
+            key: RawApprovalKey {
+                scope: RawApprovalScope::Exact(target_id.to_string()),
+            },
+            grant_events: 1,
+            cost_events: 1,
+        }];
+    }
     if let Some(scope) = ocr_click_approval_scope(target_id) {
         return vec![RawApprovalPolicy {
             key: RawApprovalKey {
@@ -575,19 +591,18 @@ fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
 }
 
 fn scroll_direction_policy(rest: &str) -> Vec<RawApprovalPolicy> {
-    let mut parts = rest.split(':');
-    let direction = parts.next().unwrap_or("down");
-    let cost_events = parts
-        .next()
-        .and_then(|count| count.parse::<usize>().ok())
-        .unwrap_or(1)
-        .clamp(1, 20);
+    let direction = rest.split(':').next().unwrap_or("down").to_string();
+    // A scroll is one operator gesture regardless of page count or exact point.
+    // Approving "scroll <dir>" therefore grants a batch of same-direction scrolls
+    // — at any point, any page count — within the TTL, so repeated point-scrolls
+    // (scroll_at at successive coordinates) don't re-arm the approval gate on every
+    // call. Each scroll costs exactly one event; the grant covers a working batch.
     vec![RawApprovalPolicy {
         key: RawApprovalKey {
-            scope: RawApprovalScope::ScrollDirection(direction.to_string()),
+            scope: RawApprovalScope::ScrollDirection(direction),
         },
-        grant_events: 5,
-        cost_events,
+        grant_events: 8,
+        cost_events: 1,
     }]
 }
 
@@ -654,6 +669,10 @@ fn validate_type_keys_target_id(target_id: &str) -> dunst_core::Result<()> {
 
 fn validate_paste_text_target_id(target_id: &str) -> dunst_core::Result<()> {
     validate_hashed_text_target_id(target_id, "keyboard@paste_text:", "paste_text")
+}
+
+fn validate_set_field_text_target_id(target_id: &str) -> dunst_core::Result<()> {
+    validate_hashed_text_target_id(target_id, "keyboard@set_field_text:", "set_field_text")
 }
 
 fn validate_hashed_text_target_id(

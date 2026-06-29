@@ -1,10 +1,21 @@
 name: CI
 
 on:
+  merge_group:
   push:
     branches: [main]
     tags:
       - "v*"
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "LICENSE*"
+      - ".editorconfig"
+      - ".gitignore"
+      - ".gitattributes"
+      - "**.txt"
+      - "CODEOWNERS"
+      - ".vscode/**"
   pull_request:
   workflow_dispatch:
     inputs:

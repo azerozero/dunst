@@ -61,7 +61,7 @@ use query_support::*;
 use raw_input::page_scroll_target_id;
 use raw_input_gate::{
     is_synthetic_approval_target_id, raw_paste_text_target_id, raw_press_key_target_id,
-    raw_type_keys_target_id, RawApprovalKey,
+    raw_set_field_text_target_id, raw_type_keys_target_id, RawApprovalKey,
 };
 use runtime_support::*;
 use scene_query::*;

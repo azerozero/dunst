@@ -56,10 +56,7 @@ pub(super) fn last_input_age_ms() -> Option<u64> {
     // SAFETY: this CoreGraphics query has no pointer arguments or retained
     // ownership; both enum values use documented constants.
     let seconds = unsafe {
-        CGEventSourceSecondsSinceLastEventType(
-            CGEventSourceStateID::CombinedSessionState,
-            any_input,
-        )
+        CGEventSourceSecondsSinceLastEventType(CGEventSourceStateID::HIDSystemState, any_input)
     };
     if seconds.is_finite() && seconds >= 0.0 {
         Some((seconds * 1_000.0).round() as u64)
@@ -77,6 +74,8 @@ pub(super) fn user_idle_block_message(operation: &str) -> Option<String> {
     if age_ms >= guard_ms {
         return None;
     }
+    // Keep this message shape stable: MCP callers parse the age_ms and
+    // guard_ms values from "was {age_ms} ms ago (< {guard_ms} ms)".
     Some(format!(
         "user-active guard blocked {operation}: last keyboard/mouse input was {age_ms} ms ago (< {guard_ms} ms). Retry after the operator is idle, or set DUNST_MCP_USER_IDLE_GUARD_MS=0 to disable this guard."
     ))
@@ -388,6 +387,27 @@ pub(super) fn app_element(pid: i32) -> Result<AxElement> {
     }
 }
 
+/// Replace the text of whatever field currently holds keyboard focus in the app.
+/// Fetches the app's `AXFocusedUIElement` directly (so it works even when the
+/// focused field is a sparse-AX web input absent from the scene graph) and reuses
+/// the robust [`type_text`] path (AX select-all-replace, with a keyboard
+/// fallback). This avoids the erratic cursor results of clearing a field with raw
+/// End/Backspace/double-click keystrokes (which produced garbled values like
+/// "copullntents" when driving a backgrounded browser form).
+pub(crate) fn set_focused_field_text(pid: i32, _window_id: u32, text: &str) -> Result<()> {
+    let app = app_element(pid)?;
+    // Confirm a text field is focused so we don't select-all + paste into nothing.
+    attr_ax_element(&app, "AXFocusedUIElement").ok_or_else(|| {
+        DunstError::Execution(
+            "no focused field to set text on; click or focus a text field first".into(),
+        )
+    })?;
+    // Layout-safe replace: foreground + native Cmd+A + Cmd+V (AppleScript translates
+    // the keys to the current keyboard layout — no hardcoded keycode, which on AZERTY
+    // turns Cmd+A into Cmd+Q; native select-all also avoids the AX char-count tail bug).
+    crate::paste_replace_field_foreground(pid, text)
+}
+
 pub(super) fn resolve_window(app: &AxElement, requested_window_id: u32) -> Result<AxElement> {
     let mut windows = attr_array(app, kAXWindowsAttribute)
         .map(|windows| ax_elements(&windows))
@@ -476,5 +496,15 @@ impl From<ActionFailure> for DunstError {
             }
             ActionFailure::Execution(message) => DunstError::Execution(message),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_graphics_exposes_hid_system_state() {
+        assert_eq!(CGEventSourceStateID::HIDSystemState as i32, 1);
     }
 }

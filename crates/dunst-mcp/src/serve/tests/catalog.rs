@@ -5,7 +5,7 @@ use crate::serve::registry::TOOL_REGISTRY;
 fn tools_list_exposes_read_text_with_object_schema() {
     std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
     let tools = tools_list();
-    assert_eq!(tools.len(), 68, "tool count");
+    assert_eq!(tools.len(), 70, "tool count");
     // Every tool must declare a JSON-Schema object input (the type:object fix).
     for t in &tools {
         assert_eq!(

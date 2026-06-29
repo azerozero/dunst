@@ -20,6 +20,26 @@ fn user_active_guard_retry_runs_once_before_returning() {
 }
 
 #[test]
+fn user_active_guard_retry_budget_limits_waits() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_in_closure = attempts.clone();
+    let result: dunst_core::Result<()> = retry_user_active_guard_for_budget(
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+        || {
+            attempts_in_closure.fetch_add(1, Ordering::SeqCst);
+            Err(DunstError::Execution(
+                "user-active guard blocked click: last keyboard/mouse input was 1 ms ago (< 150 ms)"
+                    .into(),
+            ))
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[test]
 fn internal_hover_lead_point_is_clamped_to_target_window() {
     let (eng, _) = engine_with_counter();
     let window = eng.current_window_bounds();
