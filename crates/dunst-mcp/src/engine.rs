@@ -17,7 +17,7 @@ use std::{
 
 use dunst_core::{
     ActionExecutor, ActionResult, AffordanceGraph, AuditEntry, Bbox, DunstError, GraphDiff,
-    Perceptor, RiskAssessment, RiskLevel, Role, SceneGraph, SceneNode, SemanticAction,
+    NodeChange, Perceptor, RiskAssessment, RiskLevel, Role, SceneGraph, SceneNode, SemanticAction,
     SessionIdentity, Target, WindowRef,
 };
 use dunst_graph::{audit, derive_affordances, scene, RiskEngine};
@@ -29,6 +29,7 @@ mod app_ops;
 mod apps;
 mod browser_query;
 mod chart;
+mod choices;
 mod element_actions;
 mod file_select;
 mod input;
@@ -39,6 +40,7 @@ mod raw_input_gate;
 mod read;
 mod runtime_support;
 mod scene_query;
+mod selections;
 mod types;
 mod window_geometry;
 mod window_ops;
@@ -60,13 +62,15 @@ use input::{is_press_key_name, layout_sensitive_hotkey_message, parse_combo};
 use query_support::*;
 use raw_input::page_scroll_target_id;
 use raw_input_gate::{
-    is_synthetic_approval_target_id, raw_paste_text_target_id, raw_press_key_target_id,
-    raw_set_field_text_target_id, raw_type_keys_target_id, RawApprovalKey,
+    is_synthetic_approval_target_id, raw_apply_selections_target_id, raw_paste_text_target_id,
+    raw_press_key_target_id, raw_set_field_text_target_id, raw_type_keys_target_id, RawApprovalKey,
 };
 use runtime_support::*;
 use scene_query::*;
 use window_geometry::*;
 
+pub use choices::*;
+pub use selections::*;
 pub use types::*;
 
 const READ_REFRESH_TTL: Duration = Duration::from_millis(500);
@@ -95,6 +99,10 @@ pub struct Engine {
     /// rejects the action only because the operator is active, the grant is
     /// restored so the automatic retry path does not ask for approval again.
     raw_approval_inflight: BTreeMap<String, RawApprovalGrant>,
+    /// Bounded synthetic approval context for a single `apply_selections` call
+    /// or internal survey-scroll sweep. Existing element/raw gates consult this
+    /// to avoid re-prompting for each constituent action.
+    active_batch: Option<BatchApprovalContext>,
     /// IDs currently awaiting approval — the gated participants of the actions that
     /// returned `PendingApproval` since the last refresh. Lets [`approve`](Self::approve)
     /// accept an element whose danger is *contextual* (a destructive value typed into
@@ -157,6 +165,7 @@ impl Engine {
             approvals: BTreeSet::new(),
             raw_approvals: BTreeMap::new(),
             raw_approval_inflight: BTreeMap::new(),
+            active_batch: None,
             pending_gate_ids: BTreeSet::new(),
             cached_window_rect: None,
             cached_menubar_root: None,
@@ -241,6 +250,7 @@ impl Engine {
         self.approvals.clear();
         self.raw_approvals.clear();
         self.raw_approval_inflight.clear();
+        self.active_batch = None;
         self.pending_gate_ids.clear();
         self.target = Target { pid, window_id };
         self.window = self.perceptor.window_ref(&self.target)?;

@@ -2,6 +2,7 @@
 pub(super) enum ToolRoute {
     Read,
     Element,
+    Batch,
     Raw,
     WindowApp,
     Screenshot,
@@ -39,6 +40,7 @@ pub(super) const TOOL_REGISTRY: &[RegisteredTool] = &[
     tool("detect_modal", ToolRoute::Read),
     tool("extract_ocr_cards", ToolRoute::Read),
     tool("query_affordances", ToolRoute::Read),
+    tool("enumerate_choices", ToolRoute::Read),
     tool("read_at", ToolRoute::Read),
     tool("read_series", ToolRoute::Read),
     tool("scan_chart", ToolRoute::Read),
@@ -53,6 +55,7 @@ pub(super) const TOOL_REGISTRY: &[RegisteredTool] = &[
     tool("select_file", ToolRoute::Element),
     tool("approve", ToolRoute::Element),
     tool("verify_state", ToolRoute::Element),
+    tool("apply_selections", ToolRoute::Batch),
     tool("click_at", ToolRoute::Raw),
     tool("click_near_text", ToolRoute::Raw),
     tool("dismiss_modal", ToolRoute::Raw),

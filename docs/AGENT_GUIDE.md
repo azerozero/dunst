@@ -62,6 +62,25 @@ Use the safest available interaction layer first:
 Always re-read the field or page with OCR/AX before saving or submitting after a
 raw mutation.
 
+## Batch A Multi-Field Choice Page
+
+Use `enumerate_choices` before filling choice-heavy forms, modals, or checkout
+pages:
+
+1. Call `enumerate_choices` with default `include_latent=true`. Use
+   `scroll_scan=true` only for virtualized or AX-sparse surfaces that need an OCR
+   survey; it is mutation-coordinated, not approval-gated.
+2. Build one `apply_selections.plan.steps[]` from returned `Choice.id` values.
+   Include `label` for reflow fallback; use `op: "select"`, `"deselect"`, or
+   `"set_text"`.
+3. Pass `enumerate_choices.ui_epoch` as `expected_epoch`.
+4. The first `apply_selections` call returns `status: "pending_approval"` and a
+   single `batch_id`; surface the preview to the operator and approve that id
+   once.
+5. Re-call `apply_selections` with the same plan. Inspect `steps`, `rescans`,
+   and the consolidated `verify` block. If the result is `partially_applied`,
+   re-run `enumerate_choices` and apply only the remaining choices.
+
 ## Firefox And Sparse AX
 
 Firefox can expose only window chrome while the page itself is readable by OCR.

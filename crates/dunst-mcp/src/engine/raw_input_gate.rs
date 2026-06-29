@@ -229,6 +229,9 @@ impl Engine {
         reasoning: Option<&str>,
         risk: RiskAssessment,
     ) -> Option<AuditEntry> {
+        if self.batch_context_allows_mutation() {
+            return None;
+        }
         if self.consume_raw_approval(target_id) || self.approvals.contains(target_id) {
             return None;
         }
@@ -335,6 +338,14 @@ impl Engine {
         if target_id.starts_with("file@") || target_id.starts_with("hover-reveal@") {
             return Ok(());
         }
+        if target_id.starts_with("batch@selections:") {
+            if valid_batch_selection_target_id(target_id).is_some() {
+                return Ok(());
+            }
+            return Err(DunstError::Execution(format!(
+                "{target_id} is not a valid batch selection approval target"
+            )));
+        }
 
         Err(DunstError::Execution(format!(
             "{target_id} is not a recognised synthetic raw-input target"
@@ -389,6 +400,15 @@ impl Engine {
 
     pub(super) fn clear_inflight_raw_approval(&mut self, target_id: &str) {
         self.raw_approval_inflight.remove(target_id);
+    }
+
+    pub(super) fn clear_raw_approval(&mut self, target_id: &str) {
+        self.raw_approval_inflight.remove(target_id);
+        for policy in raw_approval_policy(target_id) {
+            self.raw_approvals.remove(&policy.key);
+        }
+        self.pending_gate_ids.remove(target_id);
+        self.approvals.remove(target_id);
     }
 
     #[cfg(test)]
@@ -489,6 +509,7 @@ pub(super) fn is_synthetic_approval_target_id(target_id: &str) -> bool {
         || target_id.starts_with("screen@")
         || target_id.starts_with("file@")
         || target_id.starts_with("hover-reveal@")
+        || target_id.starts_with("batch@selections:")
 }
 
 pub(super) fn raw_press_key_target_id(key: &str, repeat: usize) -> String {
@@ -507,6 +528,13 @@ pub(super) fn raw_set_field_text_target_id(text: &str) -> String {
     raw_text_payload_target_id("set_field_text", text)
 }
 
+pub(super) fn raw_apply_selections_target_id(hash: &str, count: usize) -> String {
+    format!(
+        "batch@selections:{hash}:{}",
+        count.clamp(1, MAX_BATCH_PICKS)
+    )
+}
+
 fn raw_text_payload_target_id(action: &str, text: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in text.as_bytes() {
@@ -517,6 +545,15 @@ fn raw_text_payload_target_id(action: &str, text: &str) -> String {
 }
 
 fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
+    if let Some(count) = valid_batch_selection_target_id(target_id) {
+        return vec![RawApprovalPolicy {
+            key: RawApprovalKey {
+                scope: RawApprovalScope::Exact(target_id.to_string()),
+            },
+            grant_events: count,
+            cost_events: 1,
+        }];
+    }
     if let Some(rest) = target_id.strip_prefix("keyboard@press:") {
         let (key, cost_events) = parse_key_with_count(rest);
         return vec![RawApprovalPolicy {

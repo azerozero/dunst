@@ -5,6 +5,7 @@ pub(super) fn tools_list() -> Vec<Value> {
     tools.extend(state_tools());
     tools.extend(query_tools());
     tools.extend(element_tools());
+    tools.extend(batch_tools());
     tools.extend(pointer_and_chart_tools());
     tools.extend(window_app_tools());
     tools.extend(keyboard_menu_tools());
@@ -306,6 +307,22 @@ fn query_tools() -> Vec<Value> {
                 &["action"],
             ),
         ),
+        tool(
+            "enumerate_choices",
+            "Survey the whole choice surface once and return a structured option model: groups (single-select vs multi-select vs text field), required/optional, and per-choice {id, label, coords, current state}. Default mode captures off-screen AX choices in a single pass (no scroll). scroll_scan=true performs a position-restoring scroll sweep to also assemble OCR/vision choices on virtualized or AX-sparse surfaces; it surveys without operator approval and restores the original scroll position. Pass the returned ui_epoch to apply_selections as expected_epoch.",
+            schema(
+                json!({
+                    "scope": { "type": "string", "enum": ["page", "all", "browser_chrome"], "description": "target surface (default page)" },
+                    "include_latent": { "type": "boolean", "description": "include off-screen AX choices (default true)" },
+                    "scroll_scan": { "type": "boolean", "description": "position-restoring scroll sweep for OCR-only surfaces (default false)" },
+                    "max_scroll_pages": { "type": "integer", "description": "scroll-sweep bound, 1-12 (default 6)" },
+                    "limit": { "type": "integer", "description": "max choices, 1-500 (default 200)" },
+                    "fresh": { "type": "boolean", "description": "ensure a recent graph first (default true)" },
+                    "force_refresh": { "type": "boolean", "description": "force AX refresh even inside the short TTL (default false)" }
+                }),
+                &[],
+            ),
+        ),
     ]
 }
 
@@ -411,6 +428,47 @@ fn element_tools() -> Vec<Value> {
             ),
         ),
     ]
+}
+
+fn batch_tools() -> Vec<Value> {
+    vec![tool(
+        "apply_selections",
+        "Apply a whole choice plan as ONE batch behind a single operator approval. Build the plan from enumerate_choices and pass that ui_epoch as expected_epoch. The batch refuses a stale plan up front, re-scans ONLY when the UI epoch fingerprint changes mid-batch (progressive disclosure / reflow) and re-resolves the remaining steps, then runs a single consolidated verify. First call returns status=pending_approval with a per-step preview incl. risk; an operator approves the returned batch_id once, then re-call with the same plan to execute.",
+        schema(
+            json!({
+                "expected_epoch": { "type": "string", "description": "ui_epoch.fingerprint the plan was built from (required)" },
+                "plan": {
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "group_id": { "type": "string" },
+                                    "choice_id": { "type": "string", "description": "Choice.id from enumerate_choices" },
+                                    "label": { "type": "string", "description": "re-resolution fallback after reflow" },
+                                    "op": { "type": "string", "enum": ["select", "deselect", "set_text"] },
+                                    "value": { "type": "string", "description": "text for set_text" },
+                                    "expected_after": {
+                                        "type": "object",
+                                        "properties": {
+                                            "state": { "type": "string", "enum": ["selected", "unselected"] },
+                                            "value": { "type": "string" }
+                                        }
+                                    }
+                                },
+                                "required": ["choice_id", "op"]
+                            }
+                        }
+                    },
+                    "required": ["steps"]
+                },
+                "include_diff": { "type": "boolean" }
+            }),
+            &["expected_epoch", "plan"],
+        ),
+    )]
 }
 
 fn pointer_and_chart_tools() -> Vec<Value> {

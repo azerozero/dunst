@@ -126,6 +126,30 @@ fn dispatch_snapshot_tools(
                 .unwrap_or(Value::Null))
             }
         }
+        "enumerate_choices" => {
+            if let Err(err) = ensure_recent_graph(
+                engine,
+                arg_bool(args, "fresh").unwrap_or(true),
+                arg_bool(args, "force_refresh").unwrap_or(false),
+            ) {
+                Err(err)
+            } else {
+                let scope = arg(args, "scope").unwrap_or_else(|| "page".to_string());
+                engine
+                    .enumerate_choices(crate::engine::EnumerateOpts {
+                        scope: scope.as_str(),
+                        include_latent: arg_bool(args, "include_latent").unwrap_or(true),
+                        scroll_scan: arg_bool(args, "scroll_scan").unwrap_or(false),
+                        max_scroll_pages: args
+                            .get("max_scroll_pages")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(6) as usize,
+                        limit: args.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize,
+                    })
+                    .map(|model| serde_json::to_value(model).unwrap_or(Value::Null))
+                    .map_err(|e| e.to_string())
+            }
+        }
         "window_view" => {
             if let Err(err) = ensure_recent_graph(
                 engine,

@@ -601,6 +601,7 @@ fn tool_accepts_mutation_preconditions(name: &str) -> bool {
             | "hover_probe"
             | "drag_element"
             | "select_file"
+            | "apply_selections"
             | "click_at"
             | "click_near_text"
             | "dismiss_modal"

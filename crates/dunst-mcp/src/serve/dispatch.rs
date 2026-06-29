@@ -3,6 +3,7 @@ use super::*;
 use crate::serve::registry::{tool_route, ToolRoute};
 
 mod args;
+mod batch_tools;
 mod element_tools;
 mod raw_tools;
 mod read_tools;
@@ -77,6 +78,7 @@ pub(super) fn handle_tool_call(engine: &mut Engine, id: Value, req: &Value) -> V
     let outcome = match route {
         ToolRoute::Read => read_tools::dispatch(engine, name, &args),
         ToolRoute::Element => element_tools::dispatch(engine, name, &args),
+        ToolRoute::Batch => batch_tools::dispatch(engine, name, &args),
         ToolRoute::Raw => raw_tools::dispatch(engine, name, &args),
         ToolRoute::WindowApp => window_app_tools::dispatch(engine, name, &args),
         ToolRoute::Screenshot => unreachable!("handled above"),
@@ -178,9 +180,11 @@ fn tool_requires_mutation_coordination(route: ToolRoute, name: &str, args: &Valu
         ToolRoute::Read => match name {
             "read_at" | "read_series" => arg_bool(args, "borrow_cursor").unwrap_or(false),
             "scan_chart" => true,
+            "enumerate_choices" => arg_bool(args, "scroll_scan").unwrap_or(false),
             _ => false,
         },
         ToolRoute::Element => !matches!(name, "approve" | "verify_state"),
+        ToolRoute::Batch => true,
         ToolRoute::Raw => !matches!(name, "hover_at" | "unstick_cursor"),
         ToolRoute::WindowApp => matches!(
             name,
