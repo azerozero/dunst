@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) const MAX_BATCH_PICKS: usize = 64;
 const MAX_RESCANS: u32 = 8;
+const SET_TEXT_BACKGROUND_FAILURE: &str = "web text field could not receive input in background; the target window may need to be frontmost/focused - try focus_window or raise the window";
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct SelectionPlan {
@@ -259,9 +260,9 @@ impl Engine {
     }
 
     pub(super) fn batch_context_allows_mutation(&self) -> bool {
-        self.active_batch.as_ref().is_some_and(|ctx| {
-            ctx.remaining_budget > 0 && !ctx.batch_id.is_empty() && !ctx.expected_epoch.is_empty()
-        })
+        self.active_batch
+            .as_ref()
+            .is_some_and(|ctx| !ctx.batch_id.is_empty() && !ctx.expected_epoch.is_empty())
     }
 
     fn consume_batch_budget(&mut self) -> bool {
@@ -463,12 +464,119 @@ impl Engine {
             SelectionOp::SetText => {
                 let value = step.value.as_deref().unwrap_or_default();
                 if matches!(choice.source.as_str(), "accessibility" | "ax") {
-                    self.type_into(&choice.id, value, Some("batch set choice text"))
-                        .map(Some)
+                    self.execute_accessibility_set_text(choice, value)
                 } else {
                     self.set_field_text(value).map(Some)
                 }
             }
+        }
+    }
+
+    fn execute_accessibility_set_text(
+        &mut self,
+        choice: &Choice,
+        value: &str,
+    ) -> dunst_core::Result<Option<AuditEntry>> {
+        let mut diagnostics = Vec::new();
+
+        let primary = self.type_into(&choice.id, value, Some("batch set choice text"));
+        if let Some(entry) =
+            self.accept_set_text_attempt("element type", primary, choice, value, &mut diagnostics)
+        {
+            return Ok(Some(entry));
+        }
+
+        self.focus_text_choice_for_retry(choice);
+        let focused_retry =
+            self.type_into(&choice.id, value, Some("batch set choice text after focus"));
+        if let Some(entry) = self.accept_set_text_attempt(
+            "focused element type",
+            focused_retry,
+            choice,
+            value,
+            &mut diagnostics,
+        ) {
+            return Ok(Some(entry));
+        }
+
+        self.click_text_choice_for_retry(choice);
+        let clipboard = self.set_field_text(value);
+        if let Some(entry) = self.accept_set_text_attempt(
+            "focused field replacement",
+            clipboard,
+            choice,
+            value,
+            &mut diagnostics,
+        ) {
+            return Ok(Some(entry));
+        }
+
+        Err(DunstError::Execution(actionable_set_text_error(
+            &diagnostics,
+        )))
+    }
+
+    fn accept_set_text_attempt(
+        &self,
+        label: &str,
+        attempt: dunst_core::Result<AuditEntry>,
+        choice: &Choice,
+        value: &str,
+        diagnostics: &mut Vec<String>,
+    ) -> Option<AuditEntry> {
+        match attempt {
+            Ok(entry) if entry.result == ActionResult::Success => {
+                if self.set_text_choice_value_matches(choice, value) {
+                    Some(entry)
+                } else {
+                    diagnostics.push(format!("{label} reported success but value did not update"));
+                    None
+                }
+            }
+            Ok(entry) => {
+                diagnostics.push(format!("{label} returned {:?}", entry.result));
+                None
+            }
+            Err(err) => {
+                diagnostics.push(format!("{label} errored: {err}"));
+                None
+            }
+        }
+    }
+
+    fn set_text_choice_value_matches(&self, choice: &Choice, value: &str) -> bool {
+        self.scene_graph()
+            .get(&choice.id)
+            .and_then(|node| node.value.as_deref())
+            .is_some_and(|actual| actual == value)
+    }
+
+    fn focus_text_choice_for_retry(&mut self, choice: &Choice) {
+        let _ = self.focus_window();
+        let focus = self.act_refreshing_missing(
+            &choice.id,
+            SemanticAction::Focus,
+            None,
+            Some("batch focus text field before retry"),
+            None,
+        );
+        if focus
+            .as_ref()
+            .is_ok_and(|entry| entry.result == ActionResult::Success)
+        {
+            return;
+        }
+        self.click_text_choice_for_retry(choice);
+    }
+
+    fn click_text_choice_for_retry(&mut self, choice: &Choice) {
+        let exposes_click = self
+            .affordance_graph()
+            .affordances
+            .get(&choice.id)
+            .is_some_and(|affordance| affordance.actions.contains(&SemanticAction::Click));
+        if exposes_click {
+            let _ = self.click_element(&choice.id, Some("batch click text field before retry"));
         }
     }
 
@@ -537,6 +645,16 @@ impl Engine {
             checks,
         })
     }
+}
+
+fn actionable_set_text_error(diagnostics: &[String]) -> String {
+    if diagnostics.is_empty() {
+        return SET_TEXT_BACKGROUND_FAILURE.to_string();
+    }
+    format!(
+        "{SET_TEXT_BACKGROUND_FAILURE}; attempts: {}",
+        diagnostics.join("; ")
+    )
 }
 
 fn validate_plan(plan: &SelectionPlan, expected_epoch: &str) -> dunst_core::Result<()> {
