@@ -1,5 +1,11 @@
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    static SET_FIELD_TEXT_RESULTS: std::cell::RefCell<std::collections::VecDeque<ActionResult>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
 impl Engine {
     /// Open a menu-bar menu by name (e.g. "File"/"Fichier") — finds the menubar
     /// item and presses it (AX). Native menus; the items then appear in the graph.
@@ -127,6 +133,12 @@ impl Engine {
         ) {
             return Ok(entry);
         }
+        #[cfg(test)]
+        if let Some(entry) =
+            self.mock_set_field_text_for_test(target_id.clone(), text, risk.clone())
+        {
+            return Ok(entry);
+        }
         let outcome = retry_user_active_guard(|| {
             dunst_platform::set_focused_field_text(self.target.pid, self.target.window_id, text)
         });
@@ -142,10 +154,53 @@ impl Engine {
 
     /// Non-macOS stub: AX field replacement needs the macOS backend.
     #[cfg(not(target_os = "macos"))]
-    pub fn set_field_text(&mut self, _text: &str) -> dunst_core::Result<AuditEntry> {
+    pub fn set_field_text(&mut self, text: &str) -> dunst_core::Result<AuditEntry> {
+        #[cfg(test)]
+        {
+            let target_id = raw_set_field_text_target_id(text);
+            let risk = Self::raw_input_risk(vec![
+                "replaces the entire contents of whatever field currently holds focus".into(),
+            ]);
+            if let Some(entry) = self.mock_set_field_text_for_test(target_id, text, risk) {
+                return Ok(entry);
+            }
+        }
         Err(DunstError::Execution(
             "set_field_text requires a macOS backend".into(),
         ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_set_field_text_results_for_test(&mut self, results: Vec<ActionResult>) {
+        SET_FIELD_TEXT_RESULTS.with(|queued| {
+            *queued.borrow_mut() = results.into_iter().collect();
+        });
+    }
+
+    #[cfg(test)]
+    fn mock_set_field_text_for_test(
+        &mut self,
+        target_id: String,
+        text: &str,
+        risk: RiskAssessment,
+    ) -> Option<AuditEntry> {
+        let result = SET_FIELD_TEXT_RESULTS.with(|queued| queued.borrow_mut().pop_front())?;
+        self.clear_inflight_raw_approval(&target_id);
+        self.approvals.remove(&target_id);
+        self.pending_gate_ids.remove(&target_id);
+        let _ = self.refresh();
+        let graph_diff = self.diff_since();
+        Some(self.push_entry(AuditEntry {
+            ts_ms: dunst_core::now_ms(),
+            target_id,
+            action: SemanticAction::Type,
+            argument: Some(text.to_string()),
+            risk,
+            reasoning: Some("set focused field text (test override)".to_string()),
+            result,
+            graph_diff,
+            caller: None,
+        }))
     }
 
     /// Paste `text` into the focused element by temporarily replacing the

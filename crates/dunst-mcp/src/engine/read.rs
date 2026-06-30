@@ -354,16 +354,22 @@ impl Engine {
             hash_bbox(window.bounds, &mut hasher);
         }
 
-        let mut nodes: Vec<&SceneNode> = g.nodes.values().collect();
-        nodes.sort_by(|left, right| {
-            left.path
-                .cmp(&right.path)
+        let transient_ids = transient_epoch_node_ids(g, affordances);
+        let mut nodes: Vec<(Vec<usize>, &SceneNode)> = g
+            .nodes
+            .values()
+            .filter(|node| !transient_ids.contains(&node.id))
+            .map(|node| (epoch_filtered_path(g, node, &transient_ids), node))
+            .collect();
+        nodes.sort_by(|(left_path, left), (right_path, right)| {
+            left_path
+                .cmp(right_path)
                 .then_with(|| left.id.cmp(&right.id))
         });
-        for node in nodes {
+        for (path, node) in nodes {
             let affordance = affordances.affordances.get(&node.id);
             let control_state = node_epoch_control_state(node);
-            node.path.hash(&mut hasher);
+            path.hash(&mut hasher);
             if node_epoch_hashes_id(affordance, control_state) {
                 node.id.hash(&mut hasher);
             }
@@ -1366,6 +1372,102 @@ fn is_toggle_ax_role(ax_role: &str) -> bool {
     ax_role.contains("Switch") || ax_role.contains("Toggle")
 }
 
+fn transient_epoch_node_ids(
+    graph: &SceneGraph,
+    affordances: &AffordanceGraph,
+) -> std::collections::BTreeSet<String> {
+    graph
+        .nodes
+        .values()
+        .filter(|node| {
+            let affordance = affordances.affordances.get(&node.id);
+            node_is_transient_epoch_decoration(node, affordance)
+        })
+        .map(|node| node.id.clone())
+        .collect()
+}
+
+fn node_is_transient_epoch_decoration(
+    node: &SceneNode,
+    affordance: Option<&dunst_core::Affordance>,
+) -> bool {
+    if !node.children.is_empty()
+        || node_epoch_control_state(node).is_some()
+        || affordance.is_some_and(|affordance| {
+            !affordance.actions.is_empty() || !affordance.drag_targets.is_empty()
+        })
+    {
+        return false;
+    }
+
+    let ax_role = normalize_match(&node.ax_role);
+    let role_is_known_transient = [
+        "axinsertionpoint",
+        "axcaret",
+        "axcursor",
+        "axfocusring",
+        "axtexthighlight",
+        "axtextmarker",
+        "axtextmarkerrange",
+        "axselectedtextmarker",
+        "axselectedtextmarkerrange",
+        "axselection",
+        "axselectionrange",
+    ]
+    .iter()
+    .any(|needle| ax_role.contains(needle));
+    if role_is_known_transient {
+        return true;
+    }
+
+    let text_marks_transient = [
+        node.label.as_deref(),
+        node.value.as_deref(),
+        node.help.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(normalize_match)
+    .any(|text| {
+        text.contains("insertion point")
+            || text.contains("text cursor")
+            || text.contains("caret")
+            || text.contains("focus ring")
+            || text.contains("selection highlight")
+    });
+    if text_marks_transient && node.role == Role::Unknown {
+        return true;
+    }
+
+    node.role == Role::Unknown && node.bbox.is_some_and(|bbox| bbox.w <= 1.0 || bbox.h <= 1.0)
+}
+
+fn epoch_filtered_path(
+    graph: &SceneGraph,
+    node: &SceneNode,
+    transient_ids: &std::collections::BTreeSet<String>,
+) -> Vec<usize> {
+    let mut path = Vec::new();
+    let mut current = Some(node.id.as_str());
+    while let Some(id) = current {
+        let siblings = graph
+            .get(id)
+            .and_then(|node| node.parent.as_deref())
+            .and_then(|parent_id| graph.get(parent_id))
+            .map(|parent| parent.children.as_slice())
+            .unwrap_or(graph.roots.as_slice());
+        let index = siblings
+            .iter()
+            .take_while(|sibling_id| sibling_id.as_str() != id)
+            .filter(|sibling_id| !transient_ids.contains(sibling_id.as_str()))
+            .count();
+        path.push(index);
+        current = graph.get(id).and_then(|node| node.parent.as_deref());
+    }
+    path.reverse();
+    path
+}
+
 #[cfg(test)]
 mod hit_target_tests {
     use super::*;
@@ -1511,6 +1613,22 @@ mod hit_target_tests {
             );
             assert_ne!(changed, base, "{reason}");
         }
+    }
+
+    #[test]
+    fn ui_fingerprint_ignores_transient_caret_nodes_and_path_shift() {
+        let base = test_fingerprint(
+            &test_engine(structural_roots_with_transient_caret(false)),
+            None,
+            test_visibility(1.0, "visible"),
+        );
+        let focused = test_fingerprint(
+            &test_engine(structural_roots_with_transient_caret(true)),
+            None,
+            test_visibility(1.0, "visible"),
+        );
+
+        assert_eq!(focused, base);
     }
 
     #[test]
@@ -1694,6 +1812,59 @@ mod hit_target_tests {
                 vec![],
             ));
         }
+        vec![raw_node(
+            "AXWindow",
+            Some("Checkout"),
+            None,
+            test_bbox_opt(0.0, 0.0, 700.0, 500.0),
+            true,
+            &[],
+            children,
+        )]
+    }
+
+    fn structural_roots_with_transient_caret(insert_caret: bool) -> Vec<dunst_core::RawAxNode> {
+        let mut children = Vec::new();
+        if insert_caret {
+            children.push(raw_node(
+                "AXInsertionPoint",
+                None,
+                None,
+                test_bbox_opt(41.0, 126.0, 1.0, 18.0),
+                true,
+                &[],
+                vec![],
+            ));
+        }
+        children.extend([
+            raw_node(
+                "AXButton",
+                Some("Add"),
+                None,
+                test_bbox_opt(40.0, 120.0, 90.0, 30.0),
+                true,
+                &["press"],
+                vec![],
+            ),
+            raw_node(
+                "AXCheckBox",
+                Some("Cutlery"),
+                Some("0"),
+                test_bbox_opt(40.0, 170.0, 110.0, 24.0),
+                true,
+                &["press"],
+                vec![],
+            ),
+            raw_node(
+                "AXStaticText",
+                Some("Stable footer"),
+                None,
+                test_bbox_opt(40.0, 220.0, 120.0, 24.0),
+                true,
+                &[],
+                vec![],
+            ),
+        ]);
         vec![raw_node(
             "AXWindow",
             Some("Checkout"),

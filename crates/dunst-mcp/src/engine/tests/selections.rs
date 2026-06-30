@@ -79,10 +79,34 @@ fn schedule_roots(time_visible: bool, time_selected: &str) -> Vec<dunst_core::Ra
     )]
 }
 
+fn search_form(value: &str) -> Vec<dunst_core::RawAxNode> {
+    vec![raw_node(
+        "AXWindow",
+        Some("Uber Eats"),
+        None,
+        test_bbox(0.0, 0.0, 700.0, 500.0),
+        &[],
+        vec![raw_node(
+            "AXSearchField",
+            Some("Search"),
+            Some(value),
+            test_bbox(40.0, 160.0, 320.0, 36.0),
+            &[],
+            vec![],
+        )],
+    )]
+}
+
 fn plan_for(choice: &Choice, op: SelectionOp) -> SelectionPlan {
     SelectionPlan {
         steps: vec![step_for(choice, op)],
     }
+}
+
+fn set_text_plan_for(choice: &Choice, value: &str) -> SelectionPlan {
+    let mut step = step_for(choice, SelectionOp::SetText);
+    step.value = Some(value.to_string());
+    SelectionPlan { steps: vec![step] }
 }
 
 fn step_for(choice: &Choice, op: SelectionOp) -> SelectionStep {
@@ -105,6 +129,60 @@ fn choice_by_label(model: &ChoiceModel, label: &str) -> Choice {
         .find(|choice| choice.label == label)
         .unwrap_or_else(|| panic!("missing choice {label:?}"))
         .clone()
+}
+
+struct TypeFailingExecutor {
+    calls: Arc<Mutex<Vec<RecordedCall>>>,
+}
+
+impl ActionExecutor for TypeFailingExecutor {
+    fn perform(
+        &self,
+        _target: &Target,
+        node: &SceneNode,
+        action: SemanticAction,
+        argument: Option<&str>,
+    ) -> dunst_core::Result<()> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((node.id.clone(), action, argument.map(str::to_owned)));
+        if action == SemanticAction::Type {
+            Err(dunst_core::DunstError::Execution(
+                "typed path failed in test".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn engine_from_sequence_with_type_failures(
+    captures: Vec<Vec<dunst_core::RawAxNode>>,
+) -> (Engine, Arc<Mutex<Vec<RecordedCall>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let perceptor = Box::new(SequencePerceptor::new(
+        captures,
+        WindowRef {
+            pid: 1,
+            window_id: 1,
+            app_name: "Firefox".into(),
+            title: "Uber Eats".into(),
+        },
+    ));
+    let exec = Box::new(TypeFailingExecutor {
+        calls: calls.clone(),
+    });
+    let eng = Engine::new(
+        perceptor,
+        exec,
+        Target {
+            pid: 1,
+            window_id: 1,
+        },
+    )
+    .unwrap();
+    (eng, calls)
 }
 
 #[test]
@@ -348,4 +426,88 @@ fn apply_selections_rejects_forged_batch_id_via_validate_synthetic() {
         .unwrap_err();
 
     assert!(err.to_string().contains("valid batch selection"));
+}
+
+#[test]
+fn set_text_falls_back_to_focused_field_replacement_after_type_failure() {
+    let expected = "sushi";
+    let (mut eng, calls) = engine_from_sequence_with_type_failures(vec![
+        search_form(""),
+        search_form(""),
+        search_form(""),
+        search_form(""),
+        search_form(expected),
+    ]);
+    eng.queue_set_field_text_results_for_test(vec![ActionResult::Success]);
+    let model = eng
+        .enumerate_choices(EnumerateOpts {
+            scope: "page",
+            include_latent: true,
+            scroll_scan: false,
+            max_scroll_pages: 1,
+            limit: 100,
+        })
+        .unwrap();
+    let search = choice_by_label(&model, "Search");
+    let plan = set_text_plan_for(&search, expected);
+    let pending = eng.apply_selections(plan.clone(), &model.ui_epoch).unwrap();
+    eng.approve(&pending.batch_id).unwrap();
+
+    let applied = eng.apply_selections(plan, &model.ui_epoch).unwrap();
+
+    assert_eq!(applied.status, ApplyStatus::Applied);
+    assert_eq!(applied.steps[0].result, StepResultStatus::Success);
+    assert!(applied.verify.as_ref().unwrap().ok);
+    assert_eq!(
+        eng.scene_graph().get(&search.id).unwrap().value.as_deref(),
+        Some(expected)
+    );
+    let calls = calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|(_, action, _)| *action == SemanticAction::Type)
+            .count(),
+        2
+    );
+    assert!(calls
+        .iter()
+        .any(|(_, action, _)| *action == SemanticAction::Focus));
+}
+
+#[test]
+fn set_text_reports_actionable_error_when_all_paths_fail() {
+    let (mut eng, _) = engine_from_sequence_with_type_failures(vec![
+        search_form(""),
+        search_form(""),
+        search_form(""),
+        search_form(""),
+        search_form(""),
+    ]);
+    eng.queue_set_field_text_results_for_test(vec![ActionResult::Failed]);
+    let model = eng
+        .enumerate_choices(EnumerateOpts {
+            scope: "page",
+            include_latent: true,
+            scroll_scan: false,
+            max_scroll_pages: 1,
+            limit: 100,
+        })
+        .unwrap();
+    let search = choice_by_label(&model, "Search");
+    let plan = set_text_plan_for(&search, "sushi");
+    let pending = eng.apply_selections(plan.clone(), &model.ui_epoch).unwrap();
+    eng.approve(&pending.batch_id).unwrap();
+
+    let partial = eng.apply_selections(plan, &model.ui_epoch).unwrap();
+
+    assert_eq!(partial.status, ApplyStatus::PartiallyApplied);
+    assert_eq!(partial.steps[0].result, StepResultStatus::Failed);
+    let error = partial.steps[0].error.as_deref().unwrap_or_default();
+    assert!(error.contains("web text field could not receive input in background"));
+    assert!(error.contains("try focus_window or raise the window"));
+    assert!(!error.contains("actuator returned Failed"));
+    let verify = partial.verify.as_ref().unwrap();
+    assert!(!verify.ok);
+    assert_eq!(verify.checks[0].actual_value.as_deref(), Some(""));
 }
