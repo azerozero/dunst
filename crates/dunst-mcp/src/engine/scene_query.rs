@@ -49,6 +49,10 @@ pub(super) fn option_selected_state(node: &SceneNode) -> Option<bool> {
         .as_deref()
         .or(node.label.as_deref())
         .or(node.help.as_deref())?;
+    normalized_selection_signal(raw)
+}
+
+pub(super) fn normalized_selection_signal(raw: &str) -> Option<bool> {
     let value = normalize_match(raw);
     if matches!(
         value.as_str(),
@@ -59,7 +63,11 @@ pub(super) fn option_selected_state(node: &SceneNode) -> Option<bool> {
     if value.contains("not selected")
         || value.contains("not checked")
         || value.contains("non selectionne")
-        || matches!(value.as_str(), "0" | "false" | "no" | "off" | "unchecked")
+        || value.contains("non coche")
+        || matches!(
+            value.as_str(),
+            "0" | "false" | "no" | "off" | "unselected" | "unchecked" | "deselected"
+        )
     {
         return Some(false);
     }
