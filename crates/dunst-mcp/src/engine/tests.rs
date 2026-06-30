@@ -299,7 +299,9 @@ impl Perceptor for SequencePerceptor {
 }
 
 mod actions;
+mod choices;
 mod drag_type;
 mod graph_views;
 mod page_text;
 mod raw_window;
+mod selections;

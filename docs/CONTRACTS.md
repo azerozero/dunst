@@ -45,6 +45,26 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   `engine::tests::raw_key_approval_allows_short_repeated_same_key_burst`,
   `engine::tests::raw_scroll_approval_covers_same_direction_count_change`,
   `engine::tests::attach_clears_raw_approval_grants`.
+- **Batch selections are approved as one unit.** `apply_selections` records
+  exactly one `PendingApproval` for a `batch@selections:<hash>:<n>` target whose
+  preview carries per-step risk and an aggregate `max_risk`; a single operator
+  `approve(batch_id)` authorizes the whole batch, the grant is one-shot, and the
+  `BatchApprovalContext` is always cleared on exit so no later single action is
+  silently authorized.
+  — `engine::tests::apply_selections_first_call_is_pending_with_per_step_risk_preview`,
+  `engine::tests::apply_selections_batch_grant_is_one_shot_resists_second_batch`.
+- **Batch execution is epoch-guarded.** `apply_selections` refuses a plan whose
+  `expected_epoch` no longer matches before mutation and re-scans only when a
+  mid-batch structural reflow changes the UI fingerprint, re-resolving remaining
+  steps by id then label/bbox; execution is bounded by `MAX_RESCANS` and the step
+  budget.
+  — `engine::tests::apply_selections_rescans_only_when_fingerprint_changes`,
+  `serve::tests::stale_expected_epoch_refuses_apply_selections`.
+- **Enumeration is read-only or survey-only.** `enumerate_choices` mutates no
+  application data: default mode does not scroll; `scroll_scan` is
+  mutation-coordinated but not operator-approval-gated and restores the original
+  scroll position on live backends.
+  — `engine::tests::enumerate_scroll_scan_restores_origin_and_sets_coverage_complete`.
 - **Approval transport boundary.** `approve` is an operator-side interlock, not a
   default agent affordance. The MCP server does not advertise or execute the
   `approve` tool unless `DUNST_MCP_ENABLE_APPROVE_TOOL=1` is set for a controlled

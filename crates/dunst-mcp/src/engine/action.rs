@@ -242,6 +242,9 @@ impl Engine {
         if !gate.effective.requires_approval || gate.approved {
             return None;
         }
+        if self.batch_context_allows_mutation() {
+            return None;
+        }
         for g in &gate.gated_ids {
             self.pending_gate_ids.insert(g.clone());
         }

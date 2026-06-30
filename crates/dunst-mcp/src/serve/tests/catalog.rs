@@ -5,7 +5,7 @@ use crate::serve::registry::TOOL_REGISTRY;
 fn tools_list_exposes_read_text_with_object_schema() {
     std::env::remove_var("DUNST_MCP_ENABLE_APPROVE_TOOL");
     let tools = tools_list();
-    assert_eq!(tools.len(), 70, "tool count");
+    assert_eq!(tools.len(), 72, "tool count");
     // Every tool must declare a JSON-Schema object input (the type:object fix).
     for t in &tools {
         assert_eq!(
@@ -90,6 +90,32 @@ fn tools_list_exposes_read_text_with_object_schema() {
     assert!(
         tools.iter().any(|t| t["name"] == "get_hit_targets"),
         "semantic hit target tool present"
+    );
+    let enumerate_choices = tools
+        .iter()
+        .find(|t| t["name"] == "enumerate_choices")
+        .expect("choice enumeration tool present");
+    assert_eq!(
+        enumerate_choices["inputSchema"]["properties"]["scroll_scan"]["type"],
+        "boolean"
+    );
+    assert!(
+        enumerate_choices["inputSchema"]["properties"]
+            .get("expected_epoch")
+            .is_none(),
+        "enumerate_choices is read-only by default and must not advertise mutation preconditions"
+    );
+    let apply_selections = tools
+        .iter()
+        .find(|t| t["name"] == "apply_selections")
+        .expect("batch selection tool present");
+    assert_eq!(
+        apply_selections["inputSchema"]["required"],
+        json!(["expected_epoch", "plan"])
+    );
+    assert_eq!(
+        apply_selections["inputSchema"]["properties"]["fencing_token"]["type"],
+        "string"
     );
     assert!(
         tools.iter().any(|t| t["name"] == "visual_change_probe"),

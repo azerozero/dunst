@@ -161,6 +161,36 @@ fn mutating_tool_rejects_stale_expected_epoch() {
 }
 
 #[test]
+fn stale_expected_epoch_refuses_apply_selections() {
+    set_test_coordination_dir();
+    let mut e = engine_with_window(unique_window_id());
+    e.set_session_identity(test_session("batch-epoch-a"));
+
+    let resp = call(
+        &mut e,
+        "apply_selections",
+        json!({
+            "expected_epoch": "stale-epoch",
+            "plan": {
+                "steps": [
+                    { "choice_id": "chk_cutlery", "op": "select", "label": "Cutlery" }
+                ]
+            }
+        }),
+    );
+
+    assert!(
+        is_error(&resp),
+        "stale epoch must refuse apply_selections: {resp}"
+    );
+    assert!(text(&resp).contains("stale UI epoch"));
+    assert_eq!(
+        resp["result"]["_meta"]["dunst"]["coordination"]["epoch"]["status"],
+        "stale"
+    );
+}
+
+#[test]
 fn mutating_tool_adds_window_lease_and_fencing_meta() {
     set_test_coordination_dir();
     let mut e = engine_with_window(unique_window_id());
