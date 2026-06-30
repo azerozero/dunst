@@ -3,6 +3,9 @@ use std::hash::{Hash, Hasher};
 
 mod perception;
 
+const BBOX_FINGERPRINT_QUANTUM: f64 = 2.0;
+const VISIBLE_FRACTION_FINGERPRINT_BUCKETS: f64 = 20.0;
+
 impl Engine {
     /// IDs whose affordance offers `action`. WP-J/J2: latent (off-screen /
     /// zero-bbox) nodes — e.g. collapsed-menu items — are omitted by default so
@@ -340,28 +343,35 @@ impl Engine {
         hash_bbox(window, &mut hasher);
         if let Some(tab) = browser_tab {
             tab.id.hash(&mut hasher);
-            tab.title.hash(&mut hasher);
             tab.url.hash(&mut hasher);
             tab.selected.hash(&mut hasher);
             hash_optional_bbox(tab.bbox, &mut hasher);
         }
         target_visibility.status.hash(&mut hasher);
-        rounded_i64(target_visibility.visible_fraction * 10_000.0).hash(&mut hasher);
+        visible_fraction_bucket(target_visibility.visible_fraction).hash(&mut hasher);
         for window in &target_visibility.covered_by {
             window.window_id.hash(&mut hasher);
-            window.title.hash(&mut hasher);
             hash_bbox(window.bounds, &mut hasher);
         }
 
-        for (id, node) in &g.nodes {
-            id.hash(&mut hasher);
+        let mut nodes: Vec<&SceneNode> = g.nodes.values().collect();
+        nodes.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        for node in nodes {
+            let affordance = affordances.affordances.get(&node.id);
+            let control_state = node_epoch_control_state(node);
+            node.path.hash(&mut hasher);
+            if node_epoch_hashes_id(affordance, control_state) {
+                node.id.hash(&mut hasher);
+            }
             node.role.as_str().hash(&mut hasher);
-            node.label.hash(&mut hasher);
-            node.value.hash(&mut hasher);
+            control_state.hash(&mut hasher);
             node.enabled.hash(&mut hasher);
-            node.focused.hash(&mut hasher);
             hash_optional_bbox(node.bbox, &mut hasher);
-            if let Some(affordance) = affordances.affordances.get(id) {
+            if let Some(affordance) = affordance {
                 affordance.actions.hash(&mut hasher);
                 affordance.drag_targets.hash(&mut hasher);
             }
@@ -1311,14 +1321,49 @@ fn hash_optional_bbox<H: Hasher>(bbox: Option<Bbox>, hasher: &mut H) {
 }
 
 fn hash_bbox<H: Hasher>(bbox: Bbox, hasher: &mut H) {
-    rounded_i64(bbox.x).hash(hasher);
-    rounded_i64(bbox.y).hash(hasher);
-    rounded_i64(bbox.w).hash(hasher);
-    rounded_i64(bbox.h).hash(hasher);
+    bbox_fingerprint_bucket(bbox.x).hash(hasher);
+    bbox_fingerprint_bucket(bbox.y).hash(hasher);
+    bbox_fingerprint_bucket(bbox.w).hash(hasher);
+    bbox_fingerprint_bucket(bbox.h).hash(hasher);
 }
 
 fn rounded_i64(value: f64) -> i64 {
     value.round() as i64
+}
+
+fn bbox_fingerprint_bucket(value: f64) -> i64 {
+    (value / BBOX_FINGERPRINT_QUANTUM).round() as i64
+}
+
+fn visible_fraction_bucket(value: f64) -> i64 {
+    (value.clamp(0.0, 1.0) * VISIBLE_FRACTION_FINGERPRINT_BUCKETS).round() as i64
+}
+
+fn node_epoch_hashes_id(
+    affordance: Option<&dunst_core::Affordance>,
+    control_state: Option<bool>,
+) -> bool {
+    control_state.is_some()
+        || affordance.is_some_and(|affordance| {
+            !affordance.actions.is_empty() || !affordance.drag_targets.is_empty()
+        })
+}
+
+fn node_epoch_control_state(node: &SceneNode) -> Option<bool> {
+    match node.role {
+        Role::Checkbox | Role::Radio => option_selected_state(node),
+        Role::Button | Role::MenuButton | Role::MenuItem | Role::Row | Role::Cell => {
+            node.value.as_deref().and_then(normalized_selection_signal)
+        }
+        _ if is_toggle_ax_role(&node.ax_role) => {
+            node.value.as_deref().and_then(normalized_selection_signal)
+        }
+        _ => None,
+    }
+}
+
+fn is_toggle_ax_role(ax_role: &str) -> bool {
+    ax_role.contains("Switch") || ax_role.contains("Toggle")
 }
 
 #[cfg(test)]
@@ -1420,5 +1465,291 @@ mod hit_target_tests {
             nearest_ocr_field_value(&label, &candidates, kind).expect("following value detected");
         assert_eq!(found.text, value.text);
         assert!(ocr_form_field_x_aligned(label.bbox, value.bbox));
+    }
+
+    #[test]
+    fn ui_fingerprint_ignores_volatile_free_text_and_cosmetic_jitter() {
+        let base = test_engine(live_text_roots(
+            "Livraison dans 12 min",
+            "Maintenant",
+            42.2,
+            true,
+        ));
+        let changed_text = test_engine(live_text_roots(
+            "Livraison dans 11 min",
+            "Promo expire a 12:31",
+            42.6,
+            true,
+        ));
+
+        assert_eq!(
+            test_fingerprint(&base, None, test_visibility(0.991, "visible")),
+            test_fingerprint(&changed_text, None, test_visibility(0.999, "visible"))
+        );
+    }
+
+    #[test]
+    fn ui_fingerprint_changes_for_structural_and_control_state_mutations() {
+        let base = test_fingerprint(
+            &test_engine(structural_roots(StructuralMutation::None)),
+            None,
+            test_visibility(1.0, "visible"),
+        );
+
+        for (mutation, reason) in [
+            (StructuralMutation::AddedNode, "node added"),
+            (StructuralMutation::RemovedNode, "node removed"),
+            (StructuralMutation::RoleChanged, "role changed"),
+            (StructuralMutation::SelectionChanged, "selection changed"),
+            (StructuralMutation::EnabledChanged, "enabled changed"),
+            (StructuralMutation::BboxMoved, "bbox moved meaningfully"),
+        ] {
+            let changed = test_fingerprint(
+                &test_engine(structural_roots(mutation)),
+                None,
+                test_visibility(1.0, "visible"),
+            );
+            assert_ne!(changed, base, "{reason}");
+        }
+    }
+
+    #[test]
+    fn ui_fingerprint_changes_for_tab_and_visibility_identity() {
+        let engine = test_engine(structural_roots(StructuralMutation::None));
+        let tab = BrowserTab {
+            id: "tab-1".into(),
+            title: "Restaurant".into(),
+            selected: true,
+            url: Some("https://example.test/restaurant".into()),
+            bbox: Some(test_bbox(8.0, 8.0, 180.0, 28.0)),
+        };
+        let base = test_fingerprint(&engine, Some(tab.clone()), test_visibility(1.0, "visible"));
+
+        let mut changed = tab.clone();
+        changed.id = "tab-2".into();
+        assert_ne!(
+            test_fingerprint(&engine, Some(changed), test_visibility(1.0, "visible")),
+            base,
+            "tab id changed"
+        );
+
+        let mut changed = tab.clone();
+        changed.url = Some("https://example.test/checkout".into());
+        assert_ne!(
+            test_fingerprint(&engine, Some(changed), test_visibility(1.0, "visible")),
+            base,
+            "tab url changed"
+        );
+
+        let mut changed = tab;
+        changed.selected = false;
+        assert_ne!(
+            test_fingerprint(&engine, Some(changed), test_visibility(1.0, "visible")),
+            base,
+            "tab selected changed"
+        );
+
+        assert_ne!(
+            test_fingerprint(&engine, None, test_visibility(1.0, "covered")),
+            test_fingerprint(&engine, None, test_visibility(1.0, "visible")),
+            "visibility status changed"
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    enum StructuralMutation {
+        None,
+        AddedNode,
+        RemovedNode,
+        RoleChanged,
+        SelectionChanged,
+        EnabledChanged,
+        BboxMoved,
+    }
+
+    fn test_engine(roots: Vec<dunst_core::RawAxNode>) -> Engine {
+        Engine::new(
+            Box::new(dunst_core::mock::MockPerceptor::new(
+                roots,
+                WindowRef {
+                    pid: 1,
+                    window_id: 1,
+                    app_name: "TestApp".into(),
+                    title: "Checkout".into(),
+                },
+            )),
+            Box::new(dunst_core::mock::RecordingExecutor::default()),
+            Target {
+                pid: 1,
+                window_id: 1,
+            },
+        )
+        .unwrap()
+    }
+
+    fn test_fingerprint(
+        engine: &Engine,
+        browser_tab: Option<BrowserTab>,
+        visibility: TargetVisibility,
+    ) -> String {
+        engine.ui_fingerprint(
+            test_bbox(0.0, 0.0, 700.0, 500.0),
+            browser_tab.as_ref(),
+            &visibility,
+            engine.affordance_graph(),
+        )
+    }
+
+    fn live_text_roots(
+        volatile_label: &str,
+        volatile_value: &str,
+        x: f64,
+        focused: bool,
+    ) -> Vec<dunst_core::RawAxNode> {
+        let mut volatile_text = raw_node(
+            "AXStaticText",
+            Some(volatile_label),
+            Some(volatile_value),
+            test_bbox_opt(x, 70.0, 160.0, 24.0),
+            true,
+            &[],
+            vec![],
+        );
+        volatile_text.focused = focused;
+        vec![raw_node(
+            "AXWindow",
+            Some("Checkout"),
+            None,
+            test_bbox_opt(0.0, 0.0, 700.0, 500.0),
+            true,
+            &[],
+            vec![
+                volatile_text,
+                raw_node(
+                    "AXButton",
+                    Some("Add"),
+                    None,
+                    test_bbox_opt(40.0, 120.0, 90.0, 30.0),
+                    true,
+                    &["press"],
+                    vec![],
+                ),
+            ],
+        )]
+    }
+
+    fn structural_roots(mutation: StructuralMutation) -> Vec<dunst_core::RawAxNode> {
+        let checkbox_value = match mutation {
+            StructuralMutation::SelectionChanged => Some("1"),
+            _ => Some("0"),
+        };
+        let button_role = match mutation {
+            StructuralMutation::RoleChanged => "AXStaticText",
+            _ => "AXButton",
+        };
+        let button_enabled = !matches!(mutation, StructuralMutation::EnabledChanged);
+        let button_bbox = match mutation {
+            StructuralMutation::BboxMoved => test_bbox_opt(72.0, 120.0, 90.0, 30.0),
+            _ => test_bbox_opt(40.0, 120.0, 90.0, 30.0),
+        };
+        let mut children = vec![
+            raw_node(
+                button_role,
+                Some("Add"),
+                None,
+                button_bbox,
+                button_enabled,
+                &["press"],
+                vec![],
+            ),
+            raw_node(
+                "AXCheckBox",
+                Some("Cutlery"),
+                checkbox_value,
+                test_bbox_opt(40.0, 170.0, 110.0, 24.0),
+                true,
+                &["press"],
+                vec![],
+            ),
+        ];
+        if !matches!(mutation, StructuralMutation::RemovedNode) {
+            children.push(raw_node(
+                "AXStaticText",
+                Some("Stable footer"),
+                None,
+                test_bbox_opt(40.0, 220.0, 120.0, 24.0),
+                true,
+                &[],
+                vec![],
+            ));
+        }
+        if matches!(mutation, StructuralMutation::AddedNode) {
+            children.push(raw_node(
+                "AXStaticText",
+                Some("New footer"),
+                None,
+                test_bbox_opt(40.0, 250.0, 120.0, 24.0),
+                true,
+                &[],
+                vec![],
+            ));
+        }
+        vec![raw_node(
+            "AXWindow",
+            Some("Checkout"),
+            None,
+            test_bbox_opt(0.0, 0.0, 700.0, 500.0),
+            true,
+            &[],
+            children,
+        )]
+    }
+
+    fn raw_node(
+        ax_role: &str,
+        label: Option<&str>,
+        value: Option<&str>,
+        frame: Option<Bbox>,
+        enabled: bool,
+        ax_actions: &[&str],
+        children: Vec<dunst_core::RawAxNode>,
+    ) -> dunst_core::RawAxNode {
+        dunst_core::RawAxNode {
+            ax_role: ax_role.into(),
+            label: label.map(str::to_owned),
+            help: None,
+            value: value.map(str::to_owned),
+            ax_identifier: None,
+            ax_actions: ax_actions.iter().map(|action| action.to_string()).collect(),
+            frame,
+            enabled,
+            focused: false,
+            children,
+        }
+    }
+
+    fn test_bbox_opt(x: f64, y: f64, w: f64, h: f64) -> Option<Bbox> {
+        Some(test_bbox(x, y, w, h))
+    }
+
+    fn test_bbox(x: f64, y: f64, w: f64, h: f64) -> Bbox {
+        Bbox { x, y, w, h }
+    }
+
+    fn test_visibility(visible_fraction: f64, status: &str) -> TargetVisibility {
+        TargetVisibility {
+            target_window_id: 1,
+            target_title: "Checkout".into(),
+            found_in_desktop: true,
+            degraded: false,
+            reason: None,
+            is_frontmost: true,
+            covered_by: Vec::new(),
+            covers: Vec::new(),
+            visible_fraction,
+            status: status.into(),
+            warnings: Vec::new(),
+            fallback_hint: None,
+        }
     }
 }
