@@ -366,7 +366,16 @@ pub struct LaunchableApp {
 /// for a caller to re-attach or verify the correct browser window/tab.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LaunchAppResult {
+    /// Whether this call newly started the app (it owned no window before). It is
+    /// `false` when the app was already running — the URL then opened as a tab,
+    /// not a new window.
     pub launched: bool,
+    /// Whether the app already owned a window before this call, so no new window
+    /// was created (any URL opened in the existing window as a tab).
+    pub already_running: bool,
+    /// Whether a URL was actually handed to the app (the `open` carried a URL and
+    /// succeeded), regardless of cold start versus tab reuse.
+    pub url_opened: bool,
     pub app: String,
     pub url: Option<String>,
     pub target: TargetState,
