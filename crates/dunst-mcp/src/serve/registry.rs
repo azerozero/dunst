@@ -54,6 +54,8 @@ pub(super) const TOOL_REGISTRY: &[RegisteredTool] = &[
     tool("drag_element", ToolRoute::Element),
     tool("select_file", ToolRoute::Element),
     tool("approve", ToolRoute::Element),
+    tool("preauthorize", ToolRoute::Element),
+    tool("revoke_preauthorization", ToolRoute::Element),
     tool("verify_state", ToolRoute::Element),
     tool("apply_selections", ToolRoute::Batch),
     tool("click_at", ToolRoute::Raw),

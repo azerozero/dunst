@@ -183,7 +183,10 @@ fn tool_requires_mutation_coordination(route: ToolRoute, name: &str, args: &Valu
             "enumerate_choices" => arg_bool(args, "scroll_scan").unwrap_or(false),
             _ => false,
         },
-        ToolRoute::Element => !matches!(name, "approve" | "verify_state"),
+        ToolRoute::Element => !matches!(
+            name,
+            "approve" | "verify_state" | "preauthorize" | "revoke_preauthorization"
+        ),
         ToolRoute::Batch => true,
         ToolRoute::Raw => !matches!(name, "hover_at" | "unstick_cursor"),
         ToolRoute::WindowApp => matches!(
