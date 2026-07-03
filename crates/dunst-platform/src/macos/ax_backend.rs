@@ -399,6 +399,17 @@ pub(super) fn app_element(pid: i32) -> Result<AxElement> {
     }
 }
 
+/// AXRaise the exact window identified by its CoreGraphics `window_id`, making
+/// it the app's key window. Window-scoped via `_AXUIElementGetWindow`, so it is
+/// robust to duplicate/volatile window titles (contrary to a name match). The
+/// caller is responsible for foregrounding the app process when the raise must
+/// route menu-bar commands to this window.
+pub(crate) fn raise_window_by_id(pid: i32, window_id: u32) -> Result<()> {
+    let app = app_element(pid)?;
+    let window = resolve_window(&app, window_id)?;
+    perform_ax_action(&window, kAXRaiseAction).map_err(DunstError::from)
+}
+
 /// Replace the text of whatever field currently holds keyboard focus in the app.
 /// Fetches the app's `AXFocusedUIElement` directly (so it works even when the
 /// focused field is a sparse-AX web input absent from the scene graph) and reuses

@@ -716,27 +716,51 @@ impl Engine {
         ) {
             return Ok(entry);
         }
-        let (reasoning, outcome) = if let Some(node) = menu_item {
-            (
-                Some("background hotkey (AXPress matched menu item)"),
-                retry_user_active_guard(|| {
-                    self.executor
-                        .perform(&self.target, &node, SemanticAction::Click, None)
-                }),
-            )
-        } else {
-            let (flags, keycode) = fallback_key.expect("fallback key parsed when no menu item");
-            (
-                Some("background hotkey (modifier combo, auth-signed)"),
-                retry_user_active_guard(|| {
-                    dunst_platform::key_web_background(
-                        self.target.pid,
-                        self.target.window_id,
-                        keycode,
-                        flags,
-                    )
-                }),
-            )
+        let (reasoning, outcome) = match menu_item {
+            Some(node) => {
+                // Never AXPress a latent menu item directly: on a closed
+                // submenu it either errors (element cache miss, item "not
+                // validated") or — worse — returns success without acting
+                // (BUGS-TODO #4). Click the menu path via System Events,
+                // which opens the intervening menus and briefly borrows the
+                // foreground.
+                let chains = menu_nested_label_chains(self.scene_graph(), &node);
+                let (pid, window_id) = (self.target.pid, self.target.window_id);
+                (
+                    Some("background hotkey (menu equivalent clicked via System Events on the raised target window, foreground borrowed)"),
+                    retry_user_active_guard(|| {
+                        // Make the ATTACHED window key first so the menu-bar
+                        // command lands on it, not on whichever window of the
+                        // app is currently frontmost (multi-window apps).
+                        dunst_platform::raise_window_by_id(pid, window_id)?;
+                        let mut last_err = DunstError::Execution(format!(
+                            "hotkey {combo:?} matches menu item {} but no menu label chain could be derived; use open_menu then click_element",
+                            node.id
+                        ));
+                        for chain in &chains {
+                            match dunst_platform::click_menu_path(pid, chain) {
+                                Ok(()) => return Ok(()),
+                                Err(err) => last_err = err,
+                            }
+                        }
+                        Err(last_err)
+                    }),
+                )
+            }
+            None => {
+                let (flags, keycode) = fallback_key.expect("fallback key parsed when no menu item");
+                (
+                    Some("background hotkey (modifier combo, auth-signed)"),
+                    retry_user_active_guard(|| {
+                        dunst_platform::key_web_background(
+                            self.target.pid,
+                            self.target.window_id,
+                            keycode,
+                            flags,
+                        )
+                    }),
+                )
+            }
         };
         let entry = self.audit_raw_input(
             target_id,
@@ -785,17 +809,85 @@ impl Engine {
 #[cfg(target_os = "macos")]
 fn menu_item_for_hotkey(graph: &dunst_core::SceneGraph, combo: &str) -> Option<SceneNode> {
     let combo = parse_menu_hotkey_combo(combo)?;
-    graph
-        .nodes
-        .values()
-        .find(|node| {
-            node.role == Role::MenuItem
-                && node.enabled
-                && node.cmd_char.as_deref().is_some_and(|cmd_char| {
-                    menu_hotkey_matches(&combo, cmd_char, node.cmd_modifiers)
-                })
-        })
-        .cloned()
+    let mut disabled_match = None;
+    for node in graph.nodes.values() {
+        if node.role != Role::MenuItem {
+            continue;
+        }
+        let matches = node
+            .cmd_char
+            .as_deref()
+            .is_some_and(|cmd_char| menu_hotkey_matches(&combo, cmd_char, node.cmd_modifiers))
+            || node.cmd_virtual_key.is_some_and(|virtual_key| {
+                menu_hotkey_matches_virtual_key(&combo, virtual_key, node.cmd_modifiers)
+            });
+        if !matches {
+            continue;
+        }
+        if node.enabled {
+            return Some(node.clone());
+        }
+        if disabled_match.is_none() {
+            disabled_match = Some(node.clone());
+        }
+    }
+    // AX only validates menu items while their menu is tracked: a disabled
+    // match usually means "not validated", not "unavailable". The caller
+    // routes it through the System Events menu-path click.
+    disabled_match
+}
+
+/// Labels from the topmost reachable menu ancestor down to `leaf`, following
+/// graph parents. Menu containers carry no label and are skipped; System
+/// Events addresses them as `menu 1`.
+#[cfg(target_os = "macos")]
+fn menu_label_path(graph: &dunst_core::SceneGraph, leaf: &SceneNode) -> Option<Vec<String>> {
+    let mut labels = vec![leaf.label.clone()?];
+    let mut current = leaf.parent.clone();
+    while let Some(id) = current {
+        let node = graph.get(&id)?;
+        if node.role == Role::MenuItem {
+            labels.push(node.label.clone()?);
+        }
+        current = node.parent.clone();
+    }
+    labels.reverse();
+    (labels.len() >= 2).then_some(labels)
+}
+
+/// Candidate nested label chains (below the menu bar item, leaf last) for a
+/// menu item: the dot-separated `ax_identifier` first when present (stable,
+/// e.g. "Select Split Pane.Select Pane Above"), then chains derived from the
+/// graph parents — whose links churn on latent menus and may be incomplete —
+/// and finally the bare leaf label.
+#[cfg(target_os = "macos")]
+fn menu_nested_label_chains(graph: &dunst_core::SceneGraph, leaf: &SceneNode) -> Vec<Vec<String>> {
+    let mut chains: Vec<Vec<String>> = Vec::new();
+    let push = |chains: &mut Vec<Vec<String>>, chain: Vec<String>| {
+        if !chain.is_empty() && !chains.contains(&chain) {
+            chains.push(chain);
+        }
+    };
+    if let Some(identifier) = leaf.ax_identifier.as_deref() {
+        let segments: Vec<String> = identifier
+            .split('.')
+            .map(|segment| segment.trim().to_string())
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        if segments.len() >= 2 {
+            push(&mut chains, segments);
+        }
+    }
+    if let Some(labels) = menu_label_path(graph, leaf) {
+        // The first entry is usually the menu bar item, which the platform
+        // click loops over itself; offer the chain with and without it.
+        push(&mut chains, labels[1..].to_vec());
+        push(&mut chains, labels);
+    }
+    if let Some(label) = leaf.label.clone() {
+        push(&mut chains, vec![label]);
+    }
+    chains
 }
 
 fn paste_text_via_clipboard(

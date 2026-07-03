@@ -30,7 +30,9 @@ pub use clipboard::{
 };
 #[cfg(target_os = "macos")]
 pub use file_chooser::select_file_osascript_lines;
-pub use file_chooser::{borrow_target_frontmost, restore_frontmost_pid, select_file};
+pub use file_chooser::{
+    borrow_target_frontmost, click_menu_path, restore_frontmost_pid, select_file,
+};
 
 pub fn platform_kind() -> PlatformKind {
     capabilities::current_platform_kind()
@@ -256,6 +258,23 @@ pub fn set_focused_field_text(pid: i32, window_id: u32, text: &str) -> Result<()
 #[cfg(target_os = "macos")]
 pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) -> Result<()> {
     macos::key_web_background(pid, window_id, keycode, flags)
+}
+
+/// AXRaise the exact window identified by its CoreGraphics `window_id`, making
+/// it the app's key window (window-scoped via `_AXUIElementGetWindow`, robust
+/// to duplicate/volatile titles). Use before a menu-bar command so it targets
+/// the attached window and not whichever window of the app is currently key.
+#[cfg(target_os = "macos")]
+pub fn raise_window_by_id(pid: i32, window_id: u32) -> Result<()> {
+    macos::raise_window_by_id(pid, window_id)
+}
+
+/// Non-macOS stub.
+#[cfg(not(target_os = "macos"))]
+pub fn raise_window_by_id(_pid: i32, _window_id: u32) -> Result<()> {
+    Err(dunst_core::DunstError::Execution(
+        "raise_window_by_id requires a macOS backend".into(),
+    ))
 }
 
 /// Hit-test the AX element under a global screen point and return a shallow raw

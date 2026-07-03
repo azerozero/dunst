@@ -17,6 +17,7 @@ pub(super) fn parse_combo(combo: &str) -> Option<(u64, u16)> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct MenuHotkeyCombo {
     pub(super) cmd_char: char,
+    pub(super) cmd_virtual_key: Option<u16>,
     pub(super) command: bool,
     pub(super) shift: bool,
     pub(super) option: bool,
@@ -26,22 +27,37 @@ pub(super) struct MenuHotkeyCombo {
 pub(super) fn parse_menu_hotkey_combo(combo: &str) -> Option<MenuHotkeyCombo> {
     let mut parsed = MenuHotkeyCombo {
         cmd_char: '\0',
+        cmd_virtual_key: None,
         command: false,
         shift: false,
         option: false,
         control: false,
     };
     let mut key = None;
+    let mut virtual_key = None;
     for part in combo.split('+') {
         match part.trim().to_ascii_lowercase().as_str() {
             "cmd" | "command" | "meta" => parsed.command = true,
             "shift" => parsed.shift = true,
             "opt" | "option" | "alt" => parsed.option = true,
             "ctrl" | "control" => parsed.control = true,
-            other => key = menu_cmd_char_for_key_name(other),
+            other => match menu_cmd_char_for_key_name(other) {
+                Some(ch) => {
+                    key = Some(ch);
+                    virtual_key = None;
+                }
+                None => {
+                    key = None;
+                    virtual_key = menu_virtual_key_for_key_name(other);
+                }
+            },
         }
     }
-    parsed.cmd_char = key?;
+    if let Some(ch) = key {
+        parsed.cmd_char = ch;
+        return Some(parsed);
+    }
+    parsed.cmd_virtual_key = Some(virtual_key?);
     Some(parsed)
 }
 
@@ -50,12 +66,27 @@ pub(super) fn menu_hotkey_matches(
     cmd_char: &str,
     cmd_modifiers: Option<u64>,
 ) -> bool {
+    if combo.cmd_virtual_key.is_some() {
+        return false;
+    }
     let Some(item_char) = cmd_char.chars().find(|ch| !ch.is_whitespace()) else {
         return false;
     };
     if !item_char.eq_ignore_ascii_case(&combo.cmd_char) {
         return false;
     }
+    menu_modifiers_ok(combo, cmd_modifiers)
+}
+
+pub(super) fn menu_hotkey_matches_virtual_key(
+    combo: &MenuHotkeyCombo,
+    virtual_key: u16,
+    cmd_modifiers: Option<u64>,
+) -> bool {
+    combo.cmd_virtual_key == Some(virtual_key) && menu_modifiers_ok(combo, cmd_modifiers)
+}
+
+fn menu_modifiers_ok(combo: &MenuHotkeyCombo, cmd_modifiers: Option<u64>) -> bool {
     match cmd_modifiers {
         Some(modifiers) => ax_menu_modifiers_match(combo, modifiers),
         None => combo.command && !combo.shift && !combo.option && !combo.control,
@@ -70,6 +101,29 @@ fn menu_cmd_char_for_key_name(key: &str) -> Option<char> {
         s if s.chars().count() == 1 => s.chars().next().map(|ch| ch.to_ascii_lowercase()),
         _ => None,
     }
+}
+
+/// Virtual keys for named non-character keys, matched against
+/// AXMenuItemCmdVirtualKey (items whose shortcut has no CmdChar, e.g. arrows).
+/// Only these names are safe to resolve by keycode: their physical position
+/// does not depend on the keyboard layout, contrary to letter keys which must
+/// stay on AXMenuItemCmdChar (AZERTY, cf. BUGS-TODO section 0).
+fn menu_virtual_key_for_key_name(key: &str) -> Option<u16> {
+    Some(match key {
+        "enter" | "return" => 0x24,
+        "tab" => 0x30,
+        "escape" | "esc" => 0x35,
+        "delete" | "backspace" => 0x33,
+        "left" => 0x7B,
+        "right" => 0x7C,
+        "down" => 0x7D,
+        "up" => 0x7E,
+        "pagedown" => 0x79,
+        "pageup" => 0x74,
+        "home" => 0x73,
+        "end" => 0x77,
+        _ => return None,
+    })
 }
 
 fn ax_menu_modifiers_match(combo: &MenuHotkeyCombo, modifiers: u64) -> bool {
