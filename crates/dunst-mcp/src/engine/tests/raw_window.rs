@@ -1,6 +1,6 @@
 use super::*;
 use crate::engine::raw_input::hotkey_result_low_signal;
-use crate::engine::window_ops::reconciled_raise_result;
+use crate::engine::window_ops::{expose_delta, reconciled_raise_result};
 
 #[test]
 fn user_active_guard_retry_runs_once_before_returning() {
@@ -233,6 +233,10 @@ fn target_visibility_reports_covered_window_and_hint() {
 
     assert_eq!(visibility.status, "covered");
     assert_eq!(visibility.covered_by[0].window_id, 1);
+    let covered = serde_json::to_value(&visibility.covered_by[0]).unwrap();
+    assert_eq!(covered["app"], "Firefox");
+    assert!(covered.get("display").is_none());
+    assert!(covered.get("pid").is_none());
     assert!(visibility.visible_fraction < 1.0);
     assert!(visibility.fallback_hint.is_some());
 }
@@ -278,6 +282,20 @@ fn raise_reconciliation_requires_frontmost_or_visibility_gain() {
         reconciled_raise_result(false, &before, &frontmost),
         (false, false)
     );
+}
+
+#[test]
+fn expose_delta_keeps_only_visibility_changes() {
+    let before = visibility_snapshot(false, 0.0);
+    let after = visibility_snapshot(true, 0.75);
+    let delta = expose_delta(&before, &after);
+
+    assert!(!delta.was_frontmost);
+    assert!(delta.is_frontmost);
+    assert_eq!(delta.visible_fraction_before, 0.0);
+    assert_eq!(delta.visible_fraction_after, 0.75);
+    assert!(delta.covered_by_before.is_empty());
+    assert!(delta.covered_by_after.is_empty());
 }
 
 #[test]

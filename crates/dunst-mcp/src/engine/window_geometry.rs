@@ -117,22 +117,19 @@ pub(super) fn target_visibility_from_desktop(
         };
     };
 
-    let covered_by: Vec<DesktopWindow> = target
+    let covering_windows: Vec<&DesktopWindow> = target
         .covered_by
         .iter()
-        .filter_map(|id| {
-            view.windows
-                .iter()
-                .find(|window| window.window_id == *id)
-                .cloned()
-        })
+        .filter_map(|id| view.windows.iter().find(|window| window.window_id == *id))
         .collect();
     let bounds = if target.bounds.w > 0.0 && target.bounds.h > 0.0 {
         target.bounds
     } else {
         fallback_bounds
     };
-    let visible_fraction = visible_fraction(bounds, &covered_by);
+    let visible_fraction = visible_fraction(bounds, &covering_windows);
+    let covered_by: Vec<CoveringWindow> =
+        covering_windows.into_iter().map(covering_window).collect();
     let mut warnings = Vec::new();
     let mut status = if target.is_frontmost {
         "frontmost"
@@ -182,7 +179,17 @@ pub(super) fn target_visibility_from_desktop(
     }
 }
 
-pub(super) fn visible_fraction(bounds: Bbox, covered_by: &[DesktopWindow]) -> f64 {
+fn covering_window(window: &DesktopWindow) -> CoveringWindow {
+    CoveringWindow {
+        app: window.app.clone(),
+        window_id: window.window_id,
+        title: window.title.clone(),
+        bounds: window.bounds,
+        z_order: window.z_order,
+    }
+}
+
+pub(super) fn visible_fraction(bounds: Bbox, covered_by: &[&DesktopWindow]) -> f64 {
     let area = bounds.w.max(0.0) * bounds.h.max(0.0);
     if area <= 0.0 {
         return 0.0;

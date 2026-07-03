@@ -370,14 +370,9 @@ impl Engine {
             ids.extend(after.covered_by.iter().map(|window| window.window_id));
             ids.sort_unstable();
             ids.dedup();
-            let display = after
-                .covered_by
-                .iter()
-                .find_map(|window| window.display.as_ref().map(|d| d.index))
-                .or_else(|| {
-                    self.display_for_window(self.current_window_bounds())
-                        .map(|d| d.index)
-                })
+            let display = self
+                .display_for_window(self.current_window_bounds())
+                .map(|d| d.index)
                 .unwrap_or(1);
             let _ = self.arrange_windows(display, "columns", None, &ids, false);
             arranged = true;
@@ -399,9 +394,10 @@ impl Engine {
         } else {
             None
         };
+        let delta = expose_delta(&before, &after);
         Ok(ExposeTargetWindowResult {
-            before,
             after,
+            delta,
             raise_audit,
             raised,
             raised_within_app_only,
@@ -418,7 +414,7 @@ impl Engine {
         let before = self.target_visibility();
         Ok(ExposeTargetWindowResult {
             after: before.clone(),
-            before,
+            delta: expose_delta(&before, &before),
             raise_audit: None,
             raised: false,
             raised_within_app_only: false,
@@ -560,6 +556,28 @@ pub(in crate::engine) fn reconciled_raise_result(
     let raised = ax_ok && (after.is_frontmost || after.visible_fraction > before.visible_fraction);
     let raised_within_app_only = ax_ok && !raised;
     (raised, raised_within_app_only)
+}
+
+pub(in crate::engine) fn expose_delta(
+    before: &TargetVisibility,
+    after: &TargetVisibility,
+) -> ExposeTargetWindowDelta {
+    ExposeTargetWindowDelta {
+        was_frontmost: before.is_frontmost,
+        is_frontmost: after.is_frontmost,
+        visible_fraction_before: before.visible_fraction,
+        visible_fraction_after: after.visible_fraction,
+        covered_by_before: before
+            .covered_by
+            .iter()
+            .map(|window| window.window_id)
+            .collect(),
+        covered_by_after: after
+            .covered_by
+            .iter()
+            .map(|window| window.window_id)
+            .collect(),
+    }
 }
 
 fn screenshot_geometry(window: Bbox, image_pixels: Option<PixelSize>) -> ScreenshotGeometry {

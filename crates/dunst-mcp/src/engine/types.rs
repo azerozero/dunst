@@ -61,12 +61,21 @@ pub struct TargetVisibility {
     pub degraded: bool,
     pub reason: Option<String>,
     pub is_frontmost: bool,
-    pub covered_by: Vec<DesktopWindow>,
+    pub covered_by: Vec<CoveringWindow>,
     pub covers: Vec<u32>,
     pub visible_fraction: f64,
     pub status: String,
     pub warnings: Vec<String>,
     pub fallback_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CoveringWindow {
+    pub app: String,
+    pub window_id: u32,
+    pub title: String,
+    pub bounds: Bbox,
+    pub z_order: usize,
 }
 
 /// Stable-enough UI state token for resuming after a window move, tab switch,
@@ -234,13 +243,23 @@ pub struct ModalDismissResult {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ExposeTargetWindowResult {
-    pub before: TargetVisibility,
     pub after: TargetVisibility,
+    pub delta: ExposeTargetWindowDelta,
     pub raise_audit: Option<AuditEntry>,
     pub raised: bool,
     pub raised_within_app_only: bool,
     pub arranged: bool,
     pub verification_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExposeTargetWindowDelta {
+    pub was_frontmost: bool,
+    pub is_frontmost: bool,
+    pub visible_fraction_before: f64,
+    pub visible_fraction_after: f64,
+    pub covered_by_before: Vec<u32>,
+    pub covered_by_after: Vec<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
