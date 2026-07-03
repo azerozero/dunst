@@ -10,6 +10,44 @@ pub(super) struct WalkAttributes {
     request: CFArray<CFString>,
 }
 
+pub(super) struct WalkContext {
+    attrs: WalkAttributes,
+    focus: FocusContext,
+}
+
+impl WalkContext {
+    pub(super) fn new(app: &AxElement, window: &AxElement) -> Self {
+        Self {
+            attrs: WalkAttributes::new(),
+            focus: FocusContext::from_app_window(app, window),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct FocusContext {
+    focused_element: Option<ElementKey>,
+    focused_window: Option<ElementKey>,
+    target_window: Option<ElementKey>,
+}
+
+impl FocusContext {
+    pub(super) fn from_app_window(app: &AxElement, window: &AxElement) -> Self {
+        Self {
+            focused_element: attr_ax_element(app, AX_FOCUSED_UI_ELEMENT_ATTRIBUTE)
+                .and_then(|element| element_key(&element)),
+            focused_window: attr_ax_element(app, AX_FOCUSED_WINDOW_ATTRIBUTE)
+                .and_then(|element| element_key(&element)),
+            target_window: element_key(window),
+        }
+    }
+
+    fn element_focused(&self, element: &AxElement) -> bool {
+        let key = element_key(element);
+        reconciled_focus_key(key.as_ref(), self)
+    }
+}
+
 impl WalkAttributes {
     pub(super) fn new() -> Self {
         Self {
@@ -24,7 +62,6 @@ impl WalkAttributes {
                 CFString::new(kAXPositionAttribute),
                 CFString::new(kAXSizeAttribute),
                 CFString::new(kAXEnabledAttribute),
-                CFString::new(kAXFocusedAttribute),
                 CFString::new(kAXChildrenAttribute),
                 CFString::new(AX_MENU_ITEM_CMD_CHAR_ATTRIBUTE),
                 CFString::new(AX_MENU_ITEM_CMD_MODIFIERS_ATTRIBUTE),
@@ -134,7 +171,7 @@ pub(super) fn shallow_raw_node(element: &AxElement) -> RawAxNode {
         ax_actions: read_node_actions(element),
         frame: frame(element),
         enabled: attr_bool(element, kAXEnabledAttribute).unwrap_or(true),
-        focused: attr_bool(element, kAXFocusedAttribute).unwrap_or(false),
+        focused: false,
     })
 }
 
@@ -151,11 +188,11 @@ pub(super) fn walk_element(
     target_key: &TargetKey,
     depth: usize,
     state: &mut WalkState,
-    attrs: &WalkAttributes,
+    ctx: &WalkContext,
 ) -> Result<RawAxNode> {
     state.count += 1;
-    let Some(batch) = BatchValues::read(element, attrs) else {
-        return walk_element_single(element, target_key, depth, state, attrs);
+    let Some(batch) = BatchValues::read(element, &ctx.attrs) else {
+        return walk_element_single(element, target_key, depth, state, ctx);
     };
     let ax_role = batch
         .get(IDX_ROLE)
@@ -178,14 +215,14 @@ pub(super) fn walk_element(
         ax_actions: read_node_actions(element),
         frame: frame_from_batch(&batch),
         enabled: batch.get(IDX_ENABLED).and_then(cf_bool).unwrap_or(true),
-        focused: batch.get(IDX_FOCUSED).and_then(cf_bool).unwrap_or(false),
+        focused: ctx.focus.element_focused(element),
     };
     finish_walk_element(
         element,
         target_key,
         depth,
         state,
-        attrs,
+        ctx,
         fields,
         batch.get(IDX_CHILDREN).and_then(cf_array),
     )
@@ -196,7 +233,7 @@ pub(super) fn walk_element_single(
     target_key: &TargetKey,
     depth: usize,
     state: &mut WalkState,
-    attrs: &WalkAttributes,
+    ctx: &WalkContext,
 ) -> Result<RawAxNode> {
     let ax_role = attr_string(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
 
@@ -216,14 +253,14 @@ pub(super) fn walk_element_single(
         ax_actions: read_node_actions(element),
         frame: frame(element),
         enabled: attr_bool(element, kAXEnabledAttribute).unwrap_or(true),
-        focused: attr_bool(element, kAXFocusedAttribute).unwrap_or(false),
+        focused: ctx.focus.element_focused(element),
     };
     finish_walk_element(
         element,
         target_key,
         depth,
         state,
-        attrs,
+        ctx,
         fields,
         attr_array(element, kAXChildrenAttribute),
     )
@@ -234,7 +271,7 @@ pub(super) fn finish_walk_element(
     target_key: &TargetKey,
     depth: usize,
     state: &mut WalkState,
-    attrs: &WalkAttributes,
+    ctx: &WalkContext,
     fields: NodeFields,
     children: Option<CFArray>,
 ) -> Result<RawAxNode> {
@@ -253,7 +290,7 @@ pub(super) fn finish_walk_element(
                 break;
             }
             node.children
-                .push(walk_element(&child, target_key, depth + 1, state, attrs)?);
+                .push(walk_element(&child, target_key, depth + 1, state, ctx)?);
         }
     }
 
@@ -368,4 +405,62 @@ pub(super) fn element_key(element: &AxElement) -> Option<ElementKey> {
         label,
         bbox: frame(element).and_then(round_bbox),
     })
+}
+
+fn reconciled_focus_key(element: Option<&ElementKey>, focus: &FocusContext) -> bool {
+    let Some(element) = element else {
+        return false;
+    };
+    let Some(focused_element) = &focus.focused_element else {
+        return false;
+    };
+    if let (Some(focused_window), Some(target_window)) =
+        (&focus.focused_window, &focus.target_window)
+    {
+        if focused_window != target_window {
+            return false;
+        }
+    }
+    element == focused_element
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(ax_role: &str, label: &str, bbox: Option<(i64, i64, i64, i64)>) -> ElementKey {
+        ElementKey {
+            ax_identifier: None,
+            ax_role: ax_role.to_string(),
+            label: Some(label.to_string()),
+            bbox,
+        }
+    }
+
+    #[test]
+    fn reconciled_focus_accepts_only_app_focused_element_in_target_window() {
+        let target_window = key("AXWindow", "iTerm", Some((0, 0, 800, 600)));
+        let other_window = key("AXWindow", "Other", Some((900, 0, 800, 600)));
+        let focused = key("AXTextArea", "pane", Some((0, 0, 800, 300)));
+        let sibling = key("AXTextArea", "pane", Some((0, 300, 800, 300)));
+
+        let focus = FocusContext {
+            focused_element: Some(focused.clone()),
+            focused_window: Some(target_window.clone()),
+            target_window: Some(target_window.clone()),
+        };
+        assert!(reconciled_focus_key(Some(&focused), &focus));
+        assert!(!reconciled_focus_key(Some(&sibling), &focus));
+
+        let wrong_window = FocusContext {
+            focused_element: Some(focused.clone()),
+            focused_window: Some(other_window),
+            target_window: Some(target_window),
+        };
+        assert!(!reconciled_focus_key(Some(&focused), &wrong_window));
+        assert!(!reconciled_focus_key(
+            Some(&focused),
+            &FocusContext::default()
+        ));
+    }
 }

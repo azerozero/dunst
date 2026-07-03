@@ -101,14 +101,14 @@ pub fn capture(target: &Target) -> Result<Vec<RawAxNode>> {
     let target_key = TargetKey::from_target(target);
     let app = app_element(target.pid)?;
     let window = resolve_window(&app, target.window_id)?;
-    let walk_attrs = WalkAttributes::new();
+    let walk_ctx = WalkContext::new(&app, &window);
     let mut state = WalkState::default();
     let mut roots = vec![walk_element(
         &window,
         &target_key,
         0,
         &mut state,
-        &walk_attrs,
+        &walk_ctx,
     )?];
     if let Some(menu_bar) = attr_ax_element(&app, kAXMenuBarAttribute) {
         roots.push(walk_element(
@@ -116,7 +116,7 @@ pub fn capture(target: &Target) -> Result<Vec<RawAxNode>> {
             &target_key,
             0,
             &mut state,
-            &walk_attrs,
+            &walk_ctx,
         )?);
     }
     if state.capped {
