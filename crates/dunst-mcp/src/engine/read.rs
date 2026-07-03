@@ -355,10 +355,12 @@ impl Engine {
         }
 
         let transient_ids = transient_epoch_node_ids(g, affordances);
+        let menubar_root = self.cached_menubar_root.as_deref();
         let mut nodes: Vec<(Vec<usize>, &SceneNode)> = g
             .nodes
             .values()
             .filter(|node| !transient_ids.contains(&node.id))
+            .filter(|node| !node_in_menu_bar(g, node, menubar_root))
             .map(|node| (epoch_filtered_path(g, node, &transient_ids), node))
             .collect();
         nodes.sort_by(|(left_path, left), (right_path, right)| {
@@ -1387,6 +1389,36 @@ fn transient_epoch_node_ids(
         .collect()
 }
 
+/// Whether `node` belongs to the app menu bar (a `MenuBar`/`Menu`/`MenuItem`, or
+/// a control nested under one — e.g. the Help-menu `_SC_SEARCH_FIELD`). The menu
+/// bar is excluded from the UI-epoch fingerprint: on a multi-display Mac it
+/// follows the active screen, so its node bboxes flip between coordinate systems
+/// across perceptions and would otherwise churn the epoch — wrongly rejecting a
+/// just-approved raw gesture as "stale". Walks a bounded ancestry so a deep page
+/// node stays cheap.
+fn node_in_menu_bar(graph: &SceneGraph, node: &SceneNode, menubar_root: Option<&str>) -> bool {
+    if matches!(node.role, Role::MenuBar | Role::Menu | Role::MenuItem) {
+        return true;
+    }
+    let mut current = node.parent.as_deref();
+    for _ in 0..16 {
+        let Some(parent_id) = current else {
+            return false;
+        };
+        if menubar_root == Some(parent_id) {
+            return true;
+        }
+        let Some(parent) = graph.get(parent_id) else {
+            return false;
+        };
+        if matches!(parent.role, Role::MenuBar | Role::Menu | Role::MenuItem) {
+            return true;
+        }
+        current = parent.parent.as_deref();
+    }
+    false
+}
+
 fn node_is_transient_epoch_decoration(
     node: &SceneNode,
     affordance: Option<&dunst_core::Affordance>,
@@ -1501,6 +1533,71 @@ mod hit_target_tests {
             floored.reasons.iter().any(|reason| reason == "benign text"),
             "text-derived reasons must be preserved: {:?}",
             floored.reasons
+        );
+    }
+
+    #[test]
+    fn menu_bar_nodes_are_excluded_from_epoch() {
+        use std::collections::BTreeMap;
+
+        fn node(id: &str, role: Role, parent: Option<&str>) -> SceneNode {
+            SceneNode {
+                id: id.into(),
+                role,
+                ax_role: String::new(),
+                label: None,
+                help: None,
+                value: None,
+                bbox: None,
+                confidence: 1.0,
+                source: dunst_core::Source::Accessibility,
+                enabled: true,
+                focused: false,
+                ax_actions: Vec::new(),
+                ax_identifier: None,
+                cmd_char: None,
+                cmd_modifiers: None,
+                cmd_virtual_key: None,
+                last_seen_ms: 0,
+                path: Vec::new(),
+                parent: parent.map(str::to_string),
+                children: Vec::new(),
+            }
+        }
+
+        let mut nodes = BTreeMap::new();
+        for n in [
+            node("menubar", Role::MenuBar, None),
+            node("mi_searchfieldaction", Role::MenuItem, Some("menubar")),
+            node(
+                "field_sc_search_field",
+                Role::TextField,
+                Some("mi_searchfieldaction"),
+            ),
+            node("web_area", Role::Group, None),
+            node("field_page", Role::TextField, Some("web_area")),
+        ] {
+            nodes.insert(n.id.clone(), n);
+        }
+        let graph = SceneGraph {
+            nodes,
+            roots: vec!["menubar".into(), "web_area".into()],
+            captured_at_ms: 0,
+            window: dunst_core::WindowRef::default(),
+        };
+
+        // The menu bar, its items, and the Help-menu search field nested under
+        // them are all excluded — their bboxes flip between displays.
+        for menu_id in ["menubar", "mi_searchfieldaction", "field_sc_search_field"] {
+            assert!(
+                node_in_menu_bar(&graph, graph.get(menu_id).unwrap(), Some("menubar")),
+                "{menu_id} must count as menu bar and stay out of the epoch"
+            );
+        }
+        // A genuine page field remains part of the fingerprint.
+        assert!(
+            !node_in_menu_bar(&graph, graph.get("field_page").unwrap(), Some("menubar")),
+            "a real page field must remain part of the epoch fingerprint"
         );
     }
 
