@@ -34,10 +34,12 @@ pub use file_chooser::{
     borrow_target_frontmost, click_menu_path, restore_frontmost_pid, select_file,
 };
 
+/// Returns the [`PlatformKind`] this crate was compiled for.
 pub fn platform_kind() -> PlatformKind {
     capabilities::current_platform_kind()
 }
 
+/// Returns the current platform's grouped [`PlatformCapabilities`], probed at runtime.
 pub fn platform_capabilities() -> PlatformCapabilities {
     capabilities::current_platform_capabilities()
 }
@@ -49,6 +51,7 @@ pub struct MacosBackend {
 }
 
 impl MacosBackend {
+    /// Creates a new macOS backend handle.
     pub fn new() -> Self {
         Self { _private: () }
     }

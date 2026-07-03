@@ -7,7 +7,9 @@ use crate::Result;
 /// A target window to perceive / act on.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
+    /// Process ID of the owning application.
     pub pid: i32,
+    /// Native window identifier within that process.
     pub window_id: u32,
 }
 
@@ -27,6 +29,7 @@ pub trait Perceptor: Send + Sync {
 /// `ax_actions` and `ax_identifier`) and hands it here. Implementations map the
 /// semantic action onto an AX `performAction`, `setValue`, or CGEvent.
 pub trait ActionExecutor: Send + Sync {
+    /// Performs `action` (with optional `argument`) on `node` in `target`.
     fn perform(
         &self,
         target: &Target,

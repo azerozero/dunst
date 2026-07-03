@@ -1,3 +1,6 @@
+//! Driving native macOS panels via AppleScript: the file chooser, menu paths,
+//! and frontmost-window borrow/restore.
+
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -7,6 +10,10 @@ use dunst_core::{DunstError, Result, WindowRef};
 
 const SELECT_FILE_OSASCRIPT_TIMEOUT: Duration = Duration::from_secs(12);
 
+/// Drives the native file-chooser dialog to select `file` via AppleScript.
+///
+/// When `trigger_point` is set, clicks it first to open the chooser; `target_pid`
+/// scopes which process's open/save panel is targeted. Runs under a timeout.
 #[cfg(target_os = "macos")]
 pub fn select_file(file: &Path, trigger_point: Option<(f64, f64)>, target_pid: i32) -> Result<()> {
     let mut cmd = std::process::Command::new("/usr/bin/osascript");
@@ -37,6 +44,7 @@ pub fn select_file(file: &Path, trigger_point: Option<(f64, f64)>, target_pid: i
     )))
 }
 
+/// Non-macOS stub; returns an execution error.
 #[cfg(not(target_os = "macos"))]
 pub fn select_file(
     _file: &Path,
@@ -121,6 +129,7 @@ pub fn click_menu_path(pid: i32, labels: &[String]) -> Result<()> {
     )))
 }
 
+/// Non-macOS stub; returns an execution error.
 #[cfg(not(target_os = "macos"))]
 pub fn click_menu_path(_pid: i32, _labels: &[String]) -> Result<()> {
     Err(DunstError::Execution(
@@ -133,6 +142,10 @@ fn escape_applescript(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Brings `target`'s window frontmost, returning the previously frontmost app's PID to restore.
+///
+/// Activates `target`'s process, AXRaises the window whose title matches, and
+/// returns the prior frontmost unix id as a string, or `None` if there was none.
 #[cfg(target_os = "macos")]
 pub fn borrow_target_frontmost(target: &WindowRef) -> Result<Option<String>> {
     let mut cmd = std::process::Command::new("/usr/bin/osascript");
@@ -154,6 +167,7 @@ pub fn borrow_target_frontmost(target: &WindowRef) -> Result<Option<String>> {
     Ok((!previous.is_empty() && previous != "0").then_some(previous))
 }
 
+/// Non-macOS stub; returns an execution error.
 #[cfg(not(target_os = "macos"))]
 pub fn borrow_target_frontmost(_target: &WindowRef) -> Result<Option<String>> {
     Err(DunstError::Execution(
@@ -161,6 +175,7 @@ pub fn borrow_target_frontmost(_target: &WindowRef) -> Result<Option<String>> {
     ))
 }
 
+/// Re-activates the application with unix id `pid`; no-ops for an empty or `"0"` value.
 #[cfg(target_os = "macos")]
 pub fn restore_frontmost_pid(pid: &str) -> Result<()> {
     if pid.trim().is_empty() || pid == "0" {
@@ -183,6 +198,7 @@ pub fn restore_frontmost_pid(pid: &str) -> Result<()> {
     )))
 }
 
+/// Non-macOS stub; returns an execution error.
 #[cfg(not(target_os = "macos"))]
 pub fn restore_frontmost_pid(_pid: &str) -> Result<()> {
     Err(DunstError::Execution(
@@ -190,6 +206,7 @@ pub fn restore_frontmost_pid(_pid: &str) -> Result<()> {
     ))
 }
 
+/// Returns the AppleScript source lines that [`borrow_target_frontmost`] runs.
 #[cfg(target_os = "macos")]
 pub fn borrow_target_frontmost_osascript_lines() -> &'static [&'static str] {
     &[
@@ -221,6 +238,7 @@ pub fn borrow_target_frontmost_osascript_lines() -> &'static [&'static str] {
     ]
 }
 
+/// Returns the AppleScript source lines that [`restore_frontmost_pid`] runs.
 #[cfg(target_os = "macos")]
 pub fn restore_frontmost_osascript_lines() -> &'static [&'static str] {
     &[
@@ -236,6 +254,7 @@ pub fn restore_frontmost_osascript_lines() -> &'static [&'static str] {
     ]
 }
 
+/// Returns the AppleScript source lines that [`select_file`] runs.
 #[cfg(target_os = "macos")]
 pub fn select_file_osascript_lines() -> &'static [&'static str] {
     &[

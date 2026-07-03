@@ -1,3 +1,5 @@
+//! Clipboard read/write and clipboard-backed paste helpers for macOS.
+
 use dunst_core::{DunstError, Result};
 
 const CMD_FLAG: u64 = 0x0010_0000;
@@ -11,6 +13,7 @@ const V_KEYCODE: u16 = 0x09;
 /// path (`paste_replace_field_foreground`'s `delay 0.3`).
 const PASTE_CONSUME_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
+/// Reads the clipboard's contents as raw bytes via `pbpaste`.
 #[cfg(target_os = "macos")]
 pub fn read_clipboard_bytes() -> Result<Vec<u8>> {
     let output = std::process::Command::new("pbpaste")
@@ -26,6 +29,7 @@ pub fn read_clipboard_bytes() -> Result<Vec<u8>> {
     }
 }
 
+/// Non-macOS stub; returns an execution error.
 #[cfg(not(target_os = "macos"))]
 pub fn read_clipboard_bytes() -> Result<Vec<u8>> {
     Err(DunstError::Execution(
@@ -33,6 +37,7 @@ pub fn read_clipboard_bytes() -> Result<Vec<u8>> {
     ))
 }
 
+/// Writes `bytes` to the clipboard via `pbcopy`.
 #[cfg(target_os = "macos")]
 pub fn write_clipboard_bytes(bytes: &[u8]) -> Result<()> {
     use std::io::Write as _;
@@ -59,6 +64,7 @@ pub fn write_clipboard_bytes(bytes: &[u8]) -> Result<()> {
     }
 }
 
+/// Non-macOS stub; returns an execution error.
 #[cfg(not(target_os = "macos"))]
 pub fn write_clipboard_bytes(_bytes: &[u8]) -> Result<()> {
     Err(DunstError::Execution(
@@ -66,6 +72,10 @@ pub fn write_clipboard_bytes(_bytes: &[u8]) -> Result<()> {
     ))
 }
 
+/// Pastes `text` into a backgrounded window via clipboard + background Cmd+V.
+///
+/// When `restore_clipboard` is set, waits for the target app to consume the
+/// paste, then puts the previous clipboard contents back.
 #[cfg(target_os = "macos")]
 pub fn paste_text_background(
     pid: i32,
@@ -102,6 +112,7 @@ pub fn paste_text_background(
     }
 }
 
+/// Non-macOS stub; returns an execution error.
 #[cfg(not(target_os = "macos"))]
 pub fn paste_text_background(
     _pid: i32,
@@ -156,6 +167,7 @@ pub fn paste_replace_field_foreground(pid: i32, text: &str) -> Result<()> {
     }
 }
 
+/// Non-macOS stub; returns an execution error.
 #[cfg(not(target_os = "macos"))]
 pub fn paste_replace_field_foreground(_pid: i32, _text: &str) -> Result<()> {
     Err(DunstError::Execution(

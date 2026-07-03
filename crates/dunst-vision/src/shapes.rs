@@ -15,22 +15,33 @@ use crate::{coords::vision_norm_to_screen_pt, CaptureGeometry, NormRect};
 const TARGET_WIDTH: usize = 320;
 const MAX_SHAPES: usize = 200;
 
+/// Classified kind of a detected shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShapeKind {
+    /// A hollow rectangle (bordered box).
     Rect,
+    /// A filled vertical bar (e.g. a bar-chart column).
     Bar,
+    /// A circular shape.
     Circle,
+    /// An elongated line segment.
     Line,
+    /// An unclassified shape.
     Unknown,
 }
 
+/// A detected shape with its screen-point bounds and confidence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shape {
+    /// Classified kind of the shape.
     pub kind: ShapeKind,
+    /// Bounding box in screen points.
     pub bbox: Bbox,
+    /// Detection confidence in `[0,1]`.
     pub confidence: f32,
 }
 
+/// Detects UI rectangles, bars, circles, and lines in a captured image.
 pub fn detect_shapes(image: &CGImage, geometry: &CaptureGeometry) -> Vec<Shape> {
     let Some(luma) = LumaImage::from_cg_image(image) else {
         return Vec::new();

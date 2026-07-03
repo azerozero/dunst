@@ -1,3 +1,5 @@
+//! Benchmarks classical shape detection over a captured window (macOS only).
+
 #[cfg(target_os = "macos")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     run()
