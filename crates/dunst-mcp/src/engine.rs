@@ -324,7 +324,7 @@ impl Engine {
             .nodes
             .values()
             .filter(|n| {
-                normalized_contains_query(&normalize_match(&n.id), &q)
+                normalize_match(&n.id).contains(&q)
                     || n.label
                         .as_deref()
                         .map(|l| normalized_contains_query(&normalize_match(l), &q))
