@@ -45,9 +45,13 @@ pub struct CaptureGeometry {
 /// [`dunst_core::Bbox`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NormRect {
+    /// Left edge, normalised in `[0,1]` from the image's left.
     pub x: f64,
+    /// Bottom edge, normalised in `[0,1]` from the image's bottom.
     pub y: f64,
+    /// Width, normalised in `[0,1]`.
     pub w: f64,
+    /// Height, normalised in `[0,1]`.
     pub h: f64,
 }
 
@@ -63,7 +67,10 @@ pub struct NormRect {
 /// vision/OCR source is fed into the risk gate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OcrBox {
+    /// Recognised text of this line (or split run).
     pub text: String,
+    /// Vision-normalised bounding box, bottom-left origin.
     pub norm: NormRect,
+    /// Vision's recognition confidence in `[0,1]`.
     pub confidence: f32,
 }

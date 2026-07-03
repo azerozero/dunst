@@ -15,6 +15,7 @@ pub struct MockPerceptor {
 }
 
 impl MockPerceptor {
+    /// Builds a mock from in-memory root nodes and a window reference.
     pub fn new(roots: Vec<RawAxNode>, window: WindowRef) -> Self {
         Self { roots, window }
     }
@@ -52,6 +53,7 @@ impl Perceptor for MockPerceptor {
 /// for asserting that the MCP server resolved and gated an action correctly.
 #[derive(Default)]
 pub struct RecordingExecutor {
+    /// Recorded calls as `(node id, action, argument)` tuples.
     pub calls: Mutex<Vec<(String, SemanticAction, Option<String>)>>,
 }
 

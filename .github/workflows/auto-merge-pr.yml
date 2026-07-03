@@ -1,0 +1,31 @@
+name: Auto-merge PRs
+
+# Queues regular PRs for auto-merge so they merge themselves once the required
+# checks (branch protection on `main`) go green — no manual babysitting. `main`
+# uses a merge queue, so no merge strategy is passed (the queue sets it).
+# Release-plz PRs are handled separately by auto-merge-release.yml.
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    # Non-draft, same-repo PRs only; skip the release bot's own branches.
+    if: >-
+      github.event.pull_request.draft == false
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !startsWith(github.event.pull_request.head.ref, 'release-plz-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh pr merge --auto
+          "${{ github.event.pull_request.number }}"
+          --repo "${{ github.repository }}"

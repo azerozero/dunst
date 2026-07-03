@@ -15,8 +15,10 @@ use objc2_vision::{
 
 use crate::{coords::window_rect_to_vision_roi, CaptureGeometry, NormRect, OcrBox};
 
+/// Failure returned by the Apple Vision OCR path.
 #[derive(Debug)]
 pub enum OcrError {
+    /// Vision reported an error, with its localised description.
     Vision(String),
 }
 
@@ -30,12 +32,16 @@ impl fmt::Display for OcrError {
 
 impl std::error::Error for OcrError {}
 
+/// Vision text-recognition level: `Fast` for latency, `Accurate` for quality.
 #[derive(Debug, Clone, Copy)]
 pub enum RecognitionMode {
+    /// Low-latency recognition (Vision's `.fast` level).
     Fast,
+    /// Higher-quality recognition (Vision's `.accurate` level).
     Accurate,
 }
 
+/// Runs `.fast` OCR over an optional screen-point region of a captured image.
 pub fn ocr_region(
     image: &CGImage,
     geometry: &CaptureGeometry,
@@ -44,6 +50,7 @@ pub fn ocr_region(
     ocr_region_with_mode(image, geometry, region_screen_pt, RecognitionMode::Fast)
 }
 
+/// Runs OCR at the given mode over an optional screen-point region of an image.
 pub fn ocr_region_with_mode(
     image: &CGImage,
     geometry: &CaptureGeometry,

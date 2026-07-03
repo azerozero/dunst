@@ -82,6 +82,7 @@ impl Default for RiskEngine {
 }
 
 impl RiskEngine {
+    /// Builds a risk engine with the compiled high- and medium-risk keyword sets.
     pub fn new() -> Self {
         Self {
             high: compile(HIGH_KEYWORDS),

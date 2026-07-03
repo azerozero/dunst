@@ -8,9 +8,13 @@ use std::collections::BTreeMap;
 /// matching macOS / ScreenCaptureKit conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Bbox {
+    /// Left edge, in global screen points.
     pub x: f64,
+    /// Top edge, in global screen points.
     pub y: f64,
+    /// Width, in screen points.
     pub w: f64,
+    /// Height, in screen points.
     pub h: f64,
 }
 
@@ -24,9 +28,13 @@ impl Bbox {
 /// Identifies the window a graph was captured from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct WindowRef {
+    /// Process ID of the owning application.
     pub pid: i32,
+    /// Native window identifier within that process.
     pub window_id: u32,
+    /// Application name, e.g. `"Notes"`.
     pub app_name: String,
+    /// Window title at capture time.
     pub title: String,
 }
 
@@ -69,10 +77,13 @@ pub struct RawAxNode {
     /// Global-screen frame (from `AXFrame` / `AXPosition`+`AXSize`).
     #[serde(default)]
     pub frame: Option<Bbox>,
+    /// Whether the element is enabled (interactive); defaults to `true`.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Whether the element currently holds keyboard focus.
     #[serde(default)]
     pub focused: bool,
+    /// Child AX nodes, forming the raw perception tree.
     #[serde(default)]
     pub children: Vec<RawAxNode>,
 }
@@ -90,25 +101,45 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
+    /// A push button.
     Button,
+    /// A button that opens a menu (pop-up / pull-down).
     MenuButton,
+    /// A single-line text input.
     TextField,
+    /// A multi-line text input.
     TextArea,
+    /// A checkbox toggle.
     Checkbox,
+    /// A radio button.
     Radio,
+    /// A row in a table, list, or outline.
     Row,
+    /// A cell within a row.
     Cell,
+    /// An item within a menu.
     MenuItem,
+    /// A menu container.
     Menu,
+    /// A menu bar container.
     MenuBar,
+    /// A list container.
     List,
+    /// A table container.
     Table,
+    /// An outline (tree) container.
     Outline,
+    /// A window.
     Window,
+    /// A toolbar container.
     Toolbar,
+    /// Non-interactive static text.
     StaticText,
+    /// An image.
     Image,
+    /// A generic grouping container.
     Group,
+    /// A role that could not be normalised; see `ax_role` for the original.
     Unknown,
 }
 
@@ -174,8 +205,11 @@ impl Role {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
+    /// Sourced from the macOS Accessibility (AX) API — highest priority.
     Accessibility,
+    /// Sourced from vision-based UI detection.
     Vision,
+    /// Sourced from optical character recognition.
     Ocr,
 }
 
@@ -184,33 +218,45 @@ pub enum Source {
 pub struct SceneNode {
     /// Stable, human-readable, synthesised ID, e.g. `"btn_nouvelle_note"`.
     pub id: String,
+    /// Normalised semantic role.
     pub role: Role,
     /// Original AX role string, preserved for `Role::Unknown` and debugging.
     pub ax_role: String,
+    /// Display label / title, when known.
     #[serde(default)]
     pub label: Option<String>,
+    /// Help / tooltip text, when known.
     #[serde(default)]
     pub help: Option<String>,
+    /// Current value (e.g. text-field contents), when known.
     #[serde(default)]
     pub value: Option<String>,
+    /// Bounding box in global screen points, when known.
     #[serde(default)]
     pub bbox: Option<Bbox>,
     /// Detection confidence: `1.0` for AX-sourced, lower for vision/OCR.
     pub confidence: f32,
+    /// Which perception layer produced this node.
     pub source: Source,
+    /// Whether the element is enabled (interactive); defaults to `true`.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Whether the element currently holds keyboard focus.
     #[serde(default)]
     pub focused: bool,
     /// Native AX action verbs, carried through for the executor.
     #[serde(default)]
     pub ax_actions: Vec<String>,
+    /// Native AX identifier, when present.
     #[serde(default)]
     pub ax_identifier: Option<String>,
+    /// Native menu shortcut character, when present.
     #[serde(default)]
     pub cmd_char: Option<String>,
+    /// Native menu shortcut modifier bitmask, when present.
     #[serde(default)]
     pub cmd_modifiers: Option<u64>,
+    /// Native virtual key of the menu shortcut, when present.
     #[serde(default)]
     pub cmd_virtual_key: Option<u16>,
     /// Wall-clock (`now_ms`) at which this node was last observed.
@@ -222,8 +268,10 @@ pub struct SceneNode {
     /// re-resolve the exact occurrence instead of falling back to first match.
     #[serde(default)]
     pub path: Vec<usize>,
+    /// ID of this node's parent, if any.
     #[serde(default)]
     pub parent: Option<String>,
+    /// IDs of this node's children, in order.
     #[serde(default)]
     pub children: Vec<String>,
 }
@@ -240,12 +288,16 @@ impl SceneNode {
 pub struct SceneGraph {
     /// `BTreeMap` for deterministic iteration / stable diffs.
     pub nodes: BTreeMap<String, SceneNode>,
+    /// IDs of the root nodes, in capture order.
     pub roots: Vec<String>,
+    /// Wall-clock (`now_ms`) at which the graph was captured.
     pub captured_at_ms: u64,
+    /// The window this graph was captured from.
     pub window: WindowRef,
 }
 
 impl SceneGraph {
+    /// Returns the node with the given `id`, if present.
     pub fn get(&self, id: &str) -> Option<&SceneNode> {
         self.nodes.get(id)
     }
@@ -259,17 +311,29 @@ impl SceneGraph {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticAction {
+    /// Click / press the element.
     Click,
+    /// Move the pointer over the element.
     Hover,
+    /// Type text into the element.
     Type,
+    /// Press a single key.
     KeyPress,
+    /// Press a key combination (shortcut).
     Hotkey,
+    /// Open the element's menu.
     OpenMenu,
+    /// Pick / select the element (e.g. a menu item or row).
     Pick,
+    /// Toggle the element's state.
     Toggle,
+    /// Scroll the element.
     Scroll,
+    /// Drag the element (onto a drop target).
     Drag,
+    /// Raise the element's window to the front.
     Raise,
+    /// Give the element keyboard focus.
     Focus,
 }
 
@@ -277,15 +341,20 @@ pub enum SemanticAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {
+    /// Low risk; safe to perform without approval.
     Low,
+    /// Medium risk.
     Medium,
+    /// High risk; typically requires operator approval.
     High,
 }
 
 /// Output of the Risk Engine for a single element.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RiskAssessment {
+    /// Assessed risk tier.
     pub level: RiskLevel,
+    /// Whether the action must be approved by an operator before running.
     pub requires_approval: bool,
     /// Human-readable justifications (`["matched keyword: supprimer"]`).
     #[serde(default)]
@@ -293,6 +362,7 @@ pub struct RiskAssessment {
 }
 
 impl RiskAssessment {
+    /// Returns a low-risk assessment that requires no approval.
     pub fn low() -> Self {
         Self {
             level: RiskLevel::Low,
@@ -305,17 +375,21 @@ impl RiskAssessment {
 /// The actions available on one element, plus its risk.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Affordance {
+    /// ID of the element these affordances belong to.
     pub id: String,
+    /// Semantic actions available on the element.
     pub actions: Vec<SemanticAction>,
     /// IDs of elements this node can be dropped onto (drag candidates).
     #[serde(default)]
     pub drag_targets: Vec<String>,
+    /// Risk assessment for acting on the element.
     pub risk: RiskAssessment,
 }
 
 /// The full affordance graph derived from a [`SceneGraph`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AffordanceGraph {
+    /// Affordances keyed by element ID.
     pub affordances: BTreeMap<String, Affordance>,
 }
 
@@ -327,19 +401,31 @@ pub struct AffordanceGraph {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NodeChange {
+    /// A node appeared in the newer graph.
     Added {
+        /// ID of the added node.
         id: String,
+        /// Label of the added node, if any.
         label: Option<String>,
     },
+    /// A node disappeared from the newer graph.
     Removed {
+        /// ID of the removed node.
         id: String,
+        /// Label of the removed node, if any.
         label: Option<String>,
     },
+    /// A field of an existing node changed.
+    ///
     /// `field` such as `"label"`, `"value"`, `"bbox"`, `"enabled"`.
     Changed {
+        /// ID of the changed node.
         id: String,
+        /// Name of the field that changed.
         field: String,
+        /// Value before the change.
         before: String,
+        /// Value after the change.
         after: String,
     },
 }
@@ -347,10 +433,12 @@ pub enum NodeChange {
 /// Structural diff between two scene graphs (`diff_since`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct GraphDiff {
+    /// The per-node changes between the two graphs.
     pub changes: Vec<NodeChange>,
 }
 
 impl GraphDiff {
+    /// Returns `true` when there are no changes.
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
     }
@@ -363,15 +451,21 @@ impl GraphDiff {
 /// separate operator-side gate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionIdentity {
+    /// Unique identifier of the MCP session.
     pub session_id: String,
+    /// Name of the connecting client, when reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_name: Option<String>,
+    /// Version of the connecting client, when reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_version: Option<String>,
+    /// Agent identifier, when supplied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// PID of the parent process, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_pid: Option<u32>,
+    /// Name of the parent process, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_process: Option<String>,
 }
@@ -379,15 +473,21 @@ pub struct SessionIdentity {
 /// A single audited action (the spec's audit-trail record).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuditEntry {
+    /// Wall-clock (`now_ms`) at which the action was recorded.
     pub ts_ms: u64,
+    /// ID of the element the action targeted.
     pub target_id: String,
+    /// The semantic action that was requested.
     pub action: SemanticAction,
+    /// Optional argument supplied with the action (e.g. typed text).
     #[serde(default)]
     pub argument: Option<String>,
+    /// Risk assessment computed for the action.
     pub risk: RiskAssessment,
     /// Free-text agent reasoning supplied with the action request.
     #[serde(default)]
     pub reasoning: Option<String>,
+    /// Outcome of the action.
     pub result: ActionResult,
     /// `false` when the input layer reported success but post-action evidence
     /// only showed low-signal churn.
@@ -401,12 +501,17 @@ pub struct AuditEntry {
     pub caller: Option<SessionIdentity>,
 }
 
+/// Outcome of an audited action.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionResult {
+    /// The action completed successfully.
     Success,
+    /// The action was attempted but failed.
     Failed,
+    /// The action was denied (e.g. by policy).
     Denied,
+    /// The action is waiting for operator approval.
     PendingApproval,
 }
 

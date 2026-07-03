@@ -50,10 +50,14 @@ fn unique_png_path(prefix: &str) -> PathBuf {
     ))
 }
 
+/// Failure while reading a window's bounds or capturing its pixels.
 #[derive(Debug)]
 pub enum CaptureError {
+    /// No window with this id was found.
     WindowNotFound(u32),
+    /// CoreGraphics could not read the bounds of this window id.
     CoreGraphicsBounds(u32),
+    /// CoreGraphics could not capture an image for this window id.
     CoreGraphicsImage(u32),
 }
 
@@ -76,11 +80,15 @@ impl fmt::Display for CaptureError {
 
 impl std::error::Error for CaptureError {}
 
+/// A captured image plus the geometry needed to map its coordinates.
 pub struct CapturedWindow {
+    /// The captured pixels as a CoreGraphics image.
     pub image: core_graphics::image::CGImage,
+    /// Coordinate-transform data (origin, sizes, backing scale) for the capture.
     pub geometry: CaptureGeometry,
 }
 
+/// Captures a window's pixels by id via CoreGraphics.
 pub fn capture_window(window_id: u32) -> Result<CapturedWindow, CaptureError> {
     let bounds = cg_window_bounds(window_id)?;
     capture_cg_window_with_bounds(window_id, bounds)
@@ -253,14 +261,23 @@ extern "C" {
 /// One top-level (layer-0) window, for target discovery.
 #[derive(Debug, Clone)]
 pub struct WindowInfo {
+    /// CoreGraphics window id.
     pub window_id: u32,
+    /// Process id of the owning application.
     pub pid: i32,
+    /// Owning application name.
     pub app: String,
+    /// Window title.
     pub title: String,
+    /// Left edge in global screen points.
     pub x: f64,
+    /// Top edge in global screen points.
     pub y: f64,
+    /// Width in screen points.
     pub w: f64,
+    /// Height in screen points.
     pub h: f64,
+    /// Whether the window is currently on screen.
     pub on_screen: bool,
 }
 
@@ -270,15 +287,25 @@ pub struct WindowInfo {
 /// display first, then the remaining displays sorted by their global origin.
 #[derive(Debug, Clone)]
 pub struct DisplayInfo {
+    /// Dunst's stable 1-based display number for operators.
     pub index: usize,
+    /// CoreGraphics display id.
     pub display_id: u32,
+    /// Left edge in global screen points.
     pub x: f64,
+    /// Top edge in global screen points.
     pub y: f64,
+    /// Width in screen points.
     pub w: f64,
+    /// Height in screen points.
     pub h: f64,
+    /// Native pixel width.
     pub pixels_wide: u64,
+    /// Native pixel height.
     pub pixels_high: u64,
+    /// Backing scale factor (pixels per point).
     pub scale: f64,
+    /// Whether this is the main display.
     pub is_main: bool,
 }
 

@@ -1,3 +1,5 @@
+//! Benchmarks the capture + OCR pipeline over a fovea-sized region (macOS only).
+
 #[cfg(target_os = "macos")]
 use std::{
     env,

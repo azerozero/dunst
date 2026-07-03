@@ -1,3 +1,8 @@
+//! Launching and quitting applications through macOS command-line helpers.
+
+/// Launches `app` in the background, optionally opening `url`; returns whether it started.
+///
+/// Uses `open -g -a`. Any `extra_args` are passed as application argv after `--args`.
 #[cfg(target_os = "macos")]
 pub fn launch_app(app: &str, url: Option<&str>, extra_args: &[String]) -> bool {
     let mut cmd = std::process::Command::new("/usr/bin/open");
@@ -15,11 +20,13 @@ pub fn launch_app(app: &str, url: Option<&str>, extra_args: &[String]) -> bool {
     cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
+/// Non-macOS stub; returns `false`.
 #[cfg(not(target_os = "macos"))]
 pub fn launch_app(_app: &str, _url: Option<&str>, _extra_args: &[String]) -> bool {
     false
 }
 
+/// Asks `app` to quit via AppleScript and returns whether the command succeeded.
 #[cfg(target_os = "macos")]
 pub fn close_app(app: &str) -> bool {
     std::process::Command::new("/usr/bin/osascript")
@@ -37,6 +44,7 @@ pub fn close_app(app: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Non-macOS stub; returns `false`.
 #[cfg(not(target_os = "macos"))]
 pub fn close_app(_app: &str) -> bool {
     false
