@@ -687,7 +687,11 @@ fn keyboard_menu_tools() -> Vec<Value> {
             "Structural diff between the previous and current scene graph. Use summary=true for a compact count/sample response.",
             schema(json!({ "summary": {"type":"boolean"}, "limit": {"type":"integer"} }), &[]),
         ),
-        tool("export_trace", "Export the audit trail (every attempted action) as JSON.", json!({})),
+        tool(
+            "export_trace",
+            "Export the audit trail. Default mode=summary replaces each full graph diff with a compact summary. Use mode=index for index/ts/action/result only, or entry=N to retrieve one full trace entry with its complete graph_diff.",
+            schema(json!({ "mode": {"type":"string","enum":["summary","index"],"description":"default summary; index returns only index, ts_ms, action, result"}, "entry": {"type":"integer","description":"0-based trace entry index to export with its complete graph_diff"} }), &[]),
+        ),
     ]
 }
 

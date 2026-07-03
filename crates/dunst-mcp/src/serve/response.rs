@@ -109,6 +109,57 @@ pub(super) fn audit_entry_value(entry: AuditEntry, include_diff: bool) -> Value 
     value
 }
 
+pub(super) fn trace_export_value(
+    entries: &[AuditEntry],
+    mode: &str,
+    entry_index: Option<usize>,
+) -> Result<Value, String> {
+    if let Some(index) = entry_index {
+        let Some(entry) = entries.get(index) else {
+            return Err(format!(
+                "entry index {index} out of range for trace length {}",
+                entries.len()
+            ));
+        };
+        return Ok(serde_json::to_value(entry).unwrap_or(Value::Null));
+    }
+
+    match mode {
+        "summary" => Ok(Value::Array(
+            entries.iter().map(trace_summary_entry_value).collect(),
+        )),
+        "index" => Ok(Value::Array(
+            entries
+                .iter()
+                .enumerate()
+                .map(trace_index_entry_value)
+                .collect(),
+        )),
+        _ => Err("invalid 'mode' (expected summary|index)".into()),
+    }
+}
+
+fn trace_summary_entry_value(entry: &AuditEntry) -> Value {
+    let mut value = serde_json::to_value(entry).unwrap_or(Value::Null);
+    if let Value::Object(obj) = &mut value {
+        obj.remove("graph_diff");
+        obj.insert(
+            "graph_diff_summary".into(),
+            diff_summary_value(&entry.graph_diff, 12),
+        );
+    }
+    value
+}
+
+fn trace_index_entry_value((index, entry): (usize, &AuditEntry)) -> Value {
+    json!({
+        "index": index,
+        "ts_ms": entry.ts_ms,
+        "action": entry.action,
+        "result": entry.result,
+    })
+}
+
 fn raw_input_target(target_id: &str) -> bool {
     target_id.starts_with("keyboard@")
         || target_id.starts_with("cursor@")

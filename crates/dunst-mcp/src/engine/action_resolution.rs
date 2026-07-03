@@ -141,14 +141,7 @@ impl Engine {
     // --- audit --------------------------------------------------------------
 
     /// Public accessor over the audit trail; exercised by the gating tests and
-    /// part of the engine API the MCP layer may surface.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "public audit-trail accessor, exercised only by tests"
-        )
-    )]
+    /// surfaced by the MCP trace export.
     pub fn trace(&self) -> &[AuditEntry] {
         &self.trace
     }

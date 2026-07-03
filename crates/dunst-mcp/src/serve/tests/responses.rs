@@ -149,6 +149,55 @@ fn audit_entry_full_diff_also_reports_meaningful_summary() {
 }
 
 #[test]
+fn export_trace_is_compact_by_default_and_restores_full_entry_by_index() {
+    let mut e = engine();
+    let id = text_json(&call(
+        &mut e,
+        "find_element",
+        json!({ "query": "Nouvelle note", "fresh": false }),
+    ))[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let click = call(&mut e, "click_element", json!({ "id": id }));
+    assert!(
+        !is_error(&click),
+        "click should add one audit entry: {click}"
+    );
+
+    let summary = text_json(&call(&mut e, "export_trace", json!({})));
+    let entries = summary.as_array().expect("summary export is an array");
+    assert_eq!(entries.len(), 1);
+    assert!(
+        entries[0].get("graph_diff").is_none(),
+        "summary export omits full graph_diff"
+    );
+    assert!(
+        entries[0].get("graph_diff_summary").is_some(),
+        "summary export carries compact graph_diff_summary"
+    );
+
+    let index = text_json(&call(&mut e, "export_trace", json!({ "mode": "index" })));
+    let row = &index.as_array().expect("index export is an array")[0];
+    assert_eq!(row["index"], 0);
+    assert!(row.get("ts_ms").is_some());
+    assert!(row.get("action").is_some());
+    assert!(row.get("result").is_some());
+    assert_eq!(row.as_object().unwrap().len(), 4);
+
+    let full = text_json(&call(&mut e, "export_trace", json!({ "entry": 0 })));
+    assert!(
+        full.get("graph_diff").is_some(),
+        "entry export restores the complete graph_diff"
+    );
+    assert!(
+        full.get("graph_diff_summary").is_none(),
+        "entry export returns the raw audit entry"
+    );
+}
+
+#[test]
 fn bbox_only_generated_wrapper_click_gets_verification_hint() {
     let entry = AuditEntry {
         ts_ms: 43,

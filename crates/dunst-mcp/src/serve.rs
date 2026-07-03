@@ -24,7 +24,7 @@ mod tools;
 use dispatch::handle_tool_call;
 use response::{
     add_timing_meta, audit_entry_value, diff_summary_value, modal_dismiss_value, ocr_click_value,
-    option_pick_value,
+    option_pick_value, trace_export_value,
 };
 use tools::tools_list;
 

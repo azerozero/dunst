@@ -380,10 +380,13 @@ fn dispatch_trace_tools(
                 Ok(serde_json::to_value(diff).unwrap_or(Value::Null))
             }
         }
-        "export_trace" => engine
-            .export_trace()
-            .map(Value::String)
-            .map_err(|e| e.to_string()),
+        "export_trace" => trace_export_value(
+            engine.trace(),
+            arg(args, "mode").as_deref().unwrap_or("summary"),
+            args.get("entry")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize),
+        ),
         _ => return None,
     })
 }
