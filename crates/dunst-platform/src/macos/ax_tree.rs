@@ -66,6 +66,7 @@ impl WalkAttributes {
                 CFString::new(AX_MENU_ITEM_CMD_CHAR_ATTRIBUTE),
                 CFString::new(AX_MENU_ITEM_CMD_MODIFIERS_ATTRIBUTE),
                 CFString::new(AX_MENU_ITEM_CMD_VIRTUAL_KEY_ATTRIBUTE),
+                CFString::new(AX_SUBROLE_ATTRIBUTE),
             ]),
         }
     }
@@ -119,6 +120,7 @@ pub(super) struct NodeFields {
     value: Option<String>,
     title: Option<String>,
     description: Option<String>,
+    subrole: Option<String>,
     help: Option<String>,
     ax_identifier: Option<String>,
     cmd_char: Option<String>,
@@ -134,7 +136,8 @@ pub(super) fn assemble_node(fields: NodeFields) -> RawAxNode {
     let label = fields
         .title
         .or(fields.description)
-        .or_else(|| static_text_value_label(&fields.ax_role, &fields.value));
+        .or_else(|| static_text_value_label(&fields.ax_role, &fields.value))
+        .or_else(|| subrole_fallback_label(&fields.ax_role, fields.subrole.as_deref()));
 
     RawAxNode {
         ax_role: fields.ax_role,
@@ -160,6 +163,7 @@ pub(super) fn shallow_raw_node(element: &AxElement) -> RawAxNode {
         value: attr_value_string(element, kAXValueAttribute),
         title: attr_label_string(element, kAXTitleAttribute),
         description: attr_label_string(element, kAXDescriptionAttribute),
+        subrole: attr_string(element, AX_SUBROLE_ATTRIBUTE),
         help: attr_string(element, kAXHelpAttribute),
         ax_identifier: attr_string(element, kAXIdentifierAttribute),
         cmd_char: attr_string(element, AX_MENU_ITEM_CMD_CHAR_ATTRIBUTE),
@@ -183,6 +187,47 @@ pub(super) fn static_text_value_label(ax_role: &str, value: &Option<String>) -> 
     }
 }
 
+pub(super) fn subrole_fallback_label(ax_role: &str, subrole: Option<&str>) -> Option<String> {
+    if ax_role != "AXButton" {
+        return None;
+    }
+    let subrole = subrole?.trim();
+    if subrole.is_empty() {
+        return None;
+    }
+    let stem = subrole
+        .strip_prefix("AX")
+        .unwrap_or(subrole)
+        .strip_suffix("Button")
+        .unwrap_or_else(|| subrole.strip_prefix("AX").unwrap_or(subrole));
+    let label = camel_words_lowercase(stem);
+    (!label.is_empty()).then_some(label)
+}
+
+fn camel_words_lowercase(input: &str) -> String {
+    let mut out = String::new();
+    let mut prev_was_lower_or_digit = false;
+
+    for ch in input.chars() {
+        if matches!(ch, '_' | '-' | ' ') {
+            if !out.ends_with(' ') && !out.is_empty() {
+                out.push(' ');
+            }
+            prev_was_lower_or_digit = false;
+            continue;
+        }
+        if ch.is_uppercase() && prev_was_lower_or_digit && !out.ends_with(' ') {
+            out.push(' ');
+        }
+        for lower in ch.to_lowercase() {
+            out.push(lower);
+        }
+        prev_was_lower_or_digit = ch.is_lowercase() || ch.is_ascii_digit();
+    }
+
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub(super) fn walk_element(
     element: &AxElement,
     target_key: &TargetKey,
@@ -204,6 +249,7 @@ pub(super) fn walk_element(
         value: batch.get(IDX_VALUE).and_then(cf_value_string),
         title: batch.get(IDX_TITLE).and_then(cf_label_string),
         description: batch.get(IDX_DESCRIPTION).and_then(cf_label_string),
+        subrole: batch.get(IDX_SUBROLE).and_then(cf_string),
         help: batch.get(IDX_HELP).and_then(cf_string),
         ax_identifier: batch.get(IDX_IDENTIFIER).and_then(cf_string),
         cmd_char: batch.get(IDX_CMD_CHAR).and_then(cf_string),
@@ -242,6 +288,7 @@ pub(super) fn walk_element_single(
         value: attr_string(element, kAXValueAttribute),
         title: attr_label_string(element, kAXTitleAttribute),
         description: attr_label_string(element, kAXDescriptionAttribute),
+        subrole: attr_string(element, AX_SUBROLE_ATTRIBUTE),
         help: attr_string(element, kAXHelpAttribute),
         ax_identifier: attr_string(element, kAXIdentifierAttribute),
         cmd_char: attr_string(element, AX_MENU_ITEM_CMD_CHAR_ATTRIBUTE),
@@ -398,6 +445,12 @@ pub(super) fn element_key(element: &AxElement) -> Option<ElementKey> {
             } else {
                 None
             }
+        })
+        .or_else(|| {
+            subrole_fallback_label(
+                &ax_role,
+                attr_string(element, AX_SUBROLE_ATTRIBUTE).as_deref(),
+            )
         });
     Some(ElementKey {
         ax_identifier: attr_string(element, kAXIdentifierAttribute),
@@ -435,6 +488,54 @@ mod tests {
             label: Some(label.to_string()),
             bbox,
         }
+    }
+
+    fn fields(
+        ax_role: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        subrole: Option<&str>,
+    ) -> NodeFields {
+        NodeFields {
+            ax_role: ax_role.to_string(),
+            value: None,
+            title: title.map(str::to_string),
+            description: description.map(str::to_string),
+            subrole: subrole.map(str::to_string),
+            help: None,
+            ax_identifier: None,
+            cmd_char: None,
+            cmd_modifiers: None,
+            cmd_virtual_key: None,
+            ax_actions: Vec::new(),
+            frame: None,
+            enabled: true,
+            focused: false,
+        }
+    }
+
+    #[test]
+    fn unlabeled_buttons_can_use_ax_subrole_as_label() {
+        assert_eq!(
+            subrole_fallback_label("AXButton", Some("AXCloseButton")).as_deref(),
+            Some("close")
+        );
+        assert_eq!(
+            subrole_fallback_label("AXButton", Some("AXFullScreenButton")).as_deref(),
+            Some("full screen")
+        );
+        assert!(subrole_fallback_label("AXStaticText", Some("AXCloseButton")).is_none());
+
+        let close = assemble_node(fields("AXButton", None, None, Some("AXCloseButton")));
+        assert_eq!(close.label.as_deref(), Some("close"));
+
+        let titled = assemble_node(fields(
+            "AXButton",
+            Some("Fermer"),
+            None,
+            Some("AXCloseButton"),
+        ));
+        assert_eq!(titled.label.as_deref(), Some("Fermer"));
     }
 
     #[test]
