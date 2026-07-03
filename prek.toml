@@ -62,14 +62,28 @@ args = ["-c", "lychee --offline --no-progress --include-fragments docs/**/*.md R
 types = ["markdown"]
 pass_filenames = false
 
-# Heavier checks run on push. Dunst's test suite is still short enough to keep
-# this useful locally; CI repeats it on macOS and Linux.
+# Heavier checks run on push. cargo-test is intentionally NOT here: CI re-runs the
+# full suite on macOS + Linux for every PR, so duplicating ~minutes of work locally
+# only delays the developer feedback loop. Keep the push gate fast-fail.
+
+# License, advisory and dependency policy.
 [[repos.hooks]]
-id = "cargo-test"
-name = "cargo test"
+id = "cargo-deny"
+name = "cargo deny"
 language = "system"
-entry = "cargo test --workspace --all-targets --locked"
-always_run = true
+entry = "cargo deny check"
+types_or = ["rust", "toml"]
+pass_filenames = false
+stages = ["pre-push"]
+
+# Doc coverage: no undocumented public items (see CLAUDE.md doc standards).
+[[repos.hooks]]
+id = "cargo-doc-coverage"
+name = "cargo doc coverage"
+language = "system"
+entry = "sh"
+args = ["-c", "RUSTDOCFLAGS='-W missing-docs' cargo doc --workspace --no-deps 2>&1 | grep -q 'warning: missing documentation' && { echo 'ERROR: undocumented public items found'; RUSTDOCFLAGS='-W missing-docs' cargo doc --workspace --no-deps 2>&1 | grep 'warning: missing documentation' | head -20; exit 1; } || true"]
+types = ["rust"]
 pass_filenames = false
 stages = ["pre-push"]
 
@@ -87,6 +101,16 @@ id = "cargo-machete"
 name = "cargo machete"
 language = "system"
 entry = "cargo machete"
+always_run = true
+pass_filenames = false
+stages = ["pre-push"]
+
+# Sweep stale build artifacts (>7 days) to keep target/ from bloating.
+[[repos.hooks]]
+id = "cargo-sweep"
+name = "cargo sweep (clean old artifacts)"
+language = "system"
+entry = "cargo sweep --time 7"
 always_run = true
 pass_filenames = false
 stages = ["pre-push"]

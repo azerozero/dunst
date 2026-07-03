@@ -4,14 +4,31 @@ This repository is a Rust workspace for the Dunst MCP server and its macOS
 automation backends. Keep changes small, contract-driven, and covered by the
 closest test layer.
 
+Read [`AGENTS.md`](AGENTS.md) (project map, domain concepts, gotchas) and
+[`CLAUDE.md`](CLAUDE.md) (git/CI flow, documentation standards) first — they are
+the canonical development guidelines.
+
 ## Local Checks
+
+Install the git hooks once (they gate every commit and push):
+
+```bash
+brew install prek   # or: cargo install prek
+prek install
+```
 
 Run the focused checks first:
 
 ```bash
 cargo fmt --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test -p dunst-core -p dunst-graph -p dunst-mcp
 ```
+
+Pre-commit runs fmt/clippy/gitleaks; pre-push runs cargo deny/audit/machete,
+artifact sweep, and **doc coverage** — every public item needs a doc comment, so
+`RUSTDOCFLAGS='-W missing-docs' cargo doc --no-deps` must be warning-free. Tests
+are not in the push gate (CI runs them on macOS + Linux).
 
 For platform work that touches macOS AX, ScreenCaptureKit, OCR, raw input, or
 SkyLight routing, also run the relevant live smoke command from `scripts/` on a
@@ -66,6 +83,11 @@ test: cover setup apply lifecycle
 docs: document branch protection limitation
 refactor: route MCP tools through typed registry
 ```
+
+`feat` / `fix` / `refactor` / `perf` trigger a release-plz version bump; use
+`chore` / `docs` / `test` / `style` for non-release changes. Commit messages are
+written in French. **Commits and PR bodies carry no AI/tool attribution** — no
+`Co-Authored-By` bot lines, no "Generated with …" trailers.
 
 ## Branch Policy
 
