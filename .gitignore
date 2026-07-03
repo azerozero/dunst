@@ -4,7 +4,6 @@
 .obsidian/
 .claude/
 .codex/
-AGENTS.md
 /100
 *.trace
 /traces
