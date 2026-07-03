@@ -283,9 +283,9 @@ fn success_action_hint(entry: &AuditEntry) -> Option<Value> {
         && entry.graph_diff.changes.iter().all(low_signal_diff_change)
     {
         let next_step = if entry.target_id.starts_with("cursor@scroll:") {
-            "Verify with read_text/OCR before relying on the new viewport. If OCR did not move after a real-cursor scroll, do not repeat the same point; choose an OCR text/card point inside the scrollable content, or use expose_target_window/raise_element only after explicit operator approval when foreground focus is acceptable."
+            "Verify with read_text/OCR before relying on the new viewport. If OCR did not move after a real-cursor scroll, do not repeat the same point; choose an OCR text/card point inside the scrollable content, or use expose_target_window/raise_element only after explicit operator approval when foreground focus is acceptable. To ENUMERATE every item on a long/virtualized feed rather than reposition the viewport, prefer enumerate_choices scroll_scan=true: an approval-free sweep that assembles off-screen OCR/vision items and restores the scroll position in one pass."
         } else {
-            "Verify with read_text/OCR or window_view before relying on the new viewport. If OCR did not move after background scroll, retry scroll_at at a visible OCR text/card point with borrow_cursor=true; for AX-backed panes, prefer scroll with a scrollable element id."
+            "Verify with read_text/OCR or window_view before relying on the new viewport. If OCR did not move after background scroll, retry scroll_at at a visible OCR text/card point with borrow_cursor=true; for AX-backed panes, prefer scroll with a scrollable element id. To ENUMERATE every item on a virtualized/AX-sparse feed (restaurant/search/result lists, long choice sets), do not hand-scroll: call enumerate_choices scroll_scan=true, an approval-free sweep that assembles the off-screen OCR/vision items and restores the scroll position in one pass."
         };
         return Some(json!({
             "reason": "The scroll action returned success, but no meaningful AX graph movement was observed.",
