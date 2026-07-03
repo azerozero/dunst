@@ -42,6 +42,15 @@ fn fixture_graph() -> SceneGraph {
     build_scene_graph(roots, window, 1_000)
 }
 
+fn terminal_window_ref() -> WindowRef {
+    WindowRef {
+        pid: 42,
+        window_id: 7,
+        app_name: "iTerm2".into(),
+        title: "session".into(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // G7 + G2-id-synthesis — synth_id: hash fallback width, empty/punct labels, collisions
 // ---------------------------------------------------------------------------
@@ -90,6 +99,48 @@ fn synth_id_distinct_paths_distinct_hashes() {
     let a = synth_id(Role::Menu, None, None, &[1, 0, 0], &used);
     let b = synth_id(Role::Menu, None, None, &[1, 1, 0], &used);
     assert_ne!(a, b, "distinct structural paths must hash differently");
+}
+
+#[test]
+fn terminal_volatile_text_ids_use_structural_path() {
+    let before = build_scene_graph(
+        vec![raw(
+            "AXWindow",
+            Some("old title"),
+            vec![raw("AXStaticText", Some("recuperer le retour"), vec![])],
+        )],
+        terminal_window_ref(),
+        1,
+    );
+    let after = build_scene_graph(
+        vec![raw(
+            "AXWindow",
+            Some("new title"),
+            vec![raw("AXStaticText", Some("default dunst mcp"), vec![])],
+        )],
+        terminal_window_ref(),
+        2,
+    );
+
+    let before_id = before
+        .nodes
+        .values()
+        .find(|node| node.role == Role::StaticText)
+        .unwrap()
+        .id
+        .clone();
+    let after_id = after
+        .nodes
+        .values()
+        .find(|node| node.role == Role::StaticText)
+        .unwrap()
+        .id
+        .clone();
+
+    assert_eq!(before_id, after_id);
+    assert!(before_id.starts_with("txt_"));
+    assert!(!before_id.contains("recuperer"));
+    assert!(!before_id.contains("default"));
 }
 
 // ---------------------------------------------------------------------------

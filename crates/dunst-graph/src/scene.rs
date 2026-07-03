@@ -63,6 +63,17 @@ pub fn synth_id(
     path: &[usize],
     used: &std::collections::BTreeSet<String>,
 ) -> String {
+    synth_id_with_policy(role, label, ax_identifier, path, used, false)
+}
+
+fn synth_id_with_policy(
+    role: Role,
+    label: Option<&str>,
+    ax_identifier: Option<&str>,
+    path: &[usize],
+    used: &std::collections::BTreeSet<String>,
+    prefer_path_for_volatile_label: bool,
+) -> String {
     let prefix = role.id_prefix();
 
     // Prefer a developer-assigned AXIdentifier when it slugs to something
@@ -74,6 +85,9 @@ pub fn synth_id(
 
     let base = match from_identifier {
         Some(s) => format!("{prefix}_{s}"),
+        None if prefer_path_for_volatile_label && volatile_terminal_role(role) => {
+            format!("{prefix}_{}", path_hash(path))
+        }
         None => match label.map(slug) {
             Some(ref s) if !s.is_empty() => format!("{prefix}_{s}"),
             // No label, or a label that slugs to nothing (all punctuation): use a
@@ -94,6 +108,13 @@ pub fn synth_id(
         }
         n += 1;
     }
+}
+
+fn volatile_terminal_role(role: Role) -> bool {
+    matches!(
+        role,
+        Role::StaticText | Role::TextArea | Role::TextField | Role::Window
+    )
 }
 
 /// Is `ax_identifier` a **developer-assigned** identifier we can trust as a
@@ -164,10 +185,19 @@ pub fn build_scene_graph(roots: Vec<RawAxNode>, window: WindowRef, now_ms: u64) 
     let mut used: BTreeSet<String> = BTreeSet::new();
     let mut nodes: BTreeMap<String, SceneNode> = BTreeMap::new();
     let mut root_ids = Vec::with_capacity(roots.len());
+    let prefer_path_for_volatile_label = terminal_like_window(&window);
 
     for (i, root) in roots.iter().enumerate() {
         let mut path = vec![i];
-        let id = flatten(root, &mut path, None, now_ms, &mut used, &mut nodes);
+        let id = flatten(
+            root,
+            &mut path,
+            None,
+            now_ms,
+            &mut used,
+            &mut nodes,
+            prefer_path_for_volatile_label,
+        );
         root_ids.push(id);
     }
 
@@ -177,6 +207,13 @@ pub fn build_scene_graph(roots: Vec<RawAxNode>, window: WindowRef, now_ms: u64) 
         captured_at_ms: now_ms,
         window,
     }
+}
+
+fn terminal_like_window(window: &WindowRef) -> bool {
+    let app = normalize(&window.app_name);
+    ["iterm", "terminal", "kitty", "alacritty", "wezterm", "warp"]
+        .iter()
+        .any(|needle| app.contains(needle))
 }
 
 /// DFS one node: synthesise its ID, recurse into children (so their IDs are
@@ -190,14 +227,16 @@ fn flatten(
     now_ms: u64,
     used: &mut BTreeSet<String>,
     nodes: &mut BTreeMap<String, SceneNode>,
+    prefer_path_for_volatile_label: bool,
 ) -> String {
     let role = map_role(&node.ax_role);
-    let id = synth_id(
+    let id = synth_id_with_policy(
         role,
         node.label.as_deref(),
         node.ax_identifier.as_deref(),
         path,
         used,
+        prefer_path_for_volatile_label,
     );
     // Reserve the ID before recursing so children see it for collision checks.
     used.insert(id.clone());
@@ -205,7 +244,15 @@ fn flatten(
     let mut child_ids = Vec::with_capacity(node.children.len());
     for (i, child) in node.children.iter().enumerate() {
         path.push(i);
-        let child_id = flatten(child, path, Some(id.clone()), now_ms, used, nodes);
+        let child_id = flatten(
+            child,
+            path,
+            Some(id.clone()),
+            now_ms,
+            used,
+            nodes,
+            prefer_path_for_volatile_label,
+        );
         path.pop();
         child_ids.push(child_id);
     }
