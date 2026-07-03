@@ -409,7 +409,8 @@ pub(super) fn compact_node(n: &SceneNode) -> Value {
         o.insert("label".into(), json!(l));
     }
     if let Some(v) = &n.value {
-        o.insert("value".into(), json!(v));
+        o.insert("value".into(), json!(truncate_compact_value(v)));
+        o.insert("value_len".into(), json!(v.chars().count()));
     }
     o.insert(
         "bbox".into(),
@@ -424,8 +425,58 @@ pub(super) fn compact_node(n: &SceneNode) -> Value {
     Value::Object(o)
 }
 
+fn truncate_compact_value(value: &str) -> String {
+    const LIMIT: usize = 200;
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= LIMIT {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 pub(super) struct OptionCandidate {
     pub(super) matched_id: String,
     pub(super) action_id: String,
     pub(super) action: SemanticAction,
+}
+
+#[cfg(test)]
+mod compact_node_tests {
+    use super::*;
+
+    #[test]
+    fn compact_node_truncates_long_value_and_reports_full_len() {
+        let node = SceneNode {
+            id: "text_terminal".into(),
+            role: Role::TextArea,
+            ax_role: "AXTextArea".into(),
+            label: Some("Terminal".into()),
+            help: None,
+            value: Some("x".repeat(260)),
+            bbox: None,
+            confidence: 1.0,
+            source: dunst_core::Source::Accessibility,
+            enabled: true,
+            focused: false,
+            ax_actions: Vec::new(),
+            ax_identifier: None,
+            cmd_char: None,
+            cmd_modifiers: None,
+            cmd_virtual_key: None,
+            last_seen_ms: 0,
+            path: Vec::new(),
+            parent: None,
+            children: Vec::new(),
+        };
+
+        let value = compact_node(&node);
+        assert_eq!(value["value_len"], 260);
+        let preview = value["value"].as_str().unwrap();
+        assert_eq!(preview.chars().count(), 203);
+        assert!(preview.ends_with("..."));
+    }
 }

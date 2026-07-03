@@ -197,7 +197,8 @@ fn query_tools() -> Vec<Value> {
                     "query": { "type": "string" },
                     "fresh": { "type": "boolean", "description": "ensure recent graph before searching (default true, uses short TTL)" },
                     "force_refresh": { "type": "boolean", "description": "force an AX refresh even if the short TTL is still valid (default false)" },
-                    "visible_only": { "type": "boolean", "description": "drop latent/off-window matches (default false)" }
+                    "visible_only": { "type": "boolean", "description": "drop latent/off-window matches (default false)" },
+                    "full_value": { "type": "boolean", "description": "include full AX value text instead of the default ~200-character preview plus value_len (default false)" }
                 }),
                 &["query"],
             ),

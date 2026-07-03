@@ -516,18 +516,59 @@ fn ensure_recent_graph(engine: &mut Engine, fresh: bool, force: bool) -> Result<
     }
 }
 
-fn find_matches_value(matches: Vec<&SceneNode>) -> Value {
-    serde_json::to_value(matches).unwrap_or(Value::Null)
+const FIND_VALUE_LIMIT: usize = 200;
+
+fn find_matches_value(matches: Vec<&SceneNode>, full_value: bool) -> Value {
+    Value::Array(
+        matches
+            .into_iter()
+            .map(|node| find_match_node_value(node, full_value))
+            .collect(),
+    )
 }
 
-fn find_matches_value_or_fallback(engine: &Engine, query: &str, matches: Vec<&SceneNode>) -> Value {
+fn find_match_node_value(node: &SceneNode, full_value: bool) -> Value {
+    let mut value = serde_json::to_value(node).unwrap_or(Value::Null);
+    let Some(text) = node.value.as_deref() else {
+        return value;
+    };
+    if let Value::Object(obj) = &mut value {
+        obj.insert("value_len".into(), json!(text.chars().count()));
+        if !full_value {
+            obj.insert(
+                "value".into(),
+                json!(truncate_chars(text, FIND_VALUE_LIMIT)),
+            );
+        }
+    }
+    value
+}
+
+fn truncate_chars(text: &str, limit: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in text.chars().enumerate() {
+        if idx >= limit {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn find_matches_value_or_fallback(
+    engine: &Engine,
+    query: &str,
+    matches: Vec<&SceneNode>,
+    full_value: bool,
+) -> Value {
     if matches.is_empty() {
         let fallback = engine.find_element_hit_target_fallback(query, 80);
         if !fallback.is_empty() {
             return serde_json::to_value(fallback).unwrap_or(Value::Null);
         }
     }
-    find_matches_value(matches)
+    find_matches_value(matches, full_value)
 }
 
 fn find_element_value(
@@ -536,11 +577,12 @@ fn find_element_value(
     visible_only: bool,
     fresh: bool,
     force: bool,
+    full_value: bool,
 ) -> Result<Value, String> {
     if force && visible_only && engine.graph_recent(FIND_ELEMENT_FORCE_REFRESH_FAST_PATH_TTL) {
         let cached_matches = engine.find_element_filtered(query, visible_only);
         if !cached_matches.is_empty() {
-            return Ok(find_matches_value(cached_matches));
+            return Ok(find_matches_value(cached_matches, full_value));
         }
     }
 
@@ -549,6 +591,7 @@ fn find_element_value(
         engine,
         query,
         engine.find_element_filtered(query, visible_only),
+        full_value,
     ))
 }
 

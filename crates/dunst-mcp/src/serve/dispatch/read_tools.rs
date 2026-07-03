@@ -180,6 +180,7 @@ fn dispatch_snapshot_tools(
                 arg_bool(args, "visible_only").unwrap_or(false),
                 arg_bool(args, "fresh").unwrap_or(true),
                 arg_bool(args, "force_refresh").unwrap_or(false),
+                arg_bool(args, "full_value").unwrap_or(false),
             ),
             None => Err("missing 'query'".into()),
         },
