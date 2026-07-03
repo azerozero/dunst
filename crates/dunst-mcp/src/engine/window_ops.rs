@@ -365,6 +365,18 @@ impl Engine {
         let mut after = self.target_visibility();
         let (mut raised, mut raised_within_app_only) =
             reconciled_raise_result(ax_raise_ok, &before, &after);
+        // The process activation behind the raise (set frontmost / Space
+        // switch) lands asynchronously in the window server: re-sample briefly
+        // before concluding the raise stayed app-internal.
+        let mut settle_attempts = 0;
+        while raised_within_app_only && settle_attempts < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            *self.desktop_cache.borrow_mut() = None;
+            after = self.target_visibility();
+            (raised, raised_within_app_only) =
+                reconciled_raise_result(ax_raise_ok, &before, &after);
+            settle_attempts += 1;
+        }
         if arrange_if_needed && raised && !after.covered_by.is_empty() {
             let mut ids = vec![self.target.window_id];
             ids.extend(after.covered_by.iter().map(|window| window.window_id));
@@ -553,7 +565,13 @@ pub(in crate::engine) fn reconciled_raise_result(
     before: &TargetVisibility,
     after: &TargetVisibility,
 ) -> (bool, bool) {
-    let raised = ax_ok && (after.is_frontmost || after.visible_fraction > before.visible_fraction);
+    // A fully visible, uncovered target counts as exposed even when a window
+    // on another Space still sorts above it in the global z-order: frontmost
+    // alone under-reports what the raise achieved.
+    let exposed = after.is_frontmost
+        || after.visible_fraction > before.visible_fraction
+        || (after.covered_by.is_empty() && after.visible_fraction >= 0.99);
+    let raised = ax_ok && exposed;
     let raised_within_app_only = ax_ok && !raised;
     (raised, raised_within_app_only)
 }
