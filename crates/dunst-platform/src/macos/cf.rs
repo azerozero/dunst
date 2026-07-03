@@ -296,6 +296,31 @@ pub(super) fn cf_bool(value: CFTypeRef) -> Option<bool> {
     value.downcast::<CFBoolean>().map(bool::from)
 }
 
+pub(super) fn cf_u64(value: CFTypeRef) -> Option<u64> {
+    // SAFETY: caller passes a valid borrowed CF object; wrap_under_get_rule
+    // retains it for this temporary wrapper.
+    let value = unsafe { CFType::wrap_under_get_rule(value) };
+    // SAFETY: `value` wraps a valid CF object retained for this scope.
+    if unsafe { CFGetTypeID(value.as_CFTypeRef()) } != CFNumber::type_id() {
+        return None;
+    }
+    // SAFETY: the CFTypeID check above proves this object is a CFNumber.
+    let number = unsafe { CFNumber::wrap_under_get_rule(value.as_CFTypeRef() as _) }.to_f64()?;
+    if number.is_finite() && number >= 0.0 && number.fract() == 0.0 {
+        Some(number as u64)
+    } else {
+        None
+    }
+}
+
+pub(super) fn number_to_u64(number: f64) -> Option<u64> {
+    if number.is_finite() && number >= 0.0 && number.fract() == 0.0 {
+        Some(number as u64)
+    } else {
+        None
+    }
+}
+
 pub(super) fn cf_array(value: CFTypeRef) -> Option<CFArray> {
     // SAFETY: caller passes a valid borrowed CF object; wrap_under_get_rule
     // retains it for this temporary wrapper.

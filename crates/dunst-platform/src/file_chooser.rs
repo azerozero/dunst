@@ -48,6 +48,91 @@ pub fn select_file(
     ))
 }
 
+/// Click a native menu item through its menu path via System Events, which
+/// opens the intervening menus — required because a bare AXPress on an item
+/// of a closed submenu silently no-ops in several apps (iTerm, Firefox).
+/// `labels` is the nested chain BELOW the menu bar item (submenus first, leaf
+/// last); the script tries it under every menu bar item, since graph parent
+/// links for latent menus churn too much to name the bar item reliably.
+/// Menu tracking needs the app frontmost, so the script borrows the
+/// foreground and hands it back before returning.
+#[cfg(target_os = "macos")]
+pub fn click_menu_path(pid: i32, labels: &[String]) -> Result<()> {
+    if labels.is_empty() {
+        return Err(DunstError::Execution(
+            "click_menu_path needs at least the menu item label".into(),
+        ));
+    }
+    let mut reference = String::from("menu 1 of barItem");
+    for label in &labels[..labels.len() - 1] {
+        reference = format!(
+            "menu 1 of menu item \"{}\" of {reference}",
+            escape_applescript(label)
+        );
+    }
+    let click_line = format!(
+        "click menu item \"{}\" of {reference}",
+        escape_applescript(&labels[labels.len() - 1])
+    );
+    let lines: Vec<String> = vec![
+        "on run argv".into(),
+        "set targetPid to (item 1 of argv) as integer".into(),
+        "tell application \"System Events\"".into(),
+        "set previousFrontPid to \"0\"".into(),
+        "try".into(),
+        "set previousFrontPid to ((unix id of first application process whose frontmost is true) as text)".into(),
+        "end try".into(),
+        "set targetProcess to first application process whose unix id is targetPid".into(),
+        "set frontmost of targetProcess to true".into(),
+        "delay 0.12".into(),
+        "set clicked to false".into(),
+        "tell targetProcess".into(),
+        "repeat with barItem in menu bar items of menu bar 1".into(),
+        "try".into(),
+        click_line,
+        "set clicked to true".into(),
+        "exit repeat".into(),
+        "end try".into(),
+        "end repeat".into(),
+        "end tell".into(),
+        "delay 0.08".into(),
+        "try".into(),
+        "if previousFrontPid is not \"0\" and previousFrontPid is not (targetPid as text) then".into(),
+        "set frontmost of (first application process whose unix id is (previousFrontPid as integer)) to true".into(),
+        "end if".into(),
+        "end try".into(),
+        "end tell".into(),
+        "if not clicked then error \"menu item not found under any menu bar item\"".into(),
+        "end run".into(),
+    ];
+    let mut cmd = std::process::Command::new("/usr/bin/osascript");
+    let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    append_osascript_lines(&mut cmd, &line_refs);
+    cmd.arg(pid.to_string());
+    let output = command_output_with_timeout(cmd, Duration::from_secs(10), "click_menu_path")?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Err(DunstError::Execution(format!(
+        "click menu path failed: {}",
+        if stderr.is_empty() { stdout } else { stderr }
+    )))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn click_menu_path(_pid: i32, _labels: &[String]) -> Result<()> {
+    Err(DunstError::Execution(
+        "click_menu_path requires a macOS backend".into(),
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn escape_applescript(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 #[cfg(target_os = "macos")]
 pub fn borrow_target_frontmost(target: &WindowRef) -> Result<Option<String>> {
     let mut cmd = std::process::Command::new("/usr/bin/osascript");

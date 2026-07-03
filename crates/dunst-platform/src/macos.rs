@@ -61,7 +61,13 @@ use objc2_foundation::NSPoint;
 const DEFAULT_MAX_NODES: usize = 5_000;
 const DEFAULT_MAX_DEPTH: usize = 40;
 const AX_FRAME_ATTRIBUTE: &str = "AXFrame";
-const BATCH_ATTR_COUNT: usize = 12;
+const AX_FOCUSED_UI_ELEMENT_ATTRIBUTE: &str = "AXFocusedUIElement";
+const AX_FOCUSED_WINDOW_ATTRIBUTE: &str = "AXFocusedWindow";
+const AX_SUBROLE_ATTRIBUTE: &str = "AXSubrole";
+const AX_MENU_ITEM_CMD_CHAR_ATTRIBUTE: &str = "AXMenuItemCmdChar";
+const AX_MENU_ITEM_CMD_MODIFIERS_ATTRIBUTE: &str = "AXMenuItemCmdModifiers";
+const AX_MENU_ITEM_CMD_VIRTUAL_KEY_ATTRIBUTE: &str = "AXMenuItemCmdVirtualKey";
+const BATCH_ATTR_COUNT: usize = 15;
 const IDX_ROLE: usize = 0;
 const IDX_VALUE: usize = 1;
 const IDX_TITLE: usize = 2;
@@ -72,8 +78,11 @@ const IDX_FRAME: usize = 6;
 const IDX_POSITION: usize = 7;
 const IDX_SIZE: usize = 8;
 const IDX_ENABLED: usize = 9;
-const IDX_FOCUSED: usize = 10;
-const IDX_CHILDREN: usize = 11;
+const IDX_CHILDREN: usize = 10;
+const IDX_CMD_CHAR: usize = 11;
+const IDX_CMD_MODIFIERS: usize = 12;
+const IDX_CMD_VIRTUAL_KEY: usize = 13;
+const IDX_SUBROLE: usize = 14;
 const DRAG_STEPS: usize = 8;
 const DRAG_STEP_DELAY: Duration = Duration::from_millis(8);
 const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.0;
@@ -95,21 +104,22 @@ mod ax_tree;
 mod cf;
 mod pointer_events;
 mod skylight;
+pub(crate) use skylight::cursor_shape_fingerprint;
 mod text_input;
 mod web_events;
 
 use ax_actions::*;
 use ax_backend::*;
 pub(crate) use ax_backend::{
-    accessibility_trusted, capture, element_at_point, perform, set_focused_field_text,
-    set_window_frame, window_ref,
+    accessibility_trusted, capture, element_at_point, perform, raise_window_by_id,
+    set_focused_field_text, set_window_frame, window_ref,
 };
 use ax_tree::*;
 use cf::*;
 use pointer_events::*;
 pub(crate) use pointer_events::{
     click_at_point, cursor_borrow_move_to, cursor_borrow_to, cursor_restore, focus_without_raise,
-    hover_at_point, right_click_at_point, scroll_at_point, unstick_cursor,
+    hover_at_point, right_click_at_point, scroll_at_point, unstick_cursor, unstick_cursor_if_idle,
 };
 use text_input::*;
 use web_events::*;

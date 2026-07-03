@@ -59,11 +59,14 @@ use chart::{is_axis_token, looks_like_clock, parse_value};
 #[cfg(test)]
 use input::char_keycode;
 use input::{is_press_key_name, layout_sensitive_hotkey_message, parse_combo};
+#[cfg(any(target_os = "macos", test))]
+use input::{menu_hotkey_matches, menu_hotkey_matches_virtual_key, parse_menu_hotkey_combo};
 use query_support::*;
 use raw_input::page_scroll_target_id;
 use raw_input_gate::{
     is_synthetic_approval_target_id, raw_apply_selections_target_id, raw_paste_text_target_id,
-    raw_press_key_target_id, raw_set_field_text_target_id, raw_type_keys_target_id, RawApprovalKey,
+    raw_press_key_target_id, raw_set_field_text_target_id, raw_type_keys_target_id,
+    RawApprovalInflight, RawApprovalKey,
 };
 use runtime_support::*;
 use scene_query::*;
@@ -98,7 +101,7 @@ pub struct Engine {
     /// Raw approval grant consumed by an in-flight raw action. If the platform
     /// rejects the action only because the operator is active, the grant is
     /// restored so the automatic retry path does not ask for approval again.
-    raw_approval_inflight: BTreeMap<String, RawApprovalGrant>,
+    raw_approval_inflight: BTreeMap<String, RawApprovalInflight>,
     /// Bounded synthetic approval context for a single `apply_selections` call
     /// or internal survey-scroll sweep. Existing element/raw gates consult this
     /// to avoid re-prompting for each constituent action.
@@ -322,7 +325,7 @@ impl Engine {
             .nodes
             .values()
             .filter(|n| {
-                normalized_contains_query(&normalize_match(&n.id), &q)
+                normalize_match(&n.id).contains(&q)
                     || n.label
                         .as_deref()
                         .map(|l| normalized_contains_query(&normalize_match(l), &q))

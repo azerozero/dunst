@@ -297,6 +297,20 @@ pub fn unstick_cursor() -> Result<()> {
     unstick_cursor_impl().map_err(ActionFailure::into)
 }
 
+/// Idle-gated variant for AUTOMATIC recovery (e.g. after a borrowed-cursor
+/// scroll): refuses with the user-active-guard error while the operator is
+/// active, so the intrusive Apple-menu maneuver never fights a user who just
+/// resumed control. The bare `unstick_cursor` above stays unguarded so an
+/// operator can always force recovery on demand.
+pub fn unstick_cursor_if_idle() -> Result<()> {
+    unstick_cursor_if_idle_impl().map_err(ActionFailure::into)
+}
+
+pub(super) fn unstick_cursor_if_idle_impl() -> std::result::Result<(), ActionFailure> {
+    ensure_user_idle_action("automatic cursor recovery")?;
+    unstick_cursor_impl()
+}
+
 /// Double-click the Apple menu (top-left of the menu bar) to open and immediately
 /// re-close it. This drives a menu-bar focus/context cycle that makes the window
 /// server re-evaluate the on-screen cursor shape — the reliable workaround for

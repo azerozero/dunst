@@ -1,6 +1,7 @@
 use super::{
     base64_encode, char_keycode, is_axis_token, is_press_key_name, launchable_app_from_info_json,
-    layout_sensitive_hotkey_message, looks_like_clock, parse_combo, parse_value,
+    layout_sensitive_hotkey_message, looks_like_clock, menu_hotkey_matches,
+    menu_hotkey_matches_virtual_key, parse_combo, parse_menu_hotkey_combo, parse_value,
     typed_target_value_matches_expected,
 };
 use dunst_core::{GraphDiff, NodeChange};
@@ -23,6 +24,41 @@ fn parse_combo_reads_modifiers_and_key() {
     assert_eq!(parse_combo("ctrl+a"), Some((0x0004_0000, 0x00)));
     assert_eq!(parse_combo("enter"), Some((0, 0x24)));
     assert_eq!(parse_combo("cmd+ "), None); // no key
+}
+
+#[test]
+fn menu_hotkey_matching_uses_cmd_char_and_ax_modifiers() {
+    let cmd_l = parse_menu_hotkey_combo("cmd+l").unwrap();
+    assert!(menu_hotkey_matches(&cmd_l, "L", Some(0)));
+    assert!(!menu_hotkey_matches(&cmd_l, "Q", Some(0)));
+
+    let cmd_shift_t = parse_menu_hotkey_combo("cmd+shift+t").unwrap();
+    assert!(menu_hotkey_matches(&cmd_shift_t, "t", Some(1)));
+    assert!(!menu_hotkey_matches(&cmd_shift_t, "t", Some(0)));
+
+    let ctrl_a = parse_menu_hotkey_combo("ctrl+a").unwrap();
+    assert!(menu_hotkey_matches(&ctrl_a, "a", Some(8 | 4)));
+    assert!(!menu_hotkey_matches(&ctrl_a, "a", Some(4)));
+
+    assert!(menu_hotkey_matches(&cmd_l, "l", Some(0x0010_0000)));
+}
+
+#[test]
+fn menu_hotkey_matching_resolves_named_keys_via_virtual_key() {
+    // "Select Pane Above" d'iTerm : ⌥⌘↑ — pas de CmdChar, CmdVirtualKey=0x7E,
+    // CmdModifiers AX=2 (option, command implicite).
+    let up = parse_menu_hotkey_combo("cmd+opt+up").unwrap();
+    assert_eq!(up.cmd_virtual_key, Some(0x7E));
+    assert!(menu_hotkey_matches_virtual_key(&up, 0x7E, Some(2)));
+    assert!(!menu_hotkey_matches_virtual_key(&up, 0x7D, Some(2))); // down ≠ up
+    assert!(!menu_hotkey_matches_virtual_key(&up, 0x7E, Some(0))); // item cmd-only
+    assert!(!menu_hotkey_matches(&up, "P", Some(2))); // un combo à touche nommée ne matche jamais par char
+
+    let cmd_l = parse_menu_hotkey_combo("cmd+l").unwrap();
+    assert_eq!(cmd_l.cmd_virtual_key, None);
+    assert!(!menu_hotkey_matches_virtual_key(&cmd_l, 0x25, Some(0))); // un combo char reste sur CmdChar
+
+    assert!(parse_menu_hotkey_combo("cmd+opt+notakey").is_none());
 }
 
 #[test]

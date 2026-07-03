@@ -54,6 +54,15 @@ pub struct RawAxNode {
     /// AX identifier when present, e.g. `"_NS:411"`, `"closeAll:"`.
     #[serde(default)]
     pub ax_identifier: Option<String>,
+    /// Native menu shortcut character from AXMenuItemCmdChar.
+    #[serde(default)]
+    pub cmd_char: Option<String>,
+    /// Native menu shortcut modifier bitmask from AXMenuItemCmdModifiers.
+    #[serde(default)]
+    pub cmd_modifiers: Option<u64>,
+    /// Native virtual key from AXMenuItemCmdVirtualKey, kept for diagnostics.
+    #[serde(default)]
+    pub cmd_virtual_key: Option<u16>,
     /// Native action verbs reported by AX, e.g. `["press", "showmenu"]`.
     #[serde(default)]
     pub ax_actions: Vec<String>,
@@ -198,6 +207,12 @@ pub struct SceneNode {
     pub ax_actions: Vec<String>,
     #[serde(default)]
     pub ax_identifier: Option<String>,
+    #[serde(default)]
+    pub cmd_char: Option<String>,
+    #[serde(default)]
+    pub cmd_modifiers: Option<u64>,
+    #[serde(default)]
+    pub cmd_virtual_key: Option<u16>,
     /// Wall-clock (`now_ms`) at which this node was last observed.
     pub last_seen_ms: u64,
     /// Structural child-index path from the capture root to this node.
@@ -374,6 +389,10 @@ pub struct AuditEntry {
     #[serde(default)]
     pub reasoning: Option<String>,
     pub result: ActionResult,
+    /// `false` when the input layer reported success but post-action evidence
+    /// only showed low-signal churn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_verified: Option<bool>,
     /// Diff of the scene graph caused by the action.
     #[serde(default)]
     pub graph_diff: GraphDiff,

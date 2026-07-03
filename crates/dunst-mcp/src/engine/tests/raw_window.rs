@@ -1,4 +1,7 @@
 use super::*;
+use crate::engine::raw_input::hotkey_result_low_signal;
+use crate::engine::raw_input_gate::KEYBOARD_WILDCARD_GRANT_EVENTS;
+use crate::engine::window_ops::{expose_delta, reconciled_raise_result};
 
 #[test]
 fn user_active_guard_retry_runs_once_before_returning() {
@@ -231,8 +234,69 @@ fn target_visibility_reports_covered_window_and_hint() {
 
     assert_eq!(visibility.status, "covered");
     assert_eq!(visibility.covered_by[0].window_id, 1);
+    let covered = serde_json::to_value(&visibility.covered_by[0]).unwrap();
+    assert_eq!(covered["app"], "Firefox");
+    assert!(covered.get("display").is_none());
+    assert!(covered.get("pid").is_none());
     assert!(visibility.visible_fraction < 1.0);
     assert!(visibility.fallback_hint.is_some());
+}
+
+fn visibility_snapshot(is_frontmost: bool, visible_fraction: f64) -> TargetVisibility {
+    TargetVisibility {
+        target_window_id: 2,
+        target_title: "iTerm".into(),
+        found_in_desktop: true,
+        degraded: false,
+        reason: None,
+        is_frontmost,
+        covered_by: Vec::new(),
+        covers: Vec::new(),
+        visible_fraction,
+        status: "visible_background".into(),
+        warnings: Vec::new(),
+        fallback_hint: None,
+    }
+}
+
+#[test]
+fn raise_reconciliation_requires_frontmost_or_visibility_gain() {
+    let before = visibility_snapshot(false, 0.0);
+    let unchanged = visibility_snapshot(false, 0.0);
+    assert_eq!(
+        reconciled_raise_result(true, &before, &unchanged),
+        (false, true)
+    );
+
+    let more_visible = visibility_snapshot(false, 0.5);
+    assert_eq!(
+        reconciled_raise_result(true, &before, &more_visible),
+        (true, false)
+    );
+
+    let frontmost = visibility_snapshot(true, 0.0);
+    assert_eq!(
+        reconciled_raise_result(true, &before, &frontmost),
+        (true, false)
+    );
+    assert_eq!(
+        reconciled_raise_result(false, &before, &frontmost),
+        (false, false)
+    );
+}
+
+#[test]
+fn expose_delta_keeps_only_visibility_changes() {
+    let before = visibility_snapshot(false, 0.0);
+    let after = visibility_snapshot(true, 0.75);
+    let delta = expose_delta(&before, &after);
+
+    assert!(!delta.was_frontmost);
+    assert!(delta.is_frontmost);
+    assert_eq!(delta.visible_fraction_before, 0.0);
+    assert_eq!(delta.visible_fraction_after, 0.75);
+    assert!(delta.covered_by_before.is_empty());
+    assert!(delta.covered_by_after.is_empty());
 }
 
 #[test]
@@ -454,6 +518,88 @@ fn raw_key_approval_does_not_cover_other_keys() {
         )
         .is_some(),
         "a key-specific raw grant must not cover another key"
+    );
+}
+
+#[test]
+fn keyboard_wildcard_approval_covers_short_keyboard_batch_only() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+    let return_key = raw_press_key_target_id("Return", 1);
+
+    eng.approve("keyboard@*").unwrap();
+
+    for (target, action, argument) in [
+        (
+            "keyboard@hotkey:cmd+l",
+            SemanticAction::Hotkey,
+            "hotkey cmd+l",
+        ),
+        (return_key.as_str(), SemanticAction::KeyPress, "Return"),
+        (
+            "keyboard@scroll:down:1",
+            SemanticAction::Scroll,
+            "scroll down",
+        ),
+    ] {
+        assert!(
+            eng.gate_raw_input(
+                target,
+                action,
+                Some(argument.to_string()),
+                Some("wildcard keyboard approval"),
+                risk.clone(),
+            )
+            .is_none(),
+            "keyboard wildcard should cover {target}"
+        );
+    }
+
+    assert!(
+        eng.gate_raw_input(
+            "screen@820,320:click",
+            SemanticAction::Click,
+            Some("click 820,320".into()),
+            Some("raw screen click"),
+            risk,
+        )
+        .is_some(),
+        "keyboard wildcard must not cover screen raw input"
+    );
+}
+
+#[test]
+fn keyboard_wildcard_approval_is_event_limited() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+    let target = raw_press_key_target_id("Backspace", 1);
+
+    eng.approve("keyboard@*").unwrap();
+
+    for _ in 0..KEYBOARD_WILDCARD_GRANT_EVENTS {
+        assert!(
+            eng.gate_raw_input(
+                &target,
+                SemanticAction::KeyPress,
+                Some("Backspace".into()),
+                Some("wildcard keyboard approval"),
+                risk.clone(),
+            )
+            .is_none(),
+            "keyboard wildcard should cover its configured event budget"
+        );
+    }
+
+    assert!(
+        eng.gate_raw_input(
+            &target,
+            SemanticAction::KeyPress,
+            Some("Backspace".into()),
+            Some("wildcard keyboard approval"),
+            risk,
+        )
+        .is_some(),
+        "keyboard wildcard must gate again after its event budget is exhausted"
     );
 }
 
@@ -961,9 +1107,41 @@ fn scroll_success_audit(target_id: &str) -> AuditEntry {
         risk: Engine::raw_input_risk(Vec::new()),
         reasoning: None,
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     }
+}
+
+#[test]
+fn hotkey_low_signal_ignores_menu_churn_only() {
+    let mut entry = scroll_success_audit("keyboard@hotkey:cmd+l");
+    entry.action = SemanticAction::Hotkey;
+    entry.graph_diff = GraphDiff {
+        changes: vec![
+            NodeChange::Changed {
+                id: "menu_sessions".into(),
+                field: "children".into(),
+                before: "[]".into(),
+                after: "[mi_selectsessionatindexaction]".into(),
+            },
+            NodeChange::Changed {
+                id: "mi_selectsessionatindexaction".into(),
+                field: "enabled".into(),
+                before: "false".into(),
+                after: "true".into(),
+            },
+        ],
+    };
+    assert!(hotkey_result_low_signal(&entry));
+
+    entry.graph_diff.changes.push(NodeChange::Changed {
+        id: "text_terminal".into(),
+        field: "value".into(),
+        before: "old".into(),
+        after: "new".into(),
+    });
+    assert!(!hotkey_result_low_signal(&entry));
 }
 
 #[test]

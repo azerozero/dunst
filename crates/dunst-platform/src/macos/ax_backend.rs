@@ -101,14 +101,14 @@ pub fn capture(target: &Target) -> Result<Vec<RawAxNode>> {
     let target_key = TargetKey::from_target(target);
     let app = app_element(target.pid)?;
     let window = resolve_window(&app, target.window_id)?;
-    let walk_attrs = WalkAttributes::new();
+    let walk_ctx = WalkContext::new(&app, &window);
     let mut state = WalkState::default();
     let mut roots = vec![walk_element(
         &window,
         &target_key,
         0,
         &mut state,
-        &walk_attrs,
+        &walk_ctx,
     )?];
     if let Some(menu_bar) = attr_ax_element(&app, kAXMenuBarAttribute) {
         roots.push(walk_element(
@@ -116,7 +116,7 @@ pub fn capture(target: &Target) -> Result<Vec<RawAxNode>> {
             &target_key,
             0,
             &mut state,
-            &walk_attrs,
+            &walk_ctx,
         )?);
     }
     if state.capped {
@@ -242,7 +242,9 @@ pub(super) fn perform_on_element(
         }
         SemanticAction::Raise => {
             let element = require_ax_element(element)?;
-            perform_ax_action(element, kAXRaiseAction)
+            perform_ax_action(element, kAXRaiseAction)?;
+            activate_process_for_raise(target, node)
+                .map_err(|err| ActionFailure::Execution(err.to_string()))
         }
         SemanticAction::Focus => {
             set_bool_attr(require_ax_element(element)?, kAXFocusedAttribute, true)
@@ -264,6 +266,16 @@ pub(super) fn perform_on_element(
             "semantic action {other:?} is not supported by macOS AX backend"
         ))),
     }
+}
+
+fn activate_process_for_raise(target: &Target, node: &SceneNode) -> Result<()> {
+    let window = WindowRef {
+        pid: target.pid,
+        window_id: target.window_id,
+        app_name: String::new(),
+        title: node.label.clone().unwrap_or_default(),
+    };
+    crate::borrow_target_frontmost(&window).map(|_| ())
 }
 
 pub(super) fn require_ax_element(
@@ -385,6 +397,17 @@ pub(super) fn app_element(pid: i32) -> Result<AxElement> {
     } else {
         Ok(AxElement::from_owned(app))
     }
+}
+
+/// AXRaise the exact window identified by its CoreGraphics `window_id`, making
+/// it the app's key window. Window-scoped via `_AXUIElementGetWindow`, so it is
+/// robust to duplicate/volatile window titles (contrary to a name match). The
+/// caller is responsible for foregrounding the app process when the raise must
+/// route menu-bar commands to this window.
+pub(crate) fn raise_window_by_id(pid: i32, window_id: u32) -> Result<()> {
+    let app = app_element(pid)?;
+    let window = resolve_window(&app, window_id)?;
+    perform_ax_action(&window, kAXRaiseAction).map_err(DunstError::from)
 }
 
 /// Replace the text of whatever field currently holds keyboard focus in the app.

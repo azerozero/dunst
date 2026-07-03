@@ -198,6 +198,7 @@ impl Engine {
             risk,
             reasoning: Some("set focused field text (test override)".to_string()),
             result,
+            effect_verified: None,
             graph_diff,
             caller: None,
         }))
@@ -437,6 +438,13 @@ impl Engine {
             "up" => 720,
             _ => -720,
         };
+        // Snapshot the pointer shape before borrowing the real cursor, so we
+        // can tell afterwards whether the borrowed gesture left it stuck.
+        let cursor_before = if borrow_cursor {
+            dunst_platform::cursor_shape_fingerprint()
+        } else {
+            None
+        };
         let mut outcome = Ok(());
         for _ in 0..count {
             outcome = if borrow_cursor {
@@ -464,6 +472,22 @@ impl Engine {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(160));
+        }
+        // Recover the pointer once, at the end of the gesture, but ONLY when the
+        // borrowed real-cursor scroll left it stuck in a shape it did not have
+        // before (the macOS bug that freezes e.g. an I-beam over a backgrounded
+        // web view). The heavy unstick maneuver is intrusive, so the shape
+        // fingerprint gates it: no change in shape means nothing to fix.
+        if borrow_cursor && outcome.is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            let after = dunst_platform::cursor_shape_fingerprint();
+            if borrowed_cursor_left_stuck(cursor_before, after) {
+                // Idle-gated: the recovery maneuver waits for the operator to be
+                // idle (retry backoff) rather than fighting a resumed cursor. If
+                // the operator stays active we give up quietly; the manual
+                // unstick_cursor tool remains available on demand.
+                let _ = retry_user_active_guard(dunst_platform::unstick_cursor_if_idle);
+            }
         }
         let result = self.audit_raw_input(
             target_id,
@@ -686,16 +710,25 @@ impl Engine {
     /// A keyboard shortcut in the background: modifiers (cmd|shift|opt|ctrl, `+`-
     /// separated) plus a key (a single character, or a name like enter/tab/escape/
     /// space/delete/left/right/up/down). E.g. "cmd+l" (focus omnibox), "cmd+t",
-    /// "cmd+w". Auth-signed so it reaches web content. Layout-sensitive text
-    /// selection shortcuts such as "cmd+a" are rejected; use `type_into` for
-    /// field replacement. Re-perceives.
+    /// "cmd+w". Native menu items are matched by AXMenuItemCmdChar first; the
+    /// SkyLight fallback is auth-signed so it reaches web content. Layout-
+    /// sensitive text selection shortcuts such as "cmd+a" are rejected when no
+    /// matching AX menu item exists; use `type_into` for field replacement.
+    /// Re-perceives.
     #[cfg(target_os = "macos")]
     pub fn hotkey(&mut self, combo: &str) -> dunst_core::Result<AuditEntry> {
-        if let Some(message) = layout_sensitive_hotkey_message(combo) {
-            return Err(DunstError::Execution(message));
-        }
-        let (flags, keycode) = parse_combo(combo)
-            .ok_or_else(|| DunstError::Execution(format!("unrecognised hotkey {combo:?}")))?;
+        let menu_item = menu_item_for_hotkey(self.scene_graph(), combo);
+        let fallback_key =
+            if menu_item.is_none() {
+                if let Some(message) = layout_sensitive_hotkey_message(combo) {
+                    return Err(DunstError::Execution(message));
+                }
+                Some(parse_combo(combo).ok_or_else(|| {
+                    DunstError::Execution(format!("unrecognised hotkey {combo:?}"))
+                })?)
+            } else {
+                None
+            };
         let target_id = format!("keyboard@hotkey:{combo}");
         if let Some(entry) = self.gate_raw_input(
             &target_id,
@@ -706,22 +739,67 @@ impl Engine {
         ) {
             return Ok(entry);
         }
-        let outcome = retry_user_active_guard(|| {
-            dunst_platform::key_web_background(
-                self.target.pid,
-                self.target.window_id,
-                keycode,
-                flags,
-            )
-        });
-        self.audit_raw_input(
+        let (reasoning, outcome) = match menu_item {
+            Some(node) => {
+                // Never AXPress a latent menu item directly: on a closed
+                // submenu it either errors (element cache miss, item "not
+                // validated") or — worse — returns success without acting
+                // (BUGS-TODO #4). Click the menu path via System Events,
+                // which opens the intervening menus and briefly borrows the
+                // foreground.
+                let chains = menu_nested_label_chains(self.scene_graph(), &node);
+                let (pid, window_id) = (self.target.pid, self.target.window_id);
+                (
+                    Some("background hotkey (menu equivalent clicked via System Events on the raised target window, foreground borrowed)"),
+                    retry_user_active_guard(|| {
+                        // Make the ATTACHED window key first so the menu-bar
+                        // command lands on it, not on whichever window of the
+                        // app is currently frontmost (multi-window apps).
+                        dunst_platform::raise_window_by_id(pid, window_id)?;
+                        let mut last_err = DunstError::Execution(format!(
+                            "hotkey {combo:?} matches menu item {} but no menu label chain could be derived; use open_menu then click_element",
+                            node.id
+                        ));
+                        for chain in &chains {
+                            match dunst_platform::click_menu_path(pid, chain) {
+                                Ok(()) => return Ok(()),
+                                Err(err) => last_err = err,
+                            }
+                        }
+                        Err(last_err)
+                    }),
+                )
+            }
+            None => {
+                let (flags, keycode) = fallback_key.expect("fallback key parsed when no menu item");
+                (
+                    Some("background hotkey (modifier combo, auth-signed)"),
+                    retry_user_active_guard(|| {
+                        dunst_platform::key_web_background(
+                            self.target.pid,
+                            self.target.window_id,
+                            keycode,
+                            flags,
+                        )
+                    }),
+                )
+            }
+        };
+        let entry = self.audit_raw_input(
             target_id,
             SemanticAction::Hotkey,
             Some(combo.to_string()),
-            Some("background hotkey (modifier combo, auth-signed)"),
+            reasoning,
             Self::raw_input_risk(Vec::new()),
             outcome,
-        )
+        )?;
+        if hotkey_result_low_signal(&entry) {
+            return Ok(self.mark_effect_unverified(
+                entry,
+                "hotkey reported success but only low-signal menu churn was observed",
+            ));
+        }
+        Ok(entry)
     }
 
     /// Non-macOS stub.
@@ -731,6 +809,108 @@ impl Engine {
             "hotkey requires a macOS backend".into(),
         ))
     }
+
+    #[cfg(target_os = "macos")]
+    fn mark_effect_unverified(&mut self, mut entry: AuditEntry, reason: &str) -> AuditEntry {
+        entry.effect_verified = Some(false);
+        entry.reasoning = Some(match entry.reasoning.take() {
+            Some(existing) if !existing.contains(reason) => format!("{existing}; {reason}"),
+            Some(existing) => existing,
+            None => reason.to_string(),
+        });
+        if let Some(last) = self
+            .trace
+            .last_mut()
+            .filter(|last| last.ts_ms == entry.ts_ms && last.target_id == entry.target_id)
+        {
+            *last = entry.clone();
+        }
+        entry
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn menu_item_for_hotkey(graph: &dunst_core::SceneGraph, combo: &str) -> Option<SceneNode> {
+    let combo = parse_menu_hotkey_combo(combo)?;
+    let mut disabled_match = None;
+    for node in graph.nodes.values() {
+        if node.role != Role::MenuItem {
+            continue;
+        }
+        let matches = node
+            .cmd_char
+            .as_deref()
+            .is_some_and(|cmd_char| menu_hotkey_matches(&combo, cmd_char, node.cmd_modifiers))
+            || node.cmd_virtual_key.is_some_and(|virtual_key| {
+                menu_hotkey_matches_virtual_key(&combo, virtual_key, node.cmd_modifiers)
+            });
+        if !matches {
+            continue;
+        }
+        if node.enabled {
+            return Some(node.clone());
+        }
+        if disabled_match.is_none() {
+            disabled_match = Some(node.clone());
+        }
+    }
+    // AX only validates menu items while their menu is tracked: a disabled
+    // match usually means "not validated", not "unavailable". The caller
+    // routes it through the System Events menu-path click.
+    disabled_match
+}
+
+/// Labels from the topmost reachable menu ancestor down to `leaf`, following
+/// graph parents. Menu containers carry no label and are skipped; System
+/// Events addresses them as `menu 1`.
+#[cfg(target_os = "macos")]
+fn menu_label_path(graph: &dunst_core::SceneGraph, leaf: &SceneNode) -> Option<Vec<String>> {
+    let mut labels = vec![leaf.label.clone()?];
+    let mut current = leaf.parent.clone();
+    while let Some(id) = current {
+        let node = graph.get(&id)?;
+        if node.role == Role::MenuItem {
+            labels.push(node.label.clone()?);
+        }
+        current = node.parent.clone();
+    }
+    labels.reverse();
+    (labels.len() >= 2).then_some(labels)
+}
+
+/// Candidate nested label chains (below the menu bar item, leaf last) for a
+/// menu item: the dot-separated `ax_identifier` first when present (stable,
+/// e.g. "Select Split Pane.Select Pane Above"), then chains derived from the
+/// graph parents — whose links churn on latent menus and may be incomplete —
+/// and finally the bare leaf label.
+#[cfg(target_os = "macos")]
+fn menu_nested_label_chains(graph: &dunst_core::SceneGraph, leaf: &SceneNode) -> Vec<Vec<String>> {
+    let mut chains: Vec<Vec<String>> = Vec::new();
+    let push = |chains: &mut Vec<Vec<String>>, chain: Vec<String>| {
+        if !chain.is_empty() && !chains.contains(&chain) {
+            chains.push(chain);
+        }
+    };
+    if let Some(identifier) = leaf.ax_identifier.as_deref() {
+        let segments: Vec<String> = identifier
+            .split('.')
+            .map(|segment| segment.trim().to_string())
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        if segments.len() >= 2 {
+            push(&mut chains, segments);
+        }
+    }
+    if let Some(labels) = menu_label_path(graph, leaf) {
+        // The first entry is usually the menu bar item, which the platform
+        // click loops over itself; offer the chain with and without it.
+        push(&mut chains, labels[1..].to_vec());
+        push(&mut chains, labels);
+    }
+    if let Some(label) = leaf.label.clone() {
+        push(&mut chains, vec![label]);
+    }
+    chains
 }
 
 fn paste_text_via_clipboard(
@@ -795,6 +975,16 @@ fn scroll_result_low_signal(entry: &AuditEntry) -> bool {
                 .all(scroll_low_signal_change))
 }
 
+pub(in crate::engine) fn hotkey_result_low_signal(entry: &AuditEntry) -> bool {
+    entry.result == dunst_core::ActionResult::Success
+        && (entry.graph_diff.changes.is_empty()
+            || entry
+                .graph_diff
+                .changes
+                .iter()
+                .all(scroll_low_signal_change))
+}
+
 fn scroll_low_signal_change(change: &dunst_core::NodeChange) -> bool {
     match change {
         dunst_core::NodeChange::Added { id, .. } | dunst_core::NodeChange::Removed { id, .. } => {
@@ -809,6 +999,19 @@ fn scroll_low_signal_change(change: &dunst_core::NodeChange) -> bool {
 
 fn low_signal_menu_id(id: &str) -> bool {
     id.starts_with("mi_") || id.starts_with("menu_")
+}
+
+/// Decide whether a borrowed real-cursor gesture left the pointer stuck, from
+/// the cursor-shape fingerprints captured before the gesture and after the
+/// restore. A change in shape at the same resting point means the light
+/// restore did not put the pointer back to what the user had, so the heavy
+/// unstick maneuver is warranted. If either fingerprint is unavailable we
+/// cannot tell, and recover conservatively rather than risk a stuck pointer.
+fn borrowed_cursor_left_stuck(before: Option<u64>, after: Option<u64>) -> bool {
+    match (before, after) {
+        (Some(before), Some(after)) => before != after,
+        _ => true,
+    }
 }
 
 fn host_from_url(url: &str) -> Option<String> {
@@ -884,4 +1087,26 @@ fn scroll_scope_token(value: &str) -> Option<String> {
     }
     let token = token.trim_matches('-').to_string();
     (!token.is_empty()).then_some(token)
+}
+
+#[cfg(test)]
+mod cursor_recovery_tests {
+    use super::borrowed_cursor_left_stuck;
+
+    #[test]
+    fn same_shape_before_and_after_is_not_stuck() {
+        assert!(!borrowed_cursor_left_stuck(Some(0xA1A1), Some(0xA1A1)));
+    }
+
+    #[test]
+    fn changed_shape_is_stuck() {
+        assert!(borrowed_cursor_left_stuck(Some(0xA1A1), Some(0xB2B2)));
+    }
+
+    #[test]
+    fn unreadable_fingerprint_recovers_conservatively() {
+        assert!(borrowed_cursor_left_stuck(None, Some(0xB2B2)));
+        assert!(borrowed_cursor_left_stuck(Some(0xA1A1), None));
+        assert!(borrowed_cursor_left_stuck(None, None));
+    }
 }

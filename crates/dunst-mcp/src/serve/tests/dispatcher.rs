@@ -379,6 +379,85 @@ fn find_element_refreshes_and_can_filter_latent_matches() {
     );
 }
 
+fn engine_with_long_value() -> Engine {
+    let long_text = "x".repeat(260);
+    let text = RawAxNode {
+        ax_role: "AXTextArea".into(),
+        label: Some("Terminal scrollback".into()),
+        help: None,
+        value: Some(long_text),
+        ax_identifier: None,
+        cmd_char: None,
+        cmd_modifiers: None,
+        cmd_virtual_key: None,
+        ax_actions: Vec::new(),
+        frame: None,
+        enabled: true,
+        focused: false,
+        children: Vec::new(),
+    };
+    let window = RawAxNode {
+        ax_role: "AXWindow".into(),
+        label: Some("Terminal".into()),
+        help: None,
+        value: None,
+        ax_identifier: None,
+        cmd_char: None,
+        cmd_modifiers: None,
+        cmd_virtual_key: None,
+        ax_actions: Vec::new(),
+        frame: None,
+        enabled: true,
+        focused: false,
+        children: vec![text],
+    };
+    let perceptor = Box::new(MockPerceptor::new(
+        vec![window],
+        WindowRef {
+            pid: 99,
+            window_id: 7,
+            app_name: "iTerm".into(),
+            title: "Terminal".into(),
+        },
+    ));
+    Engine::new(
+        perceptor,
+        Box::<RecordingExecutor>::default(),
+        Target {
+            pid: 99,
+            window_id: 7,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn find_element_truncates_long_values_unless_opted_in() {
+    let mut e = engine_with_long_value();
+    let resp = call(
+        &mut e,
+        "find_element",
+        json!({ "query": "Terminal scrollback", "fresh": false }),
+    );
+    assert!(!is_error(&resp), "find_element succeeds: {resp}");
+    let hits = text_json(&resp);
+    let first = &hits.as_array().unwrap()[0];
+    let value = first["value"].as_str().unwrap();
+    assert_eq!(first["value_len"], 260);
+    assert_eq!(value.chars().count(), 203);
+    assert!(value.ends_with("..."));
+
+    let full = call(
+        &mut e,
+        "find_element",
+        json!({ "query": "Terminal scrollback", "fresh": false, "full_value": true }),
+    );
+    let hits = text_json(&full);
+    let full_value = hits.as_array().unwrap()[0]["value"].as_str().unwrap();
+    assert_eq!(full_value.chars().count(), 260);
+    assert!(!full_value.ends_with("..."));
+}
+
 #[test]
 fn find_element_force_refresh_uses_recent_visible_cached_match() {
     let (mut e, captures) = engine_with_capture_counter();

@@ -335,7 +335,7 @@ impl Engine {
         arrange_if_needed: bool,
     ) -> dunst_core::Result<ExposeTargetWindowResult> {
         let before = self.target_visibility();
-        let mut raised = false;
+        let mut ax_raise_ok = false;
         let mut arranged = false;
         let mut raise_audit = None;
 
@@ -352,35 +352,46 @@ impl Engine {
                 Some("expose target window before visual interaction"),
             ) {
                 Ok(entry) => {
-                    raised = entry.result == ActionResult::Success;
+                    ax_raise_ok = entry.result == ActionResult::Success;
                     raise_audit = Some(entry);
                 }
                 Err(_) => {
-                    raised = false;
+                    ax_raise_ok = false;
                 }
             }
         }
 
         *self.desktop_cache.borrow_mut() = None;
         let mut after = self.target_visibility();
+        let (mut raised, mut raised_within_app_only) =
+            reconciled_raise_result(ax_raise_ok, &before, &after);
+        // The process activation behind the raise (set frontmost / Space
+        // switch) lands asynchronously in the window server: re-sample briefly
+        // before concluding the raise stayed app-internal.
+        let mut settle_attempts = 0;
+        while raised_within_app_only && settle_attempts < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            *self.desktop_cache.borrow_mut() = None;
+            after = self.target_visibility();
+            (raised, raised_within_app_only) =
+                reconciled_raise_result(ax_raise_ok, &before, &after);
+            settle_attempts += 1;
+        }
         if arrange_if_needed && raised && !after.covered_by.is_empty() {
             let mut ids = vec![self.target.window_id];
             ids.extend(after.covered_by.iter().map(|window| window.window_id));
             ids.sort_unstable();
             ids.dedup();
-            let display = after
-                .covered_by
-                .iter()
-                .find_map(|window| window.display.as_ref().map(|d| d.index))
-                .or_else(|| {
-                    self.display_for_window(self.current_window_bounds())
-                        .map(|d| d.index)
-                })
+            let display = self
+                .display_for_window(self.current_window_bounds())
+                .map(|d| d.index)
                 .unwrap_or(1);
             let _ = self.arrange_windows(display, "columns", None, &ids, false);
             arranged = true;
             *self.desktop_cache.borrow_mut() = None;
             after = self.target_visibility();
+            (raised, raised_within_app_only) =
+                reconciled_raise_result(ax_raise_ok, &before, &after);
         }
 
         let verification_hint = if raise_audit
@@ -388,16 +399,20 @@ impl Engine {
             .is_some_and(|entry| entry.result == ActionResult::PendingApproval)
         {
             Some("Target expose is pending approval; approve the raise_audit.target_id, then retry expose_target_window.".into())
+        } else if raised_within_app_only {
+            Some("AXRaise succeeded only within the target app; the target did not become frontmost or measurably more visible. Approve and retry expose_target_window with arrange_if_needed=true, or inspect desktop_view for the covering app.".into())
         } else if !after.covered_by.is_empty() {
             Some("Target remains covered after expose_target_window; use desktop_view to choose the covering window or move the target to another display.".into())
         } else {
             None
         };
+        let delta = expose_delta(&before, &after);
         Ok(ExposeTargetWindowResult {
-            before,
             after,
+            delta,
             raise_audit,
             raised,
+            raised_within_app_only,
             arranged,
             verification_hint,
         })
@@ -411,9 +426,10 @@ impl Engine {
         let before = self.target_visibility();
         Ok(ExposeTargetWindowResult {
             after: before.clone(),
-            before,
+            delta: expose_delta(&before, &before),
             raise_audit: None,
             raised: false,
+            raised_within_app_only: false,
             arranged: false,
             verification_hint: Some("expose_target_window requires a macOS backend".into()),
         })
@@ -541,6 +557,44 @@ impl Engine {
     #[cfg(not(target_os = "macos"))]
     pub fn unstick_cursor(&self) -> bool {
         false
+    }
+}
+
+pub(in crate::engine) fn reconciled_raise_result(
+    ax_ok: bool,
+    before: &TargetVisibility,
+    after: &TargetVisibility,
+) -> (bool, bool) {
+    // A fully visible, uncovered target counts as exposed even when a window
+    // on another Space still sorts above it in the global z-order: frontmost
+    // alone under-reports what the raise achieved.
+    let exposed = after.is_frontmost
+        || after.visible_fraction > before.visible_fraction
+        || (after.covered_by.is_empty() && after.visible_fraction >= 0.99);
+    let raised = ax_ok && exposed;
+    let raised_within_app_only = ax_ok && !raised;
+    (raised, raised_within_app_only)
+}
+
+pub(in crate::engine) fn expose_delta(
+    before: &TargetVisibility,
+    after: &TargetVisibility,
+) -> ExposeTargetWindowDelta {
+    ExposeTargetWindowDelta {
+        was_frontmost: before.is_frontmost,
+        is_frontmost: after.is_frontmost,
+        visible_fraction_before: before.visible_fraction,
+        visible_fraction_after: after.visible_fraction,
+        covered_by_before: before
+            .covered_by
+            .iter()
+            .map(|window| window.window_id)
+            .collect(),
+        covered_by_after: after
+            .covered_by
+            .iter()
+            .map(|window| window.window_id)
+            .collect(),
     }
 }
 

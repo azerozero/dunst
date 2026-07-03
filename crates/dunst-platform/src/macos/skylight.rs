@@ -143,6 +143,92 @@ pub fn mouse_post_available() -> bool {
     post_fn().is_some()
 }
 
+type MainConnection = unsafe extern "C" fn() -> u32;
+type GetGlobalCursorData = unsafe extern "C" fn(
+    u32,        // cid
+    *mut u8,    // data
+    *mut c_int, // size (in: capacity, out: bytes written)
+    *mut c_int, // rowBytes
+    *mut f64,   // rect[4]
+    *mut f64,   // hotspot[2]
+    *mut c_int, // depth
+    *mut c_int, // components
+) -> c_int;
+
+struct CursorSpi {
+    main_cid: MainConnection,
+    cursor_data: GetGlobalCursorData,
+}
+// SAFETY: immutable resolved C function pointers into a system framework.
+unsafe impl Send for CursorSpi {}
+// SAFETY: same as the `Send` impl above.
+unsafe impl Sync for CursorSpi {}
+
+static CURSOR_SPI: OnceLock<Option<CursorSpi>> = OnceLock::new();
+
+fn cursor_spi() -> &'static Option<CursorSpi> {
+    CURSOR_SPI.get_or_init(|| {
+        let main_cid = rtld_default_sym(c"SLSMainConnectionID");
+        let cursor_data = rtld_default_sym(c"SLSGetGlobalCursorData");
+        if main_cid.is_null() || cursor_data.is_null() {
+            return None;
+        }
+        // SAFETY: non-null SkyLight symbols with the documented C ABI.
+        unsafe {
+            Some(CursorSpi {
+                main_cid: std::mem::transmute::<*mut c_void, MainConnection>(main_cid),
+                cursor_data: std::mem::transmute::<*mut c_void, GetGlobalCursorData>(cursor_data),
+            })
+        }
+    })
+}
+
+/// Fingerprint of the current GLOBAL cursor image (FNV-1a over the RGBA bytes
+/// SkyLight reports). Two different cursor shapes (arrow vs I-beam, etc.) hash
+/// differently; the same shape hashes identically. `None` when the SkyLight
+/// cursor SPI is unavailable. Used to tell whether a borrowed-cursor gesture
+/// left the pointer stuck in a shape it did not have before.
+pub fn cursor_shape_fingerprint() -> Option<u64> {
+    let spi = cursor_spi().as_ref()?;
+    // SAFETY: `main_cid`/`cursor_data` are the resolved SkyLight SPIs. The
+    // buffer is 64 KiB (the cursor image is 32x32x4 = 4 KiB in practice) and
+    // `size` carries its capacity in and the byte count out; every other
+    // out-parameter points at a correctly sized stack slot.
+    unsafe {
+        let cid = (spi.main_cid)();
+        let mut data = [0u8; 65536];
+        let mut size: c_int = data.len() as c_int;
+        let mut row_bytes: c_int = 0;
+        let mut rect = [0f64; 4];
+        let mut hotspot = [0f64; 2];
+        let mut depth: c_int = 0;
+        let mut components: c_int = 0;
+        let err = (spi.cursor_data)(
+            cid,
+            data.as_mut_ptr(),
+            &mut size,
+            &mut row_bytes,
+            rect.as_mut_ptr(),
+            hotspot.as_mut_ptr(),
+            &mut depth,
+            &mut components,
+        );
+        if err != 0 || size <= 0 || size as usize > data.len() {
+            return None;
+        }
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for &byte in &data[..size as usize] {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        // Fold in the hotspot so an arrow and an I-beam that happen to share
+        // byte histograms still differ (their hotspots differ).
+        hash ^= (hotspot[0] as i64 as u64).rotate_left(17);
+        hash ^= (hotspot[1] as i64 as u64).rotate_left(31);
+        Some(hash)
+    }
+}
+
 /// Post a CGEvent (raw `CGEventRef`) to `pid` via SkyLight, reaching a
 /// backgrounded window's (web) content. Mouse events carry NO auth message
 /// (per cua-driver: it diverts them off the IOHID pipeline Chromium reads).

@@ -114,25 +114,87 @@ fn audit_entry_full_diff_also_reports_meaningful_summary() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: Some("select Rust".into()),
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff {
-            changes: vec![NodeChange::Changed {
-                id: "mi_menuitemhit_35".into(),
-                field: "label".into(),
-                before: "".into(),
-                after: "Toujours afficher".into(),
-            }],
+            changes: vec![
+                NodeChange::Changed {
+                    id: "menu_sessions".into(),
+                    field: "children".into(),
+                    before: "[]".into(),
+                    after: "[mi_selectsessionatindexaction]".into(),
+                },
+                NodeChange::Changed {
+                    id: "mi_selectsessionatindexaction".into(),
+                    field: "enabled".into(),
+                    before: "false".into(),
+                    after: "true".into(),
+                },
+                NodeChange::Changed {
+                    id: "btn_publier".into(),
+                    field: "label".into(),
+                    before: "Publier".into(),
+                    after: "Publié".into(),
+                },
+            ],
         },
         caller: None,
     };
 
     let value = audit_entry_value(entry, true);
     assert!(value.get("graph_diff").is_some());
-    assert_eq!(value["graph_diff_summary"]["meaningful_changes"], 0);
-    assert_eq!(value["graph_diff_summary"]["low_signal_suppressed"], 1);
-    assert!(value["graph_diff_summary"]["sample"]
-        .as_array()
+    assert_eq!(value["graph_diff_summary"]["meaningful_changes"], 1);
+    assert_eq!(value["graph_diff_summary"]["low_signal_suppressed"], 2);
+    assert_eq!(value["graph_diff"]["changes"].as_array().unwrap().len(), 1);
+    assert_eq!(value["graph_diff"]["changes"][0]["id"], "btn_publier");
+}
+
+#[test]
+fn export_trace_is_compact_by_default_and_restores_full_entry_by_index() {
+    let mut e = engine();
+    let id = text_json(&call(
+        &mut e,
+        "find_element",
+        json!({ "query": "Nouvelle note", "fresh": false }),
+    ))[0]["id"]
+        .as_str()
         .unwrap()
-        .is_empty());
+        .to_string();
+
+    let click = call(&mut e, "click_element", json!({ "id": id }));
+    assert!(
+        !is_error(&click),
+        "click should add one audit entry: {click}"
+    );
+
+    let summary = text_json(&call(&mut e, "export_trace", json!({})));
+    let entries = summary.as_array().expect("summary export is an array");
+    assert_eq!(entries.len(), 1);
+    assert!(
+        entries[0].get("graph_diff").is_none(),
+        "summary export omits full graph_diff"
+    );
+    assert!(
+        entries[0].get("graph_diff_summary").is_some(),
+        "summary export carries compact graph_diff_summary"
+    );
+
+    let index = text_json(&call(&mut e, "export_trace", json!({ "mode": "index" })));
+    let row = &index.as_array().expect("index export is an array")[0];
+    assert_eq!(row["index"], 0);
+    assert!(row.get("ts_ms").is_some());
+    assert!(row.get("action").is_some());
+    assert!(row.get("result").is_some());
+    assert_eq!(row.as_object().unwrap().len(), 4);
+
+    let full = text_json(&call(&mut e, "export_trace", json!({ "entry": 0 })));
+    assert!(
+        full.get("graph_diff").is_some(),
+        "entry export restores the complete graph_diff"
+    );
+    assert!(
+        full.get("graph_diff_summary").is_none(),
+        "entry export returns the raw audit entry"
+    );
 }
 
 #[test]
@@ -145,6 +207,7 @@ fn bbox_only_generated_wrapper_click_gets_verification_hint() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: Some("open modal".into()),
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff {
             changes: vec![NodeChange::Changed {
                 id: "grp_a450dc4b5a2179a1".into(),
@@ -175,6 +238,7 @@ fn typed_audit_summary_reports_whether_target_value_changed() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff {
             changes: vec![NodeChange::Changed {
                 id: "field_description".into(),
@@ -203,6 +267,7 @@ fn typed_audit_summary_reports_whether_target_value_changed() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff {
             changes: vec![NodeChange::Changed {
                 id: "spinner".into(),
@@ -234,6 +299,7 @@ fn typed_audit_summary_rejects_partial_target_value() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Failed,
+        effect_verified: None,
         graph_diff: GraphDiff {
             changes: vec![NodeChange::Changed {
                 id: "field_description".into(),
@@ -266,6 +332,7 @@ fn failed_type_audit_includes_do_not_save_hint() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Failed,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     };
@@ -295,6 +362,7 @@ fn failed_checkbox_click_includes_toggle_hint() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Failed,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     };
@@ -316,6 +384,7 @@ fn failed_latent_menu_item_includes_open_menu_hint() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Failed,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     };
@@ -341,6 +410,7 @@ fn successful_click_without_meaningful_diff_includes_verification_hint() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     };
@@ -362,6 +432,7 @@ fn successful_raw_click_without_meaningful_diff_warns_not_to_retry_same_point() 
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     };

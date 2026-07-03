@@ -197,7 +197,8 @@ fn query_tools() -> Vec<Value> {
                     "query": { "type": "string" },
                     "fresh": { "type": "boolean", "description": "ensure recent graph before searching (default true, uses short TTL)" },
                     "force_refresh": { "type": "boolean", "description": "force an AX refresh even if the short TTL is still valid (default false)" },
-                    "visible_only": { "type": "boolean", "description": "drop latent/off-window matches (default false)" }
+                    "visible_only": { "type": "boolean", "description": "drop latent/off-window matches (default false)" },
+                    "full_value": { "type": "boolean", "description": "include full AX value text instead of the default ~200-character preview plus value_len (default false)" }
                 }),
                 &["query"],
             ),
@@ -686,7 +687,11 @@ fn keyboard_menu_tools() -> Vec<Value> {
             "Structural diff between the previous and current scene graph. Use summary=true for a compact count/sample response.",
             schema(json!({ "summary": {"type":"boolean"}, "limit": {"type":"integer"} }), &[]),
         ),
-        tool("export_trace", "Export the audit trail (every attempted action) as JSON.", json!({})),
+        tool(
+            "export_trace",
+            "Export the audit trail. Default mode=summary replaces each full graph diff with a compact summary. Use mode=index for index/ts/action/result only, or entry=N to retrieve one full trace entry with its complete graph_diff.",
+            schema(json!({ "mode": {"type":"string","enum":["summary","index"],"description":"default summary; index returns only index, ts_ms, action, result"}, "entry": {"type":"integer","description":"0-based trace entry index to export with its complete graph_diff"} }), &[]),
+        ),
     ]
 }
 
@@ -694,8 +699,8 @@ fn approval_tools() -> Vec<Value> {
     if approval_tool_enabled() {
         vec![tool(
             "approve",
-            "Operator-side escape hatch: approve a gated element or raw target so the next action on it proceeds. Disabled by default; set DUNST_MCP_ENABLE_APPROVE_TOOL=1 for controlled local sessions.",
-            schema(json!({ "id": {"type":"string"} }), &["id"]),
+            "Operator-side escape hatch: approve a gated element or raw target so the next action on it proceeds. Use id=keyboard@* only for a short, event-limited keyboard batch on the currently attached window. Disabled by default; set DUNST_MCP_ENABLE_APPROVE_TOOL=1 for controlled local sessions.",
+            schema(json!({ "id": {"type":"string","description":"element id, exact raw target id, batch id, or keyboard@* for a short current-window keyboard batch"} }), &["id"]),
         )]
     } else {
         Vec::new()

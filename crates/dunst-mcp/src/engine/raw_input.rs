@@ -1,6 +1,8 @@
 use super::*;
 
 mod keyboard;
+#[cfg(test)]
+pub(super) use keyboard::hotkey_result_low_signal;
 pub(super) use keyboard::page_scroll_target_id;
 
 impl Engine {

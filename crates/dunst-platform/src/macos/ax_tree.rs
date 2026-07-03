@@ -10,6 +10,44 @@ pub(super) struct WalkAttributes {
     request: CFArray<CFString>,
 }
 
+pub(super) struct WalkContext {
+    attrs: WalkAttributes,
+    focus: FocusContext,
+}
+
+impl WalkContext {
+    pub(super) fn new(app: &AxElement, window: &AxElement) -> Self {
+        Self {
+            attrs: WalkAttributes::new(),
+            focus: FocusContext::from_app_window(app, window),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct FocusContext {
+    focused_element: Option<ElementKey>,
+    focused_window: Option<ElementKey>,
+    target_window: Option<ElementKey>,
+}
+
+impl FocusContext {
+    pub(super) fn from_app_window(app: &AxElement, window: &AxElement) -> Self {
+        Self {
+            focused_element: attr_ax_element(app, AX_FOCUSED_UI_ELEMENT_ATTRIBUTE)
+                .and_then(|element| element_key(&element)),
+            focused_window: attr_ax_element(app, AX_FOCUSED_WINDOW_ATTRIBUTE)
+                .and_then(|element| element_key(&element)),
+            target_window: element_key(window),
+        }
+    }
+
+    fn element_focused(&self, element: &AxElement) -> bool {
+        let key = element_key(element);
+        reconciled_focus_key(key.as_ref(), self)
+    }
+}
+
 impl WalkAttributes {
     pub(super) fn new() -> Self {
         Self {
@@ -24,8 +62,11 @@ impl WalkAttributes {
                 CFString::new(kAXPositionAttribute),
                 CFString::new(kAXSizeAttribute),
                 CFString::new(kAXEnabledAttribute),
-                CFString::new(kAXFocusedAttribute),
                 CFString::new(kAXChildrenAttribute),
+                CFString::new(AX_MENU_ITEM_CMD_CHAR_ATTRIBUTE),
+                CFString::new(AX_MENU_ITEM_CMD_MODIFIERS_ATTRIBUTE),
+                CFString::new(AX_MENU_ITEM_CMD_VIRTUAL_KEY_ATTRIBUTE),
+                CFString::new(AX_SUBROLE_ATTRIBUTE),
             ]),
         }
     }
@@ -79,8 +120,12 @@ pub(super) struct NodeFields {
     value: Option<String>,
     title: Option<String>,
     description: Option<String>,
+    subrole: Option<String>,
     help: Option<String>,
     ax_identifier: Option<String>,
+    cmd_char: Option<String>,
+    cmd_modifiers: Option<u64>,
+    cmd_virtual_key: Option<u16>,
     ax_actions: Vec<String>,
     frame: Option<Bbox>,
     enabled: bool,
@@ -91,7 +136,8 @@ pub(super) fn assemble_node(fields: NodeFields) -> RawAxNode {
     let label = fields
         .title
         .or(fields.description)
-        .or_else(|| static_text_value_label(&fields.ax_role, &fields.value));
+        .or_else(|| static_text_value_label(&fields.ax_role, &fields.value))
+        .or_else(|| subrole_fallback_label(&fields.ax_role, fields.subrole.as_deref()));
 
     RawAxNode {
         ax_role: fields.ax_role,
@@ -99,6 +145,9 @@ pub(super) fn assemble_node(fields: NodeFields) -> RawAxNode {
         help: fields.help,
         value: fields.value,
         ax_identifier: fields.ax_identifier,
+        cmd_char: fields.cmd_char,
+        cmd_modifiers: fields.cmd_modifiers,
+        cmd_virtual_key: fields.cmd_virtual_key,
         ax_actions: fields.ax_actions,
         frame: fields.frame,
         enabled: fields.enabled,
@@ -114,12 +163,19 @@ pub(super) fn shallow_raw_node(element: &AxElement) -> RawAxNode {
         value: attr_value_string(element, kAXValueAttribute),
         title: attr_label_string(element, kAXTitleAttribute),
         description: attr_label_string(element, kAXDescriptionAttribute),
+        subrole: attr_string(element, AX_SUBROLE_ATTRIBUTE),
         help: attr_string(element, kAXHelpAttribute),
         ax_identifier: attr_string(element, kAXIdentifierAttribute),
+        cmd_char: attr_string(element, AX_MENU_ITEM_CMD_CHAR_ATTRIBUTE),
+        cmd_modifiers: attr_number(element, AX_MENU_ITEM_CMD_MODIFIERS_ATTRIBUTE)
+            .and_then(number_to_u64),
+        cmd_virtual_key: attr_number(element, AX_MENU_ITEM_CMD_VIRTUAL_KEY_ATTRIBUTE)
+            .and_then(number_to_u64)
+            .and_then(|number| u16::try_from(number).ok()),
         ax_actions: read_node_actions(element),
         frame: frame(element),
         enabled: attr_bool(element, kAXEnabledAttribute).unwrap_or(true),
-        focused: attr_bool(element, kAXFocusedAttribute).unwrap_or(false),
+        focused: false,
     })
 }
 
@@ -131,16 +187,57 @@ pub(super) fn static_text_value_label(ax_role: &str, value: &Option<String>) -> 
     }
 }
 
+pub(super) fn subrole_fallback_label(ax_role: &str, subrole: Option<&str>) -> Option<String> {
+    if ax_role != "AXButton" {
+        return None;
+    }
+    let subrole = subrole?.trim();
+    if subrole.is_empty() {
+        return None;
+    }
+    let stem = subrole
+        .strip_prefix("AX")
+        .unwrap_or(subrole)
+        .strip_suffix("Button")
+        .unwrap_or_else(|| subrole.strip_prefix("AX").unwrap_or(subrole));
+    let label = camel_words_lowercase(stem);
+    (!label.is_empty()).then_some(label)
+}
+
+fn camel_words_lowercase(input: &str) -> String {
+    let mut out = String::new();
+    let mut prev_was_lower_or_digit = false;
+
+    for ch in input.chars() {
+        if matches!(ch, '_' | '-' | ' ') {
+            if !out.ends_with(' ') && !out.is_empty() {
+                out.push(' ');
+            }
+            prev_was_lower_or_digit = false;
+            continue;
+        }
+        if ch.is_uppercase() && prev_was_lower_or_digit && !out.ends_with(' ') {
+            out.push(' ');
+        }
+        for lower in ch.to_lowercase() {
+            out.push(lower);
+        }
+        prev_was_lower_or_digit = ch.is_lowercase() || ch.is_ascii_digit();
+    }
+
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub(super) fn walk_element(
     element: &AxElement,
     target_key: &TargetKey,
     depth: usize,
     state: &mut WalkState,
-    attrs: &WalkAttributes,
+    ctx: &WalkContext,
 ) -> Result<RawAxNode> {
     state.count += 1;
-    let Some(batch) = BatchValues::read(element, attrs) else {
-        return walk_element_single(element, target_key, depth, state, attrs);
+    let Some(batch) = BatchValues::read(element, &ctx.attrs) else {
+        return walk_element_single(element, target_key, depth, state, ctx);
     };
     let ax_role = batch
         .get(IDX_ROLE)
@@ -152,19 +249,26 @@ pub(super) fn walk_element(
         value: batch.get(IDX_VALUE).and_then(cf_value_string),
         title: batch.get(IDX_TITLE).and_then(cf_label_string),
         description: batch.get(IDX_DESCRIPTION).and_then(cf_label_string),
+        subrole: batch.get(IDX_SUBROLE).and_then(cf_string),
         help: batch.get(IDX_HELP).and_then(cf_string),
         ax_identifier: batch.get(IDX_IDENTIFIER).and_then(cf_string),
+        cmd_char: batch.get(IDX_CMD_CHAR).and_then(cf_string),
+        cmd_modifiers: batch.get(IDX_CMD_MODIFIERS).and_then(cf_u64),
+        cmd_virtual_key: batch
+            .get(IDX_CMD_VIRTUAL_KEY)
+            .and_then(cf_u64)
+            .and_then(|number| u16::try_from(number).ok()),
         ax_actions: read_node_actions(element),
         frame: frame_from_batch(&batch),
         enabled: batch.get(IDX_ENABLED).and_then(cf_bool).unwrap_or(true),
-        focused: batch.get(IDX_FOCUSED).and_then(cf_bool).unwrap_or(false),
+        focused: ctx.focus.element_focused(element),
     };
     finish_walk_element(
         element,
         target_key,
         depth,
         state,
-        attrs,
+        ctx,
         fields,
         batch.get(IDX_CHILDREN).and_then(cf_array),
     )
@@ -175,7 +279,7 @@ pub(super) fn walk_element_single(
     target_key: &TargetKey,
     depth: usize,
     state: &mut WalkState,
-    attrs: &WalkAttributes,
+    ctx: &WalkContext,
 ) -> Result<RawAxNode> {
     let ax_role = attr_string(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
 
@@ -184,19 +288,26 @@ pub(super) fn walk_element_single(
         value: attr_string(element, kAXValueAttribute),
         title: attr_label_string(element, kAXTitleAttribute),
         description: attr_label_string(element, kAXDescriptionAttribute),
+        subrole: attr_string(element, AX_SUBROLE_ATTRIBUTE),
         help: attr_string(element, kAXHelpAttribute),
         ax_identifier: attr_string(element, kAXIdentifierAttribute),
+        cmd_char: attr_string(element, AX_MENU_ITEM_CMD_CHAR_ATTRIBUTE),
+        cmd_modifiers: attr_number(element, AX_MENU_ITEM_CMD_MODIFIERS_ATTRIBUTE)
+            .and_then(number_to_u64),
+        cmd_virtual_key: attr_number(element, AX_MENU_ITEM_CMD_VIRTUAL_KEY_ATTRIBUTE)
+            .and_then(number_to_u64)
+            .and_then(|number| u16::try_from(number).ok()),
         ax_actions: read_node_actions(element),
         frame: frame(element),
         enabled: attr_bool(element, kAXEnabledAttribute).unwrap_or(true),
-        focused: attr_bool(element, kAXFocusedAttribute).unwrap_or(false),
+        focused: ctx.focus.element_focused(element),
     };
     finish_walk_element(
         element,
         target_key,
         depth,
         state,
-        attrs,
+        ctx,
         fields,
         attr_array(element, kAXChildrenAttribute),
     )
@@ -207,7 +318,7 @@ pub(super) fn finish_walk_element(
     target_key: &TargetKey,
     depth: usize,
     state: &mut WalkState,
-    attrs: &WalkAttributes,
+    ctx: &WalkContext,
     fields: NodeFields,
     children: Option<CFArray>,
 ) -> Result<RawAxNode> {
@@ -226,7 +337,7 @@ pub(super) fn finish_walk_element(
                 break;
             }
             node.children
-                .push(walk_element(&child, target_key, depth + 1, state, attrs)?);
+                .push(walk_element(&child, target_key, depth + 1, state, ctx)?);
         }
     }
 
@@ -334,6 +445,12 @@ pub(super) fn element_key(element: &AxElement) -> Option<ElementKey> {
             } else {
                 None
             }
+        })
+        .or_else(|| {
+            subrole_fallback_label(
+                &ax_role,
+                attr_string(element, AX_SUBROLE_ATTRIBUTE).as_deref(),
+            )
         });
     Some(ElementKey {
         ax_identifier: attr_string(element, kAXIdentifierAttribute),
@@ -341,4 +458,110 @@ pub(super) fn element_key(element: &AxElement) -> Option<ElementKey> {
         label,
         bbox: frame(element).and_then(round_bbox),
     })
+}
+
+fn reconciled_focus_key(element: Option<&ElementKey>, focus: &FocusContext) -> bool {
+    let Some(element) = element else {
+        return false;
+    };
+    let Some(focused_element) = &focus.focused_element else {
+        return false;
+    };
+    if let (Some(focused_window), Some(target_window)) =
+        (&focus.focused_window, &focus.target_window)
+    {
+        if focused_window != target_window {
+            return false;
+        }
+    }
+    element == focused_element
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(ax_role: &str, label: &str, bbox: Option<(i64, i64, i64, i64)>) -> ElementKey {
+        ElementKey {
+            ax_identifier: None,
+            ax_role: ax_role.to_string(),
+            label: Some(label.to_string()),
+            bbox,
+        }
+    }
+
+    fn fields(
+        ax_role: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        subrole: Option<&str>,
+    ) -> NodeFields {
+        NodeFields {
+            ax_role: ax_role.to_string(),
+            value: None,
+            title: title.map(str::to_string),
+            description: description.map(str::to_string),
+            subrole: subrole.map(str::to_string),
+            help: None,
+            ax_identifier: None,
+            cmd_char: None,
+            cmd_modifiers: None,
+            cmd_virtual_key: None,
+            ax_actions: Vec::new(),
+            frame: None,
+            enabled: true,
+            focused: false,
+        }
+    }
+
+    #[test]
+    fn unlabeled_buttons_can_use_ax_subrole_as_label() {
+        assert_eq!(
+            subrole_fallback_label("AXButton", Some("AXCloseButton")).as_deref(),
+            Some("close")
+        );
+        assert_eq!(
+            subrole_fallback_label("AXButton", Some("AXFullScreenButton")).as_deref(),
+            Some("full screen")
+        );
+        assert!(subrole_fallback_label("AXStaticText", Some("AXCloseButton")).is_none());
+
+        let close = assemble_node(fields("AXButton", None, None, Some("AXCloseButton")));
+        assert_eq!(close.label.as_deref(), Some("close"));
+
+        let titled = assemble_node(fields(
+            "AXButton",
+            Some("Fermer"),
+            None,
+            Some("AXCloseButton"),
+        ));
+        assert_eq!(titled.label.as_deref(), Some("Fermer"));
+    }
+
+    #[test]
+    fn reconciled_focus_accepts_only_app_focused_element_in_target_window() {
+        let target_window = key("AXWindow", "iTerm", Some((0, 0, 800, 600)));
+        let other_window = key("AXWindow", "Other", Some((900, 0, 800, 600)));
+        let focused = key("AXTextArea", "pane", Some((0, 0, 800, 300)));
+        let sibling = key("AXTextArea", "pane", Some((0, 300, 800, 300)));
+
+        let focus = FocusContext {
+            focused_element: Some(focused.clone()),
+            focused_window: Some(target_window.clone()),
+            target_window: Some(target_window.clone()),
+        };
+        assert!(reconciled_focus_key(Some(&focused), &focus));
+        assert!(!reconciled_focus_key(Some(&sibling), &focus));
+
+        let wrong_window = FocusContext {
+            focused_element: Some(focused.clone()),
+            focused_window: Some(other_window),
+            target_window: Some(target_window),
+        };
+        assert!(!reconciled_focus_key(Some(&focused), &wrong_window));
+        assert!(!reconciled_focus_key(
+            Some(&focused),
+            &FocusContext::default()
+        ));
+    }
 }

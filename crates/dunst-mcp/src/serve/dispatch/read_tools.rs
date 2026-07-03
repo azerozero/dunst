@@ -180,6 +180,7 @@ fn dispatch_snapshot_tools(
                 arg_bool(args, "visible_only").unwrap_or(false),
                 arg_bool(args, "fresh").unwrap_or(true),
                 arg_bool(args, "force_refresh").unwrap_or(false),
+                arg_bool(args, "full_value").unwrap_or(false),
             ),
             None => Err("missing 'query'".into()),
         },
@@ -379,10 +380,13 @@ fn dispatch_trace_tools(
                 Ok(serde_json::to_value(diff).unwrap_or(Value::Null))
             }
         }
-        "export_trace" => engine
-            .export_trace()
-            .map(Value::String)
-            .map_err(|e| e.to_string()),
+        "export_trace" => trace_export_value(
+            engine.trace(),
+            arg(args, "mode").as_deref().unwrap_or("summary"),
+            args.get("entry")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize),
+        ),
         _ => return None,
     })
 }

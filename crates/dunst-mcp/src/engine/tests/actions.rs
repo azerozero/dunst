@@ -112,6 +112,36 @@ fn find_element_prefers_exact_button_label_over_containing_help_text() {
 }
 
 #[test]
+fn find_element_matches_latent_id_without_word_boundary() {
+    let (eng, _) = engine_from_roots(
+        vec![raw_node(
+            "AXWindow",
+            Some("iTerm"),
+            None,
+            test_bbox(0.0, 0.0, 700.0, 500.0),
+            &[],
+            vec![raw_node(
+                "AXMenuItem",
+                Some("selectsessionatindexaction"),
+                None,
+                None,
+                &["press"],
+                vec![],
+            )],
+        )],
+        "iTerm2",
+        "iTerm",
+    );
+
+    let matches = eng.find_element_filtered("selectsessionatindex", false);
+
+    assert_eq!(
+        matches.first().map(|node| node.id.as_str()),
+        Some("mi_selectsessionatindexaction")
+    );
+}
+
+#[test]
 fn disabled_button_click_is_unavailable() {
     let mut publish = raw_node(
         "AXButton",
