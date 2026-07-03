@@ -6,9 +6,10 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
 
 ## Risk gate
 
-- **The gate is never bypassed for mutating actions.** A high-risk mutating action
-  returns `PendingApproval` and the executor/platform write path is **never**
-  invoked on that path.
+- **The gate is never bypassed without an explicit operator grant.** A high-risk
+  mutating action returns `PendingApproval` and the executor/platform write path is
+  **never** invoked on that path unless the action is covered by an explicit grant:
+  a per-action `approve`, a batch approval, or a bounded raw pre-authorization.
   — `engine::tests::high_risk_click_is_gated_then_approved`,
   `find_element_and_gating_still_reach_latent_nodes`,
   `engine::tests::raw_input_gate_requires_pending_synthetic_approval`.
@@ -45,6 +46,16 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   `engine::tests::raw_key_approval_allows_short_repeated_same_key_burst`,
   `engine::tests::raw_scroll_approval_covers_same_direction_count_change`,
   `engine::tests::attach_clears_raw_approval_grants`.
+- **Raw pre-authorization is bounded on three axes.** `preauthorize` installs an
+  operator grant that lets subsequent gated *raw* actions run without a per-action
+  `approve`, but only while all three bounds hold: the attached `window_id`, a spend
+  budget (each raw action consumes one unit), and a TTL. It drops on window change,
+  budget exhaustion, expiry, or `revoke_preauthorization`, and skips only the approval
+  gate — geometry/target-window safety checks still run. Gated behind
+  `DUNST_MCP_ENABLE_APPROVE_TOOL=1`, like `approve`.
+  — `engine::tests::preauthorization_runs_a_bounded_burst_of_raw_actions_then_regates`,
+  `engine::tests::preauthorization_is_scoped_to_the_attached_window`,
+  `engine::tests::revoke_preauthorization_restores_gating`.
 - **Batch selections are approved as one unit.** `apply_selections` records
   exactly one `PendingApproval` for a `batch@selections:<hash>:<n>` target whose
   preview carries per-step risk and an aggregate `max_risk`; a single operator

@@ -697,11 +697,29 @@ fn keyboard_menu_tools() -> Vec<Value> {
 
 fn approval_tools() -> Vec<Value> {
     if approval_tool_enabled() {
-        vec![tool(
-            "approve",
-            "Operator-side escape hatch: approve a gated element or raw target so the next action on it proceeds. Use id=keyboard@* only for a short, event-limited keyboard batch on the currently attached window. Disabled by default; set DUNST_MCP_ENABLE_APPROVE_TOOL=1 for controlled local sessions.",
-            schema(json!({ "id": {"type":"string","description":"element id, exact raw target id, batch id, or keyboard@* for a short current-window keyboard batch"} }), &["id"]),
-        )]
+        vec![
+            tool(
+                "approve",
+                "Operator-side escape hatch: approve a gated element or raw target so the next action on it proceeds. Use id=keyboard@* only for a short, event-limited keyboard batch on the currently attached window. Disabled by default; set DUNST_MCP_ENABLE_APPROVE_TOOL=1 for controlled local sessions.",
+                schema(json!({ "id": {"type":"string","description":"element id, exact raw target id, batch id, or keyboard@* for a short current-window keyboard batch"} }), &["id"]),
+            ),
+            tool(
+                "preauthorize",
+                "Pre-authorize raw input in the ATTACHED window for a bounded flow, so subsequent gated raw actions (OCR clicks, scrolls, key input) execute immediately instead of each doing a pending_approval -> approve -> replay round-trip. This cuts MCP<->LLM round-trips 3:1 on multi-step flows. BOUNDED on three axes: scoped to the current window_id, a spend budget (default 20, max 100), and a TTL (default 120000 ms, max 600000). Auto-drops on window change, budget exhaustion, or expiry. Geometry/coverage safety checks still apply; only the per-action approval is skipped. Revoke early with revoke_preauthorization. Same controlled-session gate as approve.",
+                schema(
+                    json!({
+                        "budget": { "type": "integer", "description": "max raw actions to pre-authorize, 1-100 (default 20)" },
+                        "ttl_ms": { "type": "integer", "description": "lifetime in ms, 1000-600000 (default 120000)" }
+                    }),
+                    &[],
+                ),
+            ),
+            tool(
+                "revoke_preauthorization",
+                "Drop any active raw-input pre-authorization immediately, restoring per-action approval gating.",
+                json!({}),
+            ),
+        ]
     } else {
         Vec::new()
     }

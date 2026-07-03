@@ -88,6 +88,29 @@ pub(super) fn dispatch(
             Some(_) => Err("approve tool is disabled; set DUNST_MCP_ENABLE_APPROVE_TOOL=1 for controlled operator sessions".into()),
             None => Err("missing 'id'".into()),
         },
+        "preauthorize" => {
+            if !approval_tool_enabled() {
+                Err("preauthorize is disabled; set DUNST_MCP_ENABLE_APPROVE_TOOL=1 for controlled operator sessions".into())
+            } else {
+                let budget = args.get("budget").and_then(Value::as_u64).unwrap_or(20) as usize;
+                let ttl_ms = args.get("ttl_ms").and_then(Value::as_u64).unwrap_or(120_000);
+                let (window_id, budget, ttl_ms) = engine.preauthorize_raw_input(budget, ttl_ms);
+                Ok(json!({
+                    "preauthorized": true,
+                    "window_id": window_id,
+                    "budget": budget,
+                    "ttl_ms": ttl_ms,
+                    "note": "raw input in this window now runs without a per-action approve until budget/TTL is spent; revoke with revoke_preauthorization"
+                }))
+            }
+        }
+        "revoke_preauthorization" => {
+            let dropped_budget = engine.raw_preauthorization_remaining().map(|(_, left, _)| left);
+            Ok(json!({
+                "revoked": engine.revoke_raw_preauthorization(),
+                "dropped_budget": dropped_budget
+            }))
+        }
         "verify_state" => match (arg(args, "id"), arg(args, "field"), arg(args, "expected")) {
             (Some(id), Some(field), Some(expected)) => engine
                 .verify_state(&id, &field, &expected)

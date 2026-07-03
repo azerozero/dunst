@@ -235,6 +235,9 @@ impl Engine {
         if self.consume_raw_approval(target_id) || self.approvals.contains(target_id) {
             return None;
         }
+        if self.consume_raw_preauthorization() {
+            return None;
+        }
         self.pending_gate_ids.insert(target_id.to_string());
         Some(self.push_entry(AuditEntry {
             ts_ms: dunst_core::now_ms(),
@@ -248,6 +251,27 @@ impl Engine {
             graph_diff: GraphDiff::default(),
             caller: None,
         }))
+    }
+
+    /// Spend one unit of an active raw-input pre-authorization for the attached
+    /// window. On success the caller's gated raw action proceeds without a
+    /// per-action approval. Drops the grant when it is expired, exhausted, or was
+    /// installed for a different window than the one now attached.
+    pub(super) fn consume_raw_preauthorization(&mut self) -> bool {
+        let window_id = self.target.window_id;
+        let now = Instant::now();
+        let live = match &self.raw_preauth {
+            Some(pre) => pre.window_id == window_id && now < pre.expires_at && pre.remaining > 0,
+            None => return false,
+        };
+        if !live {
+            self.raw_preauth = None;
+            return false;
+        }
+        if let Some(pre) = self.raw_preauth.as_mut() {
+            pre.remaining -= 1;
+        }
+        true
     }
 
     pub(super) fn approve_raw_input(&mut self, target_id: &str) {

@@ -946,6 +946,94 @@ fn hover_reveal_success_cleanup_clears_raw_grant() {
 }
 
 #[test]
+fn preauthorization_runs_a_bounded_burst_of_raw_actions_then_regates() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+    let scroll = |i: usize| format!("wheel@scroll:down:{i}:820,320");
+
+    // No pre-authorization: a raw action gates.
+    assert!(
+        eng.gate_raw_input(&scroll(0), SemanticAction::Scroll, None, None, risk.clone())
+            .is_some(),
+        "raw action gates without pre-authorization"
+    );
+
+    let (_window, budget, ttl_ms) = eng.preauthorize_raw_input(2, 120_000);
+    assert_eq!(budget, 2, "budget echoes back the granted amount");
+    assert_eq!(ttl_ms, 120_000);
+
+    // The budget of 2 runs without any approve...
+    for i in 1..=2 {
+        assert!(
+            eng.gate_raw_input(&scroll(i), SemanticAction::Scroll, None, None, risk.clone())
+                .is_none(),
+            "pre-authorized raw action {i} should run without approval"
+        );
+    }
+    // ...and the next one gates again once the budget is spent.
+    assert!(
+        eng.gate_raw_input(&scroll(3), SemanticAction::Scroll, None, None, risk)
+            .is_some(),
+        "raw action after the budget is spent must gate again"
+    );
+    assert!(
+        eng.raw_preauthorization_remaining().is_none(),
+        "an exhausted pre-authorization must not report as live"
+    );
+}
+
+#[test]
+fn preauthorization_is_scoped_to_the_attached_window() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+    eng.preauthorize_raw_input(5, 120_000);
+
+    // Simulate re-attaching a different window: the grant must not carry over.
+    eng.target.window_id = eng.target.window_id.wrapping_add(1);
+    assert!(
+        eng.raw_preauthorization_remaining().is_none(),
+        "a pre-authorization bound to another window must not apply"
+    );
+    assert!(
+        eng.gate_raw_input(
+            "wheel@scroll:down:1:820,320",
+            SemanticAction::Scroll,
+            None,
+            None,
+            risk,
+        )
+        .is_some(),
+        "raw action in a different window than the grant must still gate"
+    );
+}
+
+#[test]
+fn revoke_preauthorization_restores_gating() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+    eng.preauthorize_raw_input(5, 120_000);
+    assert!(
+        eng.revoke_raw_preauthorization(),
+        "revoke reports the grant was live"
+    );
+    assert!(
+        !eng.revoke_raw_preauthorization(),
+        "a second revoke reports no live grant"
+    );
+    assert!(
+        eng.gate_raw_input(
+            "wheel@scroll:down:1:820,320",
+            SemanticAction::Scroll,
+            None,
+            None,
+            risk,
+        )
+        .is_some(),
+        "after revoke, raw actions gate again"
+    );
+}
+
+#[test]
 fn raw_scroll_approval_covers_same_direction_count_change() {
     let (mut eng, _) = engine_with_counter();
     let risk = Engine::raw_input_risk(Vec::new());

@@ -125,6 +125,12 @@ pub struct Engine {
     visual_probe_cache: RefCell<Option<VisualProbeCacheEntry>>,
     scroll_strategy_cache: BTreeMap<ScrollStrategyKey, ScrollStrategyMemory>,
     scroll_background_low_signal: BTreeSet<ScrollStrategyKey>,
+    /// Caller-installed, bounded pre-authorization for raw input in the attached
+    /// window. While live, gated raw actions execute without a per-action
+    /// `approve` round-trip, spending a budget until it or the TTL runs out.
+    /// Scoped to a `window_id`, so re-attaching a different window drops it; it
+    /// survives `refresh` (a flow spans several perceptions) but never a re-attach.
+    raw_preauth: Option<RawPreauthorization>,
     session_identity: Option<SessionIdentity>,
     trace: Vec<AuditEntry>,
 }
@@ -180,6 +186,7 @@ impl Engine {
             visual_probe_cache: RefCell::new(None),
             scroll_strategy_cache: BTreeMap::new(),
             scroll_background_low_signal: BTreeSet::new(),
+            raw_preauth: None,
             session_identity: None,
             trace: Vec::new(),
         };
@@ -255,6 +262,7 @@ impl Engine {
         self.raw_approval_inflight.clear();
         self.active_batch = None;
         self.pending_gate_ids.clear();
+        self.raw_preauth = None;
         self.target = Target { pid, window_id };
         self.window = self.perceptor.window_ref(&self.target)?;
         if self.target.window_id == 0 && self.window.window_id != 0 {
@@ -425,10 +433,58 @@ impl Engine {
         self.approvals.insert(id.to_string());
         Ok(())
     }
+
+    /// Install a bounded pre-authorization for raw input in the attached window:
+    /// the next `budget` gated raw actions (clamped) run without a per-action
+    /// `approve`, until the budget or `ttl_ms` (clamped) is spent, or the target
+    /// window changes. Returns the effective `(window_id, budget, ttl_ms)`.
+    pub fn preauthorize_raw_input(&mut self, budget: usize, ttl_ms: u64) -> (u32, usize, u64) {
+        let budget = budget.clamp(1, MAX_PREAUTH_BUDGET);
+        let ttl_ms = ttl_ms.clamp(1_000, MAX_PREAUTH_TTL_MS);
+        let window_id = self.target.window_id;
+        self.raw_preauth = Some(RawPreauthorization {
+            window_id,
+            remaining: budget,
+            expires_at: Instant::now() + Duration::from_millis(ttl_ms),
+        });
+        (window_id, budget, ttl_ms)
+    }
+
+    /// Drop any active raw-input pre-authorization. Returns whether one was live.
+    pub fn revoke_raw_preauthorization(&mut self) -> bool {
+        self.raw_preauth.take().is_some()
+    }
+
+    /// `(window_id, remaining_budget, ms_left)` if a pre-authorization is still
+    /// live for the attached window, else `None`.
+    pub fn raw_preauthorization_remaining(&self) -> Option<(u32, usize, u64)> {
+        let pre = self.raw_preauth.as_ref()?;
+        let now = Instant::now();
+        if pre.window_id != self.target.window_id || now >= pre.expires_at || pre.remaining == 0 {
+            return None;
+        }
+        Some((
+            pre.window_id,
+            pre.remaining,
+            (pre.expires_at - now).as_millis() as u64,
+        ))
+    }
 }
+
+const MAX_PREAUTH_BUDGET: usize = 100;
+const MAX_PREAUTH_TTL_MS: u64 = 600_000;
 
 #[derive(Clone)]
 struct RawApprovalGrant {
+    remaining: usize,
+    expires_at: Instant,
+}
+
+/// A caller-installed, window-scoped budget that lets raw input execute without a
+/// per-action approval until it is spent. See [`Engine::preauthorize_raw_input`].
+#[derive(Clone)]
+struct RawPreauthorization {
+    window_id: u32,
     remaining: usize,
     expires_at: Instant,
 }
