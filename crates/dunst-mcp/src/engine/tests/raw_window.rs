@@ -1,5 +1,6 @@
 use super::*;
 use crate::engine::raw_input::hotkey_result_low_signal;
+use crate::engine::raw_input_gate::KEYBOARD_WILDCARD_GRANT_EVENTS;
 use crate::engine::window_ops::{expose_delta, reconciled_raise_result};
 
 #[test]
@@ -517,6 +518,88 @@ fn raw_key_approval_does_not_cover_other_keys() {
         )
         .is_some(),
         "a key-specific raw grant must not cover another key"
+    );
+}
+
+#[test]
+fn keyboard_wildcard_approval_covers_short_keyboard_batch_only() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+    let return_key = raw_press_key_target_id("Return", 1);
+
+    eng.approve("keyboard@*").unwrap();
+
+    for (target, action, argument) in [
+        (
+            "keyboard@hotkey:cmd+l",
+            SemanticAction::Hotkey,
+            "hotkey cmd+l",
+        ),
+        (return_key.as_str(), SemanticAction::KeyPress, "Return"),
+        (
+            "keyboard@scroll:down:1",
+            SemanticAction::Scroll,
+            "scroll down",
+        ),
+    ] {
+        assert!(
+            eng.gate_raw_input(
+                target,
+                action,
+                Some(argument.to_string()),
+                Some("wildcard keyboard approval"),
+                risk.clone(),
+            )
+            .is_none(),
+            "keyboard wildcard should cover {target}"
+        );
+    }
+
+    assert!(
+        eng.gate_raw_input(
+            "screen@820,320:click",
+            SemanticAction::Click,
+            Some("click 820,320".into()),
+            Some("raw screen click"),
+            risk,
+        )
+        .is_some(),
+        "keyboard wildcard must not cover screen raw input"
+    );
+}
+
+#[test]
+fn keyboard_wildcard_approval_is_event_limited() {
+    let (mut eng, _) = engine_with_counter();
+    let risk = Engine::raw_input_risk(Vec::new());
+    let target = raw_press_key_target_id("Backspace", 1);
+
+    eng.approve("keyboard@*").unwrap();
+
+    for _ in 0..KEYBOARD_WILDCARD_GRANT_EVENTS {
+        assert!(
+            eng.gate_raw_input(
+                &target,
+                SemanticAction::KeyPress,
+                Some("Backspace".into()),
+                Some("wildcard keyboard approval"),
+                risk.clone(),
+            )
+            .is_none(),
+            "keyboard wildcard should cover its configured event budget"
+        );
+    }
+
+    assert!(
+        eng.gate_raw_input(
+            &target,
+            SemanticAction::KeyPress,
+            Some("Backspace".into()),
+            Some("wildcard keyboard approval"),
+            risk,
+        )
+        .is_some(),
+        "keyboard wildcard must gate again after its event budget is exhausted"
     );
 }
 

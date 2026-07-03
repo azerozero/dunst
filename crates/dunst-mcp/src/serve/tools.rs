@@ -699,8 +699,8 @@ fn approval_tools() -> Vec<Value> {
     if approval_tool_enabled() {
         vec![tool(
             "approve",
-            "Operator-side escape hatch: approve a gated element or raw target so the next action on it proceeds. Disabled by default; set DUNST_MCP_ENABLE_APPROVE_TOOL=1 for controlled local sessions.",
-            schema(json!({ "id": {"type":"string"} }), &["id"]),
+            "Operator-side escape hatch: approve a gated element or raw target so the next action on it proceeds. Use id=keyboard@* only for a short, event-limited keyboard batch on the currently attached window. Disabled by default; set DUNST_MCP_ENABLE_APPROVE_TOOL=1 for controlled local sessions.",
+            schema(json!({ "id": {"type":"string","description":"element id, exact raw target id, batch id, or keyboard@* for a short current-window keyboard batch"} }), &["id"]),
         )]
     } else {
         Vec::new()

@@ -251,7 +251,7 @@ impl Engine {
     }
 
     pub(super) fn approve_raw_input(&mut self, target_id: &str) {
-        let expires_at = Instant::now() + Duration::from_secs(RAW_APPROVAL_TTL_SECS);
+        let expires_at = Instant::now() + Duration::from_secs(raw_approval_ttl_secs(target_id));
         for policy in raw_approval_policy(target_id) {
             self.raw_approvals.insert(
                 policy.key,
@@ -267,6 +267,10 @@ impl Engine {
         &self,
         target_id: &str,
     ) -> dunst_core::Result<()> {
+        if target_id == KEYBOARD_WILDCARD_APPROVAL_ID {
+            return Ok(());
+        }
+
         if let Some(rest) = target_id.strip_prefix("screen@") {
             let Some((x, y, action)) = parse_point_action(rest) else {
                 return Err(DunstError::Execution(format!(
@@ -358,7 +362,7 @@ impl Engine {
         self.raw_approvals
             .retain(|_, grant| grant.remaining > 0 && grant.expires_at > now);
 
-        for policy in raw_approval_policy(target_id) {
+        for policy in raw_approval_consumption_policy(target_id) {
             let key = policy.key;
             let Some(grant) = self.raw_approvals.get_mut(&key) else {
                 continue;
@@ -374,29 +378,32 @@ impl Engine {
             if grant.remaining == 0 {
                 self.raw_approvals.remove(&key);
             }
-            self.raw_approval_inflight
-                .insert(target_id.to_string(), consumed);
+            self.raw_approval_inflight.insert(
+                target_id.to_string(),
+                RawApprovalInflight {
+                    key,
+                    grant: consumed,
+                },
+            );
             return true;
         }
         false
     }
 
     fn restore_inflight_raw_approval(&mut self, target_id: &str) {
-        let Some(grant) = self.raw_approval_inflight.remove(target_id) else {
+        let Some(inflight) = self.raw_approval_inflight.remove(target_id) else {
             return;
         };
-        if grant.expires_at <= Instant::now() {
+        if inflight.grant.expires_at <= Instant::now() {
             return;
         }
-        for policy in raw_approval_policy(target_id) {
-            self.raw_approvals
-                .entry(policy.key)
-                .and_modify(|existing| {
-                    existing.remaining += grant.remaining;
-                    existing.expires_at = existing.expires_at.max(grant.expires_at);
-                })
-                .or_insert_with(|| grant.clone());
-        }
+        self.raw_approvals
+            .entry(inflight.key)
+            .and_modify(|existing| {
+                existing.remaining += inflight.grant.remaining;
+                existing.expires_at = existing.expires_at.max(inflight.grant.expires_at);
+            })
+            .or_insert(inflight.grant);
     }
 
     pub(super) fn clear_inflight_raw_approval(&mut self, target_id: &str) {
@@ -417,11 +424,13 @@ impl Engine {
         let now = Instant::now();
         self.raw_approvals
             .retain(|_, grant| grant.remaining > 0 && grant.expires_at > now);
-        raw_approval_policy(target_id).into_iter().any(|policy| {
-            self.raw_approvals
-                .get(&policy.key)
-                .is_some_and(|grant| grant.remaining >= policy.cost_events)
-        })
+        raw_approval_consumption_policy(target_id)
+            .into_iter()
+            .any(|policy| {
+                self.raw_approvals
+                    .get(&policy.key)
+                    .is_some_and(|grant| grant.remaining >= policy.cost_events)
+            })
     }
 
     /// Record a raw input attempt. The attempt is always written to the trace; on
@@ -481,6 +490,9 @@ impl Engine {
 }
 
 const RAW_APPROVAL_TTL_SECS: u64 = 120;
+const KEYBOARD_WILDCARD_APPROVAL_ID: &str = "keyboard@*";
+pub(super) const KEYBOARD_WILDCARD_GRANT_EVENTS: usize = 6;
+const KEYBOARD_WILDCARD_TTL_SECS: u64 = 45;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct RawApprovalKey {
@@ -490,6 +502,7 @@ pub(super) struct RawApprovalKey {
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 enum RawApprovalScope {
     Exact(String),
+    KeyboardWildcard,
     KeyPress(String),
     OcrClick(String),
     ScrollDirection(String),
@@ -501,6 +514,12 @@ struct RawApprovalPolicy {
     key: RawApprovalKey,
     grant_events: usize,
     cost_events: usize,
+}
+
+#[derive(Clone)]
+pub(super) struct RawApprovalInflight {
+    key: RawApprovalKey,
+    grant: RawApprovalGrant,
 }
 
 pub(super) fn is_synthetic_approval_target_id(target_id: &str) -> bool {
@@ -547,6 +566,15 @@ fn raw_text_payload_target_id(action: &str, text: &str) -> String {
 }
 
 fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
+    if target_id == KEYBOARD_WILDCARD_APPROVAL_ID {
+        return vec![RawApprovalPolicy {
+            key: RawApprovalKey {
+                scope: RawApprovalScope::KeyboardWildcard,
+            },
+            grant_events: KEYBOARD_WILDCARD_GRANT_EVENTS,
+            cost_events: 1,
+        }];
+    }
     if let Some(count) = valid_batch_selection_target_id(target_id) {
         return vec![RawApprovalPolicy {
             key: RawApprovalKey {
@@ -627,6 +655,39 @@ fn raw_approval_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
         grant_events: 1,
         cost_events: 1,
     }]
+}
+
+fn raw_approval_consumption_policy(target_id: &str) -> Vec<RawApprovalPolicy> {
+    let mut policies = raw_approval_policy(target_id);
+    if keyboard_wildcard_applies(target_id) {
+        policies.push(RawApprovalPolicy {
+            key: RawApprovalKey {
+                scope: RawApprovalScope::KeyboardWildcard,
+            },
+            grant_events: KEYBOARD_WILDCARD_GRANT_EVENTS,
+            cost_events: keyboard_wildcard_cost_events(target_id),
+        });
+    }
+    policies
+}
+
+fn keyboard_wildcard_applies(target_id: &str) -> bool {
+    target_id.starts_with("keyboard@") && target_id != KEYBOARD_WILDCARD_APPROVAL_ID
+}
+
+fn keyboard_wildcard_cost_events(target_id: &str) -> usize {
+    target_id
+        .strip_prefix("keyboard@press:")
+        .map(|rest| parse_key_with_count(rest).1)
+        .unwrap_or(1)
+}
+
+fn raw_approval_ttl_secs(target_id: &str) -> u64 {
+    if target_id == KEYBOARD_WILDCARD_APPROVAL_ID {
+        KEYBOARD_WILDCARD_TTL_SECS
+    } else {
+        RAW_APPROVAL_TTL_SECS
+    }
 }
 
 fn scroll_direction_policy(rest: &str) -> Vec<RawApprovalPolicy> {
