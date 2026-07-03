@@ -18,6 +18,11 @@ pub struct ChoiceModel {
     pub groups: Vec<ChoiceGroup>,
     pub warnings: Vec<String>,
     pub scroll_plan: Vec<ScrollHint>,
+    /// Actionable follow-ups derived from the model: e.g. required groups still
+    /// unset (use `apply_selections` for a one-approval batch) or partial
+    /// coverage (sweep the rest). Omitted from the payload when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recommended_next_steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -115,21 +120,38 @@ impl Engine {
         opts: EnumerateOpts<'_>,
     ) -> dunst_core::Result<ChoiceModel> {
         let opts = NormalizedEnumerateOpts::from(opts);
-        let (result, targets, warnings, scroll_scan_completed) = if opts.scroll_scan {
-            self.scroll_scan_choice_targets(&opts)
-        } else {
-            let result = self.hit_targets(opts.include_latent, opts.scope, opts.limit, None);
-            let targets = result.targets.clone();
-            (result, targets, Vec::new(), false)
-        };
-        Ok(self.choice_model_from_targets(
+        if opts.scroll_scan {
+            let (result, targets, warnings, completed) = self.scroll_scan_choice_targets(&opts);
+            return Ok(self.choice_model_from_targets(
+                &result, targets, opts.scope, true, completed, warnings,
+            ));
+        }
+
+        // Cheap single pass first.
+        let result = self.hit_targets(opts.include_latent, opts.scope, opts.limit, None);
+        let single = self.choice_model_from_targets(
             &result,
-            targets,
+            result.targets.clone(),
             opts.scope,
-            opts.scroll_scan,
-            scroll_scan_completed,
-            warnings,
-        ))
+            false,
+            false,
+            Vec::new(),
+        );
+        // Auto-upgrade: an AX-sparse surface with more content below the fold is
+        // only partially covered by one pass — that is exactly when a caller used
+        // to give up and fall back to manual OCR clicks. Sweep once instead
+        // (approval-free, restores the scroll position) so the whole choice set
+        // comes back in a single call.
+        if !matches!(single.coverage, Coverage::Partial) {
+            return Ok(single);
+        }
+        let (swept, targets, mut warnings, completed) = self.scroll_scan_choice_targets(&opts);
+        warnings.insert(
+            0,
+            "auto scroll_scan: the single pass was AX-sparse and incomplete, so the whole surface was swept (scroll position restored)."
+                .to_string(),
+        );
+        Ok(self.choice_model_from_targets(&swept, targets, opts.scope, true, completed, warnings))
     }
 
     fn choice_model_from_targets(
@@ -214,6 +236,8 @@ impl Engine {
             Coverage::Complete
         };
 
+        let recommended_next_steps = choice_recommendations(&groups, coverage, scroll_scan);
+
         ChoiceModel {
             ui_epoch: result.ui_epoch.fingerprint.clone(),
             scope: scope.to_string(),
@@ -221,6 +245,7 @@ impl Engine {
             groups,
             warnings,
             scroll_plan,
+            recommended_next_steps,
         }
     }
 
@@ -348,6 +373,50 @@ impl Engine {
     ) -> ChoiceModel {
         self.choice_model_from_targets(result, targets, scope, false, false, Vec::new())
     }
+}
+
+/// Actionable follow-ups for a [`ChoiceModel`]: steer the caller toward the batch
+/// `apply_selections` path when required groups are still unset, and toward
+/// finishing coverage when the surface did not fully scroll.
+fn choice_recommendations(
+    groups: &[ChoiceGroup],
+    coverage: Coverage,
+    scroll_scan: bool,
+) -> Vec<String> {
+    let mut steps = Vec::new();
+
+    let required_unset = groups
+        .iter()
+        .filter(|group| {
+            group.requirement == Requirement::Required
+                && matches!(group.kind, GroupKind::SingleSelect | GroupKind::MultiSelect)
+                && !group
+                    .choices
+                    .iter()
+                    .any(|choice| choice.state == SelectionState::Selected)
+        })
+        .count();
+    if required_unset > 0 {
+        steps.push(format!(
+            "{required_unset} required choice group(s) still unset — call apply_selections to set the whole plan in one approval-gated batch instead of clicking each option."
+        ));
+    }
+
+    if matches!(coverage, Coverage::Partial) {
+        if scroll_scan {
+            steps.push(
+                "coverage still partial after a scroll sweep: this feed only scrolls via the real cursor — scroll with borrow_cursor:true to reach the rest before deciding."
+                    .to_string(),
+            );
+        } else {
+            steps.push(
+                "coverage is partial: re-run enumerate_choices with scroll_scan:true to sweep the off-screen items."
+                    .to_string(),
+            );
+        }
+    }
+
+    steps
 }
 
 #[derive(Clone, Copy)]
@@ -614,5 +683,67 @@ fn group_kind_token(kind: GroupKind) -> &'static str {
         GroupKind::MultiSelect => "multi",
         GroupKind::TextField => "text",
         GroupKind::Action => "action",
+    }
+}
+
+#[cfg(test)]
+mod recommendation_tests {
+    use super::*;
+
+    fn group(requirement: Requirement, kind: GroupKind, selected: bool) -> ChoiceGroup {
+        let state = if selected {
+            SelectionState::Selected
+        } else {
+            SelectionState::Unselected
+        };
+        ChoiceGroup {
+            id: "g".into(),
+            label: None,
+            kind,
+            requirement,
+            classification_confidence: 1.0,
+            choices: vec![Choice {
+                id: "c".into(),
+                group_id: "g".into(),
+                label: "opt".into(),
+                value: None,
+                state,
+                bbox: None,
+                safe_click: None,
+                actuator: ActuatorHint::PickOption,
+                risk: RiskAssessment {
+                    level: RiskLevel::Low,
+                    requires_approval: false,
+                    reasons: Vec::new(),
+                },
+                source: "ax".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn unset_required_group_recommends_apply_selections() {
+        let groups = vec![group(Requirement::Required, GroupKind::SingleSelect, false)];
+        let steps = choice_recommendations(&groups, Coverage::Complete, false);
+        assert!(
+            steps.iter().any(|step| step.contains("apply_selections")),
+            "a required, unset group must steer to the batch path: {steps:?}"
+        );
+    }
+
+    #[test]
+    fn already_set_required_group_yields_no_recommendation() {
+        let groups = vec![group(Requirement::Required, GroupKind::SingleSelect, true)];
+        assert!(choice_recommendations(&groups, Coverage::Complete, false).is_empty());
+    }
+
+    #[test]
+    fn partial_coverage_steers_to_the_right_sweep() {
+        // Not yet swept → ask for scroll_scan.
+        let fresh = choice_recommendations(&[], Coverage::Partial, false);
+        assert!(fresh.iter().any(|step| step.contains("scroll_scan:true")));
+        // Already swept but still partial → the feed needs the real cursor.
+        let swept = choice_recommendations(&[], Coverage::Partial, true);
+        assert!(swept.iter().any(|step| step.contains("borrow_cursor")));
     }
 }
