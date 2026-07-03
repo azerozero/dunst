@@ -277,6 +277,21 @@ pub fn raise_window_by_id(_pid: i32, _window_id: u32) -> Result<()> {
     ))
 }
 
+/// Fingerprint of the current global cursor image; `None` if unreadable. The
+/// same pointer shape hashes identically, so comparing the fingerprint before
+/// and after a borrowed-cursor gesture (at the same resting point) tells
+/// whether the pointer was left stuck in a shape it did not have before.
+#[cfg(target_os = "macos")]
+pub fn cursor_shape_fingerprint() -> Option<u64> {
+    macos::cursor_shape_fingerprint()
+}
+
+/// Non-macOS stub.
+#[cfg(not(target_os = "macos"))]
+pub fn cursor_shape_fingerprint() -> Option<u64> {
+    None
+}
+
 /// Hit-test the AX element under a global screen point and return a shallow raw
 /// snapshot. This is the AX-side primitive for region analysis by sampling a
 /// spaced grid of points; macOS does not expose a direct "subtree by rectangle"

@@ -104,6 +104,7 @@ mod ax_tree;
 mod cf;
 mod pointer_events;
 mod skylight;
+pub(crate) use skylight::cursor_shape_fingerprint;
 mod text_input;
 mod web_events;
 

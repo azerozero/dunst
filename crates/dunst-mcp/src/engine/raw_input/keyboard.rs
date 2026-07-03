@@ -438,6 +438,13 @@ impl Engine {
             "up" => 720,
             _ => -720,
         };
+        // Snapshot the pointer shape before borrowing the real cursor, so we
+        // can tell afterwards whether the borrowed gesture left it stuck.
+        let cursor_before = if borrow_cursor {
+            dunst_platform::cursor_shape_fingerprint()
+        } else {
+            None
+        };
         let mut outcome = Ok(());
         for _ in 0..count {
             outcome = if borrow_cursor {
@@ -465,6 +472,18 @@ impl Engine {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(160));
+        }
+        // Recover the pointer once, at the end of the gesture, but ONLY when the
+        // borrowed real-cursor scroll left it stuck in a shape it did not have
+        // before (the macOS bug that freezes e.g. an I-beam over a backgrounded
+        // web view). The heavy unstick maneuver is intrusive, so the shape
+        // fingerprint gates it: no change in shape means nothing to fix.
+        if borrow_cursor && outcome.is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            let after = dunst_platform::cursor_shape_fingerprint();
+            if borrowed_cursor_left_stuck(cursor_before, after) {
+                let _ = dunst_platform::unstick_cursor();
+            }
         }
         let result = self.audit_raw_input(
             target_id,
@@ -978,6 +997,19 @@ fn low_signal_menu_id(id: &str) -> bool {
     id.starts_with("mi_") || id.starts_with("menu_")
 }
 
+/// Decide whether a borrowed real-cursor gesture left the pointer stuck, from
+/// the cursor-shape fingerprints captured before the gesture and after the
+/// restore. A change in shape at the same resting point means the light
+/// restore did not put the pointer back to what the user had, so the heavy
+/// unstick maneuver is warranted. If either fingerprint is unavailable we
+/// cannot tell, and recover conservatively rather than risk a stuck pointer.
+fn borrowed_cursor_left_stuck(before: Option<u64>, after: Option<u64>) -> bool {
+    match (before, after) {
+        (Some(before), Some(after)) => before != after,
+        _ => true,
+    }
+}
+
 fn host_from_url(url: &str) -> Option<String> {
     let trimmed = url.trim();
     let after_scheme = trimmed
@@ -1051,4 +1083,26 @@ fn scroll_scope_token(value: &str) -> Option<String> {
     }
     let token = token.trim_matches('-').to_string();
     (!token.is_empty()).then_some(token)
+}
+
+#[cfg(test)]
+mod cursor_recovery_tests {
+    use super::borrowed_cursor_left_stuck;
+
+    #[test]
+    fn same_shape_before_and_after_is_not_stuck() {
+        assert!(!borrowed_cursor_left_stuck(Some(0xA1A1), Some(0xA1A1)));
+    }
+
+    #[test]
+    fn changed_shape_is_stuck() {
+        assert!(borrowed_cursor_left_stuck(Some(0xA1A1), Some(0xB2B2)));
+    }
+
+    #[test]
+    fn unreadable_fingerprint_recovers_conservatively() {
+        assert!(borrowed_cursor_left_stuck(None, Some(0xB2B2)));
+        assert!(borrowed_cursor_left_stuck(Some(0xA1A1), None));
+        assert!(borrowed_cursor_left_stuck(None, None));
+    }
 }
