@@ -275,6 +275,31 @@ impl Engine {
         let app = self.window.app_name.clone();
         let terms = url_match_terms(url);
         let host_labels = url_host_labels(url);
+
+        // Only drive a URL into the attached window when it is a browser. Opening
+        // an http(s) URL against a non-browser app (Finder, a terminal, …) makes
+        // macOS fall through to the *system default* browser: it navigates the
+        // wrong app and can spawn a stray window. Refuse without opening anything.
+        if !app_is_browser(&app) {
+            let launch = self.launch_app_result(&app, Some(url), false);
+            let candidates = launch.matching_windows.clone();
+            return OpenUrlAttachResult {
+                launch,
+                attached: None,
+                attached_window_title: None,
+                selected_tab: None,
+                candidates,
+                verified: false,
+                verified_by: None,
+                verification_hint: Some(format!(
+                    "navigate refused: the attached window's app '{app}' is not a browser, so \
+                     opening '{url}' would fall through to the system default browser and may \
+                     spawn a stray window. Attach a browser window first (list_windows + attach), \
+                     then retry navigate."
+                )),
+            };
+        }
+
         let launch = self.launch_app(&app, Some(url), &[]);
         std::thread::sleep(Duration::from_millis(700));
         let candidates = launch.matching_windows.clone();
@@ -648,6 +673,42 @@ fn normalized_contains_any(value: &str, terms: &[String]) -> bool {
     !normalized.is_empty() && terms.iter().any(|term| normalized.contains(term))
 }
 
+/// Whether an app name looks like a web browser. `navigate` only opens a URL when
+/// the attached window belongs to a browser: `open`ing an http(s) URL against a
+/// non-browser app (Finder, a terminal, …) makes macOS fall through to the
+/// *system default* browser, silently navigating the wrong app and often spawning
+/// a stray window (the Finder-attached → Zen leak).
+#[cfg(target_os = "macos")]
+fn app_is_browser(app_name: &str) -> bool {
+    let needle = normalize_match(app_name);
+    // Distinctive tokens: safe to match as substrings of a real macOS app name.
+    const TOKENS: &[&str] = &[
+        "firefox",
+        "mozilla",
+        "librewolf",
+        "waterfox",
+        "floorp",
+        "chrome",
+        "chromium",
+        "thorium",
+        "brave",
+        "vivaldi",
+        "opera",
+        "safari",
+        "webkit",
+        "orion",
+        "sidekick",
+        "microsoft edge",
+        "zen",
+    ];
+    if TOKENS.iter().any(|token| needle.contains(token)) {
+        return true;
+    }
+    // Short, ambiguous names only match the whole app name so they never
+    // false-positive inside unrelated names (e.g. "Reminders" ⊃ "min").
+    matches!(needle.as_str(), "arc" | "min" | "edge")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -659,6 +720,42 @@ mod tests {
             title: title.into(),
             selected: true,
             bbox: None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn app_is_browser_accepts_browsers_and_rejects_finder_and_terminals() {
+        for browser in [
+            "Firefox",
+            "Mozilla Firefox",
+            "Google Chrome",
+            "Chromium",
+            "Safari",
+            "Brave Browser",
+            "Microsoft Edge",
+            "Vivaldi",
+            "Zen",
+            "Arc",
+        ] {
+            assert!(
+                app_is_browser(browser),
+                "{browser} should count as a browser"
+            );
+        }
+        for other in [
+            "Finder",
+            "iTerm2",
+            "Terminal",
+            "Reminders",
+            "Notes",
+            "Zed",
+            "Slack",
+        ] {
+            assert!(
+                !app_is_browser(other),
+                "{other} should not count as a browser"
+            );
         }
     }
 
