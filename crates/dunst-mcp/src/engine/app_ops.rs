@@ -243,9 +243,12 @@ impl Engine {
         let existing_candidates = self.matching_windows_for_app(app);
         // TODO: expose this as a public MCP option: reuse = exact | host | never.
         let reuse_policy = BrowserTabReusePolicy::Host;
+        // Reuse keys on host/path only — never the query string, whose words would
+        // otherwise match an unrelated tab's title and skip opening the new URL.
+        let reuse_terms = url_reuse_terms(url);
         if let Some(selected) = self.best_existing_window_for_url(
             &existing_candidates,
-            &terms,
+            &reuse_terms,
             &host_labels,
             reuse_policy,
         ) {
@@ -537,6 +540,16 @@ fn url_match_terms(url: &str) -> Vec<String> {
     terms
 }
 
+/// Match terms for **tab reuse**: host and path only, never the query string. A
+/// search URL such as `google.com/search?q=La+Poke+Brest` must reuse a tab that
+/// is actually on that host/route — not an unrelated tab whose title merely
+/// contains a query word (otherwise "poke"/"brest" reuse the open Uber Eats tab
+/// and the search never loads). Verification still uses the full [`url_match_terms`].
+fn url_reuse_terms(url: &str) -> Vec<String> {
+    let without_query = url.split(['?', '#']).next().unwrap_or(url);
+    url_match_terms(without_query)
+}
+
 fn best_window_for_url(windows: &[WindowSummary], terms: &[String]) -> Option<WindowSummary> {
     windows
         .iter()
@@ -815,6 +828,23 @@ mod tests {
 
         assert!(terms.iter().any(|term| term == "clement"));
         assert!(terms.iter().any(|term| term == "liard"));
+    }
+
+    #[test]
+    fn url_reuse_terms_drop_the_query_string() {
+        let url = "https://www.google.com/search?q=La+Poke+Brest+avis";
+        let reuse = url_reuse_terms(url);
+        let full = url_match_terms(url);
+
+        // Reuse keys on host/path only.
+        assert!(reuse.iter().any(|term| term == "google"));
+        assert!(reuse.iter().any(|term| term == "search"));
+        // Query words must not drive reuse (they'd match an unrelated tab title)…
+        assert!(!reuse.iter().any(|term| term == "poke"));
+        assert!(!reuse.iter().any(|term| term == "brest"));
+        // …but the full terms still carry them for verification.
+        assert!(full.iter().any(|term| term == "poke"));
+        assert!(full.iter().any(|term| term == "brest"));
     }
 
     #[test]
