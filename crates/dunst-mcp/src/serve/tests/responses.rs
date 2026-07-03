@@ -116,24 +116,36 @@ fn audit_entry_full_diff_also_reports_meaningful_summary() {
         result: ActionResult::Success,
         effect_verified: None,
         graph_diff: GraphDiff {
-            changes: vec![NodeChange::Changed {
-                id: "mi_menuitemhit_35".into(),
-                field: "label".into(),
-                before: "".into(),
-                after: "Toujours afficher".into(),
-            }],
+            changes: vec![
+                NodeChange::Changed {
+                    id: "menu_sessions".into(),
+                    field: "children".into(),
+                    before: "[]".into(),
+                    after: "[mi_selectsessionatindexaction]".into(),
+                },
+                NodeChange::Changed {
+                    id: "mi_selectsessionatindexaction".into(),
+                    field: "enabled".into(),
+                    before: "false".into(),
+                    after: "true".into(),
+                },
+                NodeChange::Changed {
+                    id: "btn_publier".into(),
+                    field: "label".into(),
+                    before: "Publier".into(),
+                    after: "Publié".into(),
+                },
+            ],
         },
         caller: None,
     };
 
     let value = audit_entry_value(entry, true);
     assert!(value.get("graph_diff").is_some());
-    assert_eq!(value["graph_diff_summary"]["meaningful_changes"], 0);
-    assert_eq!(value["graph_diff_summary"]["low_signal_suppressed"], 1);
-    assert!(value["graph_diff_summary"]["sample"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert_eq!(value["graph_diff_summary"]["meaningful_changes"], 1);
+    assert_eq!(value["graph_diff_summary"]["low_signal_suppressed"], 2);
+    assert_eq!(value["graph_diff"]["changes"].as_array().unwrap().len(), 1);
+    assert_eq!(value["graph_diff"]["changes"][0]["id"], "btn_publier");
 }
 
 #[test]
