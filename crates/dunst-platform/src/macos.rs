@@ -119,7 +119,7 @@ use cf::*;
 use pointer_events::*;
 pub(crate) use pointer_events::{
     click_at_point, cursor_borrow_move_to, cursor_borrow_to, cursor_restore, focus_without_raise,
-    hover_at_point, right_click_at_point, scroll_at_point, unstick_cursor,
+    hover_at_point, right_click_at_point, scroll_at_point, unstick_cursor, unstick_cursor_if_idle,
 };
 use text_input::*;
 use web_events::*;

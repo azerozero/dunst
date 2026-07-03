@@ -482,7 +482,11 @@ impl Engine {
             std::thread::sleep(std::time::Duration::from_millis(80));
             let after = dunst_platform::cursor_shape_fingerprint();
             if borrowed_cursor_left_stuck(cursor_before, after) {
-                let _ = dunst_platform::unstick_cursor();
+                // Idle-gated: the recovery maneuver waits for the operator to be
+                // idle (retry backoff) rather than fighting a resumed cursor. If
+                // the operator stays active we give up quietly; the manual
+                // unstick_cursor tool remains available on demand.
+                let _ = retry_user_active_guard(dunst_platform::unstick_cursor_if_idle);
             }
         }
         let result = self.audit_raw_input(

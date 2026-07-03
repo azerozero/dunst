@@ -117,6 +117,24 @@ pub fn unstick_cursor() -> Result<()> {
     macos::unstick_cursor()
 }
 
+/// Idle-gated cursor unstick for AUTOMATIC recovery: same maneuver as
+/// `unstick_cursor`, but returns the user-active-guard error while the operator
+/// is active, so callers can wrap it in the idle retry loop and never fight a
+/// user who resumed control. Use `unstick_cursor` for operator-requested,
+/// immediate recovery. macOS-only.
+#[cfg(target_os = "macos")]
+pub fn unstick_cursor_if_idle() -> Result<()> {
+    macos::unstick_cursor_if_idle()
+}
+
+/// Non-macOS stub.
+#[cfg(not(target_os = "macos"))]
+pub fn unstick_cursor_if_idle() -> Result<()> {
+    Err(dunst_core::DunstError::Execution(
+        "unstick_cursor_if_idle requires a macOS backend".into(),
+    ))
+}
+
 /// Whether the current process has macOS Accessibility permission.
 #[cfg(target_os = "macos")]
 pub fn accessibility_trusted() -> bool {
