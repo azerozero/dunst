@@ -169,12 +169,22 @@ impl Engine {
         url: Option<&str>,
         extra_args: &[String],
     ) -> LaunchAppResult {
-        let launched = dunst_platform::launch_app(app, url, extra_args);
+        // Snapshot before dispatch: an app that already owns a window receives a
+        // URL as a new tab, so `open` creates no new window. This is what makes
+        // `launched`/`already_running` honest instead of merely "the open ran".
+        let already_running = !self.matching_windows_for_app(app).is_empty();
+        let dispatched = dunst_platform::launch_app(app, url, extra_args);
         std::thread::sleep(Duration::from_millis(350));
-        self.launch_app_result(app, url, launched)
+        self.launch_app_result(app, url, dispatched, already_running)
     }
 
-    fn launch_app_result(&self, app: &str, url: Option<&str>, launched: bool) -> LaunchAppResult {
+    fn launch_app_result(
+        &self,
+        app: &str,
+        url: Option<&str>,
+        dispatched: bool,
+        already_running: bool,
+    ) -> LaunchAppResult {
         let app_needle = normalize_match(app);
         let matching_windows: Vec<WindowSummary> = self
             .list_windows(false)
@@ -197,8 +207,12 @@ impl Engine {
             None
         };
 
+        let (launched, url_opened) = launch_flags(dispatched, already_running, url.is_some());
+
         LaunchAppResult {
             launched,
+            already_running,
+            url_opened,
             app: app.to_string(),
             url: url.map(str::to_owned),
             target,
@@ -235,7 +249,7 @@ impl Engine {
             &host_labels,
             reuse_policy,
         ) {
-            let launch = self.launch_app_result(app, Some(url), false);
+            let launch = self.launch_app_result(app, Some(url), false, true);
             return self.attach_url_window_result(
                 launch,
                 existing_candidates,
@@ -281,7 +295,8 @@ impl Engine {
         // macOS fall through to the *system default* browser: it navigates the
         // wrong app and can spawn a stray window. Refuse without opening anything.
         if !app_is_browser(&app) {
-            let launch = self.launch_app_result(&app, Some(url), false);
+            let already_running = !self.matching_windows_for_app(&app).is_empty();
+            let launch = self.launch_app_result(&app, Some(url), false, already_running);
             let candidates = launch.matching_windows.clone();
             return OpenUrlAttachResult {
                 launch,
@@ -441,11 +456,11 @@ impl Engine {
 
         let verification_hint = if verified {
             None
-        } else if attached.is_some() && launch.launched {
+        } else if attached.is_some() && launch.url_opened {
             Some("URL was opened and a browser window was attached, but the selected tab/title/page URL did not verify against the URL; call list_browser_tabs/window_view before acting, or read_text_detailed(content_only=false) when Firefox hides browser chrome from AX.".into())
         } else if attached.is_some() {
             Some("An existing browser window was attached without opening a new URL, but the selected tab/title/page URL did not verify against the URL; call list_browser_tabs/window_view before acting, or read_text_detailed(content_only=false) when Firefox hides browser chrome from AX.".into())
-        } else if launch.launched {
+        } else if launch.url_opened {
             Some("URL was opened but no matching browser window could be attached unambiguously; use list_windows and attach explicitly.".into())
         } else {
             Some("No existing matching browser window could be attached unambiguously, and the URL was not opened; use list_windows and attach explicitly or call launch_app/open_url_and_attach_tab only when navigation is intended.".into())
@@ -673,6 +688,16 @@ fn normalized_contains_any(value: &str, terms: &[String]) -> bool {
     !normalized.is_empty() && terms.iter().any(|term| normalized.contains(term))
 }
 
+/// Derives the honest launch flags from the raw `open` outcome. Returns
+/// `(launched, url_opened)`: `launched` is true only on a cold start (the app
+/// owned no window before, so this call created one); `url_opened` is true
+/// whenever a URL was actually dispatched. An already-running app takes the URL
+/// as a tab — `url_opened` without `launched` — so callers stop reporting a new
+/// window that never opened.
+fn launch_flags(dispatched: bool, already_running: bool, has_url: bool) -> (bool, bool) {
+    (dispatched && !already_running, dispatched && has_url)
+}
+
 /// Whether an app name looks like a web browser. `navigate` only opens a URL when
 /// the attached window belongs to a browser: `open`ing an http(s) URL against a
 /// non-browser app (Finder, a terminal, …) makes macOS fall through to the
@@ -721,6 +746,19 @@ mod tests {
             selected: true,
             bbox: None,
         }
+    }
+
+    #[test]
+    fn launch_flags_are_honest_about_cold_start_and_url() {
+        // Cold start opening a URL: launched, and the URL was opened.
+        assert_eq!(launch_flags(true, false, true), (true, true));
+        // Already running: no new window, but the URL opened as a tab.
+        assert_eq!(launch_flags(true, true, true), (false, true));
+        // Cold start of a bare app (no URL): launched, nothing opened.
+        assert_eq!(launch_flags(true, false, false), (true, false));
+        // `open` failed: neither launched nor opened, whatever the prior state.
+        assert_eq!(launch_flags(false, false, true), (false, false));
+        assert_eq!(launch_flags(false, true, true), (false, false));
     }
 
     #[cfg(target_os = "macos")]
