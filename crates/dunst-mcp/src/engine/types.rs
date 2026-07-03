@@ -238,6 +238,7 @@ pub struct ExposeTargetWindowResult {
     pub after: TargetVisibility,
     pub raise_audit: Option<AuditEntry>,
     pub raised: bool,
+    pub raised_within_app_only: bool,
     pub arranged: bool,
     pub verification_hint: Option<String>,
 }

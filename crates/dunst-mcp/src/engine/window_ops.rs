@@ -335,7 +335,7 @@ impl Engine {
         arrange_if_needed: bool,
     ) -> dunst_core::Result<ExposeTargetWindowResult> {
         let before = self.target_visibility();
-        let mut raised = false;
+        let mut ax_raise_ok = false;
         let mut arranged = false;
         let mut raise_audit = None;
 
@@ -352,17 +352,19 @@ impl Engine {
                 Some("expose target window before visual interaction"),
             ) {
                 Ok(entry) => {
-                    raised = entry.result == ActionResult::Success;
+                    ax_raise_ok = entry.result == ActionResult::Success;
                     raise_audit = Some(entry);
                 }
                 Err(_) => {
-                    raised = false;
+                    ax_raise_ok = false;
                 }
             }
         }
 
         *self.desktop_cache.borrow_mut() = None;
         let mut after = self.target_visibility();
+        let (mut raised, mut raised_within_app_only) =
+            reconciled_raise_result(ax_raise_ok, &before, &after);
         if arrange_if_needed && raised && !after.covered_by.is_empty() {
             let mut ids = vec![self.target.window_id];
             ids.extend(after.covered_by.iter().map(|window| window.window_id));
@@ -381,6 +383,8 @@ impl Engine {
             arranged = true;
             *self.desktop_cache.borrow_mut() = None;
             after = self.target_visibility();
+            (raised, raised_within_app_only) =
+                reconciled_raise_result(ax_raise_ok, &before, &after);
         }
 
         let verification_hint = if raise_audit
@@ -388,6 +392,8 @@ impl Engine {
             .is_some_and(|entry| entry.result == ActionResult::PendingApproval)
         {
             Some("Target expose is pending approval; approve the raise_audit.target_id, then retry expose_target_window.".into())
+        } else if raised_within_app_only {
+            Some("AXRaise succeeded only within the target app; the target did not become frontmost or measurably more visible. Approve and retry expose_target_window with arrange_if_needed=true, or inspect desktop_view for the covering app.".into())
         } else if !after.covered_by.is_empty() {
             Some("Target remains covered after expose_target_window; use desktop_view to choose the covering window or move the target to another display.".into())
         } else {
@@ -398,6 +404,7 @@ impl Engine {
             after,
             raise_audit,
             raised,
+            raised_within_app_only,
             arranged,
             verification_hint,
         })
@@ -414,6 +421,7 @@ impl Engine {
             before,
             raise_audit: None,
             raised: false,
+            raised_within_app_only: false,
             arranged: false,
             verification_hint: Some("expose_target_window requires a macOS backend".into()),
         })
@@ -542,6 +550,16 @@ impl Engine {
     pub fn unstick_cursor(&self) -> bool {
         false
     }
+}
+
+pub(in crate::engine) fn reconciled_raise_result(
+    ax_ok: bool,
+    before: &TargetVisibility,
+    after: &TargetVisibility,
+) -> (bool, bool) {
+    let raised = ax_ok && (after.is_frontmost || after.visible_fraction > before.visible_fraction);
+    let raised_within_app_only = ax_ok && !raised;
+    (raised, raised_within_app_only)
 }
 
 fn screenshot_geometry(window: Bbox, image_pixels: Option<PixelSize>) -> ScreenshotGeometry {

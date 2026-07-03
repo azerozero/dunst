@@ -242,7 +242,9 @@ pub(super) fn perform_on_element(
         }
         SemanticAction::Raise => {
             let element = require_ax_element(element)?;
-            perform_ax_action(element, kAXRaiseAction)
+            perform_ax_action(element, kAXRaiseAction)?;
+            activate_process_for_raise(target, node)
+                .map_err(|err| ActionFailure::Execution(err.to_string()))
         }
         SemanticAction::Focus => {
             set_bool_attr(require_ax_element(element)?, kAXFocusedAttribute, true)
@@ -264,6 +266,16 @@ pub(super) fn perform_on_element(
             "semantic action {other:?} is not supported by macOS AX backend"
         ))),
     }
+}
+
+fn activate_process_for_raise(target: &Target, node: &SceneNode) -> Result<()> {
+    let window = WindowRef {
+        pid: target.pid,
+        window_id: target.window_id,
+        app_name: String::new(),
+        title: node.label.clone().unwrap_or_default(),
+    };
+    crate::borrow_target_frontmost(&window).map(|_| ())
 }
 
 pub(super) fn require_ax_element(

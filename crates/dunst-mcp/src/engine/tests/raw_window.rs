@@ -1,5 +1,6 @@
 use super::*;
 use crate::engine::raw_input::hotkey_result_low_signal;
+use crate::engine::window_ops::reconciled_raise_result;
 
 #[test]
 fn user_active_guard_retry_runs_once_before_returning() {
@@ -234,6 +235,49 @@ fn target_visibility_reports_covered_window_and_hint() {
     assert_eq!(visibility.covered_by[0].window_id, 1);
     assert!(visibility.visible_fraction < 1.0);
     assert!(visibility.fallback_hint.is_some());
+}
+
+fn visibility_snapshot(is_frontmost: bool, visible_fraction: f64) -> TargetVisibility {
+    TargetVisibility {
+        target_window_id: 2,
+        target_title: "iTerm".into(),
+        found_in_desktop: true,
+        degraded: false,
+        reason: None,
+        is_frontmost,
+        covered_by: Vec::new(),
+        covers: Vec::new(),
+        visible_fraction,
+        status: "visible_background".into(),
+        warnings: Vec::new(),
+        fallback_hint: None,
+    }
+}
+
+#[test]
+fn raise_reconciliation_requires_frontmost_or_visibility_gain() {
+    let before = visibility_snapshot(false, 0.0);
+    let unchanged = visibility_snapshot(false, 0.0);
+    assert_eq!(
+        reconciled_raise_result(true, &before, &unchanged),
+        (false, true)
+    );
+
+    let more_visible = visibility_snapshot(false, 0.5);
+    assert_eq!(
+        reconciled_raise_result(true, &before, &more_visible),
+        (true, false)
+    );
+
+    let frontmost = visibility_snapshot(true, 0.0);
+    assert_eq!(
+        reconciled_raise_result(true, &before, &frontmost),
+        (true, false)
+    );
+    assert_eq!(
+        reconciled_raise_result(false, &before, &frontmost),
+        (false, false)
+    );
 }
 
 #[test]
