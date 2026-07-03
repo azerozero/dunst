@@ -60,6 +60,7 @@ fn raw_pending_approval_includes_ui_mapping_fallback() {
         },
         reasoning: Some("background hotkey".into()),
         result: ActionResult::PendingApproval,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     };

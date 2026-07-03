@@ -114,6 +114,7 @@ fn audit_entry_full_diff_also_reports_meaningful_summary() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: Some("select Rust".into()),
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff {
             changes: vec![NodeChange::Changed {
                 id: "mi_menuitemhit_35".into(),
@@ -145,6 +146,7 @@ fn bbox_only_generated_wrapper_click_gets_verification_hint() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: Some("open modal".into()),
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff {
             changes: vec![NodeChange::Changed {
                 id: "grp_a450dc4b5a2179a1".into(),
@@ -175,6 +177,7 @@ fn typed_audit_summary_reports_whether_target_value_changed() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff {
             changes: vec![NodeChange::Changed {
                 id: "field_description".into(),
@@ -203,6 +206,7 @@ fn typed_audit_summary_reports_whether_target_value_changed() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff {
             changes: vec![NodeChange::Changed {
                 id: "spinner".into(),
@@ -234,6 +238,7 @@ fn typed_audit_summary_rejects_partial_target_value() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Failed,
+        effect_verified: None,
         graph_diff: GraphDiff {
             changes: vec![NodeChange::Changed {
                 id: "field_description".into(),
@@ -266,6 +271,7 @@ fn failed_type_audit_includes_do_not_save_hint() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Failed,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     };
@@ -295,6 +301,7 @@ fn failed_checkbox_click_includes_toggle_hint() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Failed,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     };
@@ -316,6 +323,7 @@ fn failed_latent_menu_item_includes_open_menu_hint() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Failed,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     };
@@ -341,6 +349,7 @@ fn successful_click_without_meaningful_diff_includes_verification_hint() {
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     };
@@ -362,6 +371,7 @@ fn successful_raw_click_without_meaningful_diff_warns_not_to_retry_same_point() 
         risk: dunst_core::RiskAssessment::low(),
         reasoning: None,
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     };

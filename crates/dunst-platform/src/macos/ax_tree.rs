@@ -26,6 +26,9 @@ impl WalkAttributes {
                 CFString::new(kAXEnabledAttribute),
                 CFString::new(kAXFocusedAttribute),
                 CFString::new(kAXChildrenAttribute),
+                CFString::new(AX_MENU_ITEM_CMD_CHAR_ATTRIBUTE),
+                CFString::new(AX_MENU_ITEM_CMD_MODIFIERS_ATTRIBUTE),
+                CFString::new(AX_MENU_ITEM_CMD_VIRTUAL_KEY_ATTRIBUTE),
             ]),
         }
     }
@@ -81,6 +84,9 @@ pub(super) struct NodeFields {
     description: Option<String>,
     help: Option<String>,
     ax_identifier: Option<String>,
+    cmd_char: Option<String>,
+    cmd_modifiers: Option<u64>,
+    cmd_virtual_key: Option<u16>,
     ax_actions: Vec<String>,
     frame: Option<Bbox>,
     enabled: bool,
@@ -99,6 +105,9 @@ pub(super) fn assemble_node(fields: NodeFields) -> RawAxNode {
         help: fields.help,
         value: fields.value,
         ax_identifier: fields.ax_identifier,
+        cmd_char: fields.cmd_char,
+        cmd_modifiers: fields.cmd_modifiers,
+        cmd_virtual_key: fields.cmd_virtual_key,
         ax_actions: fields.ax_actions,
         frame: fields.frame,
         enabled: fields.enabled,
@@ -116,6 +125,12 @@ pub(super) fn shallow_raw_node(element: &AxElement) -> RawAxNode {
         description: attr_label_string(element, kAXDescriptionAttribute),
         help: attr_string(element, kAXHelpAttribute),
         ax_identifier: attr_string(element, kAXIdentifierAttribute),
+        cmd_char: attr_string(element, AX_MENU_ITEM_CMD_CHAR_ATTRIBUTE),
+        cmd_modifiers: attr_number(element, AX_MENU_ITEM_CMD_MODIFIERS_ATTRIBUTE)
+            .and_then(number_to_u64),
+        cmd_virtual_key: attr_number(element, AX_MENU_ITEM_CMD_VIRTUAL_KEY_ATTRIBUTE)
+            .and_then(number_to_u64)
+            .and_then(|number| u16::try_from(number).ok()),
         ax_actions: read_node_actions(element),
         frame: frame(element),
         enabled: attr_bool(element, kAXEnabledAttribute).unwrap_or(true),
@@ -154,6 +169,12 @@ pub(super) fn walk_element(
         description: batch.get(IDX_DESCRIPTION).and_then(cf_label_string),
         help: batch.get(IDX_HELP).and_then(cf_string),
         ax_identifier: batch.get(IDX_IDENTIFIER).and_then(cf_string),
+        cmd_char: batch.get(IDX_CMD_CHAR).and_then(cf_string),
+        cmd_modifiers: batch.get(IDX_CMD_MODIFIERS).and_then(cf_u64),
+        cmd_virtual_key: batch
+            .get(IDX_CMD_VIRTUAL_KEY)
+            .and_then(cf_u64)
+            .and_then(|number| u16::try_from(number).ok()),
         ax_actions: read_node_actions(element),
         frame: frame_from_batch(&batch),
         enabled: batch.get(IDX_ENABLED).and_then(cf_bool).unwrap_or(true),
@@ -186,6 +207,12 @@ pub(super) fn walk_element_single(
         description: attr_label_string(element, kAXDescriptionAttribute),
         help: attr_string(element, kAXHelpAttribute),
         ax_identifier: attr_string(element, kAXIdentifierAttribute),
+        cmd_char: attr_string(element, AX_MENU_ITEM_CMD_CHAR_ATTRIBUTE),
+        cmd_modifiers: attr_number(element, AX_MENU_ITEM_CMD_MODIFIERS_ATTRIBUTE)
+            .and_then(number_to_u64),
+        cmd_virtual_key: attr_number(element, AX_MENU_ITEM_CMD_VIRTUAL_KEY_ATTRIBUTE)
+            .and_then(number_to_u64)
+            .and_then(|number| u16::try_from(number).ok()),
         ax_actions: read_node_actions(element),
         frame: frame(element),
         enabled: attr_bool(element, kAXEnabledAttribute).unwrap_or(true),

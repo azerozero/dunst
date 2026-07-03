@@ -1,4 +1,5 @@
 use super::*;
+use crate::engine::raw_input::hotkey_result_low_signal;
 
 #[test]
 fn user_active_guard_retry_runs_once_before_returning() {
@@ -961,9 +962,41 @@ fn scroll_success_audit(target_id: &str) -> AuditEntry {
         risk: Engine::raw_input_risk(Vec::new()),
         reasoning: None,
         result: ActionResult::Success,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     }
+}
+
+#[test]
+fn hotkey_low_signal_ignores_menu_churn_only() {
+    let mut entry = scroll_success_audit("keyboard@hotkey:cmd+l");
+    entry.action = SemanticAction::Hotkey;
+    entry.graph_diff = GraphDiff {
+        changes: vec![
+            NodeChange::Changed {
+                id: "menu_sessions".into(),
+                field: "children".into(),
+                before: "[]".into(),
+                after: "[mi_selectsessionatindexaction]".into(),
+            },
+            NodeChange::Changed {
+                id: "mi_selectsessionatindexaction".into(),
+                field: "enabled".into(),
+                before: "false".into(),
+                after: "true".into(),
+            },
+        ],
+    };
+    assert!(hotkey_result_low_signal(&entry));
+
+    entry.graph_diff.changes.push(NodeChange::Changed {
+        id: "text_terminal".into(),
+        field: "value".into(),
+        before: "old".into(),
+        after: "new".into(),
+    });
+    assert!(!hotkey_result_low_signal(&entry));
 }
 
 #[test]

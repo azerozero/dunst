@@ -1,7 +1,7 @@
 use super::{
     base64_encode, char_keycode, is_axis_token, is_press_key_name, launchable_app_from_info_json,
-    layout_sensitive_hotkey_message, looks_like_clock, parse_combo, parse_value,
-    typed_target_value_matches_expected,
+    layout_sensitive_hotkey_message, looks_like_clock, menu_hotkey_matches, parse_combo,
+    parse_menu_hotkey_combo, parse_value, typed_target_value_matches_expected,
 };
 use dunst_core::{GraphDiff, NodeChange};
 use serde_json::json;
@@ -23,6 +23,23 @@ fn parse_combo_reads_modifiers_and_key() {
     assert_eq!(parse_combo("ctrl+a"), Some((0x0004_0000, 0x00)));
     assert_eq!(parse_combo("enter"), Some((0, 0x24)));
     assert_eq!(parse_combo("cmd+ "), None); // no key
+}
+
+#[test]
+fn menu_hotkey_matching_uses_cmd_char_and_ax_modifiers() {
+    let cmd_l = parse_menu_hotkey_combo("cmd+l").unwrap();
+    assert!(menu_hotkey_matches(&cmd_l, "L", Some(0)));
+    assert!(!menu_hotkey_matches(&cmd_l, "Q", Some(0)));
+
+    let cmd_shift_t = parse_menu_hotkey_combo("cmd+shift+t").unwrap();
+    assert!(menu_hotkey_matches(&cmd_shift_t, "t", Some(1)));
+    assert!(!menu_hotkey_matches(&cmd_shift_t, "t", Some(0)));
+
+    let ctrl_a = parse_menu_hotkey_combo("ctrl+a").unwrap();
+    assert!(menu_hotkey_matches(&ctrl_a, "a", Some(8 | 4)));
+    assert!(!menu_hotkey_matches(&ctrl_a, "a", Some(4)));
+
+    assert!(menu_hotkey_matches(&cmd_l, "l", Some(0x0010_0000)));
 }
 
 #[test]

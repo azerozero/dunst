@@ -59,6 +59,8 @@ use chart::{is_axis_token, looks_like_clock, parse_value};
 #[cfg(test)]
 use input::char_keycode;
 use input::{is_press_key_name, layout_sensitive_hotkey_message, parse_combo};
+#[cfg(any(target_os = "macos", test))]
+use input::{menu_hotkey_matches, parse_menu_hotkey_combo};
 use query_support::*;
 use raw_input::page_scroll_target_id;
 use raw_input_gate::{

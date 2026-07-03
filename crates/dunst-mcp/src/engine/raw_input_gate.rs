@@ -244,6 +244,7 @@ impl Engine {
             risk,
             reasoning: reasoning.map(str::to_owned),
             result: ActionResult::PendingApproval,
+            effect_verified: None,
             graph_diff: GraphDiff::default(),
             caller: None,
         }))
@@ -471,6 +472,7 @@ impl Engine {
             risk,
             reasoning: reasoning.map(str::to_owned),
             result,
+            effect_verified: None,
             graph_diff,
             caller: None,
         });

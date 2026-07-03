@@ -406,6 +406,7 @@ fn action_audit_entry(
         risk,
         reasoning: reasoning.map(str::to_owned),
         result: ActionResult::PendingApproval,
+        effect_verified: None,
         graph_diff: GraphDiff::default(),
         caller: None,
     }

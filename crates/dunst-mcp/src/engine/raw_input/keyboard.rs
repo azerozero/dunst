@@ -198,6 +198,7 @@ impl Engine {
             risk,
             reasoning: Some("set focused field text (test override)".to_string()),
             result,
+            effect_verified: None,
             graph_diff,
             caller: None,
         }))
@@ -686,16 +687,25 @@ impl Engine {
     /// A keyboard shortcut in the background: modifiers (cmd|shift|opt|ctrl, `+`-
     /// separated) plus a key (a single character, or a name like enter/tab/escape/
     /// space/delete/left/right/up/down). E.g. "cmd+l" (focus omnibox), "cmd+t",
-    /// "cmd+w". Auth-signed so it reaches web content. Layout-sensitive text
-    /// selection shortcuts such as "cmd+a" are rejected; use `type_into` for
-    /// field replacement. Re-perceives.
+    /// "cmd+w". Native menu items are matched by AXMenuItemCmdChar first; the
+    /// SkyLight fallback is auth-signed so it reaches web content. Layout-
+    /// sensitive text selection shortcuts such as "cmd+a" are rejected when no
+    /// matching AX menu item exists; use `type_into` for field replacement.
+    /// Re-perceives.
     #[cfg(target_os = "macos")]
     pub fn hotkey(&mut self, combo: &str) -> dunst_core::Result<AuditEntry> {
-        if let Some(message) = layout_sensitive_hotkey_message(combo) {
-            return Err(DunstError::Execution(message));
-        }
-        let (flags, keycode) = parse_combo(combo)
-            .ok_or_else(|| DunstError::Execution(format!("unrecognised hotkey {combo:?}")))?;
+        let menu_item = menu_item_for_hotkey(self.scene_graph(), combo);
+        let fallback_key =
+            if menu_item.is_none() {
+                if let Some(message) = layout_sensitive_hotkey_message(combo) {
+                    return Err(DunstError::Execution(message));
+                }
+                Some(parse_combo(combo).ok_or_else(|| {
+                    DunstError::Execution(format!("unrecognised hotkey {combo:?}"))
+                })?)
+            } else {
+                None
+            };
         let target_id = format!("keyboard@hotkey:{combo}");
         if let Some(entry) = self.gate_raw_input(
             &target_id,
@@ -706,22 +716,43 @@ impl Engine {
         ) {
             return Ok(entry);
         }
-        let outcome = retry_user_active_guard(|| {
-            dunst_platform::key_web_background(
-                self.target.pid,
-                self.target.window_id,
-                keycode,
-                flags,
+        let (reasoning, outcome) = if let Some(node) = menu_item {
+            (
+                Some("background hotkey (AXPress matched menu item)"),
+                retry_user_active_guard(|| {
+                    self.executor
+                        .perform(&self.target, &node, SemanticAction::Click, None)
+                }),
             )
-        });
-        self.audit_raw_input(
+        } else {
+            let (flags, keycode) = fallback_key.expect("fallback key parsed when no menu item");
+            (
+                Some("background hotkey (modifier combo, auth-signed)"),
+                retry_user_active_guard(|| {
+                    dunst_platform::key_web_background(
+                        self.target.pid,
+                        self.target.window_id,
+                        keycode,
+                        flags,
+                    )
+                }),
+            )
+        };
+        let entry = self.audit_raw_input(
             target_id,
             SemanticAction::Hotkey,
             Some(combo.to_string()),
-            Some("background hotkey (modifier combo, auth-signed)"),
+            reasoning,
             Self::raw_input_risk(Vec::new()),
             outcome,
-        )
+        )?;
+        if hotkey_result_low_signal(&entry) {
+            return Ok(self.mark_effect_unverified(
+                entry,
+                "hotkey reported success but only low-signal menu churn was observed",
+            ));
+        }
+        Ok(entry)
     }
 
     /// Non-macOS stub.
@@ -731,6 +762,40 @@ impl Engine {
             "hotkey requires a macOS backend".into(),
         ))
     }
+
+    #[cfg(target_os = "macos")]
+    fn mark_effect_unverified(&mut self, mut entry: AuditEntry, reason: &str) -> AuditEntry {
+        entry.effect_verified = Some(false);
+        entry.reasoning = Some(match entry.reasoning.take() {
+            Some(existing) if !existing.contains(reason) => format!("{existing}; {reason}"),
+            Some(existing) => existing,
+            None => reason.to_string(),
+        });
+        if let Some(last) = self
+            .trace
+            .last_mut()
+            .filter(|last| last.ts_ms == entry.ts_ms && last.target_id == entry.target_id)
+        {
+            *last = entry.clone();
+        }
+        entry
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn menu_item_for_hotkey(graph: &dunst_core::SceneGraph, combo: &str) -> Option<SceneNode> {
+    let combo = parse_menu_hotkey_combo(combo)?;
+    graph
+        .nodes
+        .values()
+        .find(|node| {
+            node.role == Role::MenuItem
+                && node.enabled
+                && node.cmd_char.as_deref().is_some_and(|cmd_char| {
+                    menu_hotkey_matches(&combo, cmd_char, node.cmd_modifiers)
+                })
+        })
+        .cloned()
 }
 
 fn paste_text_via_clipboard(
@@ -786,6 +851,16 @@ fn cursor_scroll_target_id(direction: &str, count: usize, x: f64, y: f64) -> Str
 }
 
 fn scroll_result_low_signal(entry: &AuditEntry) -> bool {
+    entry.result == dunst_core::ActionResult::Success
+        && (entry.graph_diff.changes.is_empty()
+            || entry
+                .graph_diff
+                .changes
+                .iter()
+                .all(scroll_low_signal_change))
+}
+
+pub(in crate::engine) fn hotkey_result_low_signal(entry: &AuditEntry) -> bool {
     entry.result == dunst_core::ActionResult::Success
         && (entry.graph_diff.changes.is_empty()
             || entry
