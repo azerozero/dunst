@@ -317,17 +317,22 @@ fn tool_registry_matches_advertised_catalog() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap().to_string())
         .collect();
+    // Operator-side tools are registered for routing but hidden from the default
+    // catalog unless DUNST_MCP_ENABLE_APPROVE_TOOL is set.
+    let operator_only = ["approve", "preauthorize", "revoke_preauthorization"];
     let mut registry: Vec<_> = TOOL_REGISTRY
         .iter()
-        .filter(|tool| tool.name != "approve")
+        .filter(|tool| !operator_only.contains(&tool.name))
         .map(|tool| tool.name.to_string())
         .collect();
     catalog.sort();
     registry.sort();
 
     assert_eq!(catalog, registry);
-    assert!(
-        TOOL_REGISTRY.iter().any(|tool| tool.name == "approve"),
-        "operator-side approve tool remains registered even when hidden by default"
-    );
+    for name in operator_only {
+        assert!(
+            TOOL_REGISTRY.iter().any(|tool| tool.name == name),
+            "operator-side tool {name} remains registered even when hidden by default"
+        );
+    }
 }
