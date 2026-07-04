@@ -508,7 +508,10 @@ impl Engine {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "Exact/Never are reserved tab-reuse policies exercised by tests; only Host is wired into open_url_and_attach_tab today (see the reuse-policy TODO at its call site)"
+)]
 enum BrowserTabReusePolicy {
     Exact,
     Host,

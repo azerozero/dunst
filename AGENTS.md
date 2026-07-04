@@ -21,12 +21,12 @@ Perceptor (AX + vision) ─► SceneGraph ─► AffordanceGraph (+RiskEngine)
                                                   │
                         risk gate / approval ◄────┤
                                                   ▼
-             AppDriver (native) ─► AX ─► background SkyLight event ─► borrow_cursor
+                     AX ─► background SkyLight event ─► borrow_cursor
                                                   │
                                           refresh + diff_since ─► AuditEntry
 ```
 
-The executor prefers the least-intrusive rung that works: a **native app driver** (if one claims the window and is reachable), else **AX** (press/set-value/scrollbar), else a **window-scoped background event** (SkyLight auth-signed, no cursor, no foreground), and only as a last resort **`borrow_cursor`** (briefly move and restore the real OS cursor). Every mutating action is risk-gated and audited.
+The executor prefers the least-intrusive rung that works: **AX** (press/set-value/scrollbar), else a **window-scoped background event** (SkyLight auth-signed, no cursor, no foreground), and only as a last resort **`borrow_cursor`** (briefly move and restore the real OS cursor). Every mutating action is risk-gated and audited.
 
 ## Crate Layout
 
@@ -34,7 +34,7 @@ The executor prefers the least-intrusive rung that works: a **native app driver*
 - **dunst-graph**: the pure pipeline `build_scene_graph → derive_affordances → risk`. Deterministic, unit-benchable (`--features bench`).
 - **dunst-platform**: the macOS backend — AX (`ax_backend`, `ax_tree`, `ax_actions`), SkyLight (`skylight`: focus-without-raise, cursor fingerprint, event posting), `pointer_events` (click/scroll/`borrow_cursor`/unstick), `web_events` (background click/scroll/type/key), `text_input`, `file_chooser`. Non-macOS builds get stubs.
 - **dunst-vision**: `capture` (screenshots, window bounds) and OCR.
-- **dunst-mcp**: the `Engine` (perception + affordances + risk gating + audit + execution, under `src/engine/`) and the MCP `serve` loop + tool schemas (`src/serve/`). The `drivers/` module hosts the per-app driver layer.
+- **dunst-mcp**: the `Engine` (perception + affordances + risk gating + audit + execution, under `src/engine/`) and the MCP `serve` loop + tool schemas (`src/serve/`).
 
 ## Domain Concepts
 
@@ -48,12 +48,11 @@ The executor prefers the least-intrusive rung that works: a **native app driver*
 - **`borrow_cursor`**: real-cursor wheel scroll. The only path that scrolls some sparse-AX web feeds (LinkedIn/Firefox). Moves the shared cursor briefly, then restores it. Guarded by the user-idle check and auto-unstick.
 - **User-idle guard**: synthetic input is refused while the operator was active < `DEFAULT_USER_IDLE_GUARD_MS` (150 ms) ago; `retry_user_active_guard` backs off and retries so automation waits for idle rather than fighting the user.
 - **unstick_cursor**: recovery maneuver for the macOS bug that freezes the cursor shape (e.g. an I-beam) after driving a backgrounded window. Manual tool is immediate; the automatic post-scroll variant is idle-gated.
-- **AppDriver / DriverRegistry**: per-app native driver layer (`crates/dunst-mcp/src/engine/drivers`). A driver claims a window by app identity and can serve `SemanticAction`s through the app's native channel (CDP, iTerm2 Python API, AppleScript); it declines (`NotApplicable`) to fall back to the generic ladder.
 
 ## Key Patterns
 
 - **AX-first, vision-fallback**: the affordance graph is built from the AX tree; OCR/screenshot fills gaps for sparse-AX surfaces. AX ids are `confidence 1.0`, vision lower.
-- **Least-intrusive execution ladder**: driver → AX → background event → `borrow_cursor`. Session memory (`scroll_strategy_cache`, `scroll_background_low_signal`) learns per app/page which rung actually works and skips dead ones.
+- **Least-intrusive execution ladder**: AX → background event → `borrow_cursor`. Session memory (`scroll_strategy_cache`, `scroll_background_low_signal`) learns per app/page which rung actually works and skips dead ones.
 - **Window-scoped, not pid-scoped, when possible**: mouse/scroll background events route by `MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER`. Keyboard is inherently focus-scoped (a hard limit — see Gotchas).
 - **Risk gating + audit**: mutating actions pass through `gate_raw_input` / `evaluate_action_gate`; approvals are element- or raw-scoped and count-limited. `audit_raw_input` re-perceives and diffs.
 - **Idle-gated synthetic input**: anything that could fight the operator (cursor warp, background keys, the unstick maneuver) goes through `retry_user_active_guard`.
