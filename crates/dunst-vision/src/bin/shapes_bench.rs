@@ -81,8 +81,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         capture_detect.p50, capture_detect.p95
     );
     println!(
-        "by_kind: rect={} bar={} circle={} line={} unknown={}",
-        counts.rect, counts.bar, counts.circle, counts.line, counts.unknown
+        "by_kind: rect={} bar={} panel={} circle={} line={} unknown={}",
+        counts.rect, counts.bar, counts.panel, counts.circle, counts.line, counts.unknown
     );
     println!("samples:");
     for shape in last_shapes.iter().take(12) {
@@ -103,6 +103,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 struct KindCounts {
     rect: usize,
     bar: usize,
+    panel: usize,
     circle: usize,
     line: usize,
     unknown: usize,
@@ -115,6 +116,7 @@ fn count_kinds(shapes: &[dunst_vision::shapes::Shape]) -> KindCounts {
         match shape.kind {
             dunst_vision::shapes::ShapeKind::Rect => counts.rect += 1,
             dunst_vision::shapes::ShapeKind::Bar => counts.bar += 1,
+            dunst_vision::shapes::ShapeKind::Panel => counts.panel += 1,
             dunst_vision::shapes::ShapeKind::Circle => counts.circle += 1,
             dunst_vision::shapes::ShapeKind::Line => counts.line += 1,
             dunst_vision::shapes::ShapeKind::Unknown => counts.unknown += 1,

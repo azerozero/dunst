@@ -272,7 +272,9 @@ impl Engine {
         // Detected primitives: rectangles are candidate containers, the rest
         // (bars/circles/lines) stay leaves.
         for (idx, shape) in self.read_shapes()?.into_iter().enumerate() {
-            let kind = if shape.kind == "Rect" {
+            // `Rect` = hollow bordered box, `Panel` = filled card/section — both
+            // are containers content nests inside; the rest stay leaves.
+            let kind = if shape.kind == "Rect" || shape.kind == "Panel" {
                 ZoneKind::Region
             } else {
                 ZoneKind::Shape

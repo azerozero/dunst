@@ -22,6 +22,8 @@ pub enum ShapeKind {
     Rect,
     /// A filled vertical bar (e.g. a bar-chart column).
     Bar,
+    /// A filled rectangular region — a card, section, or panel container.
+    Panel,
     /// A circular shape.
     Circle,
     /// An elongated line segment.
@@ -121,7 +123,7 @@ impl BoolImage {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BoxI {
     x: usize,
     y: usize,
@@ -283,6 +285,9 @@ fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut 
         .collect();
 
     bar_candidates.sort_by_key(|c| c.bbox.y + c.bbox.h);
+    // Bars own their components; the panel pass below skips these bboxes so a
+    // chart column is not re-emitted as a card.
+    let mut bar_bboxes: Vec<BoxI> = Vec::new();
     for group in baseline_groups(&bar_candidates) {
         if group.len() < 2 {
             continue;
@@ -292,6 +297,7 @@ fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut 
                 return;
             }
             let fill = c.pixels as f32 / c.bbox.area() as f32;
+            bar_bboxes.push(c.bbox);
             out.push(shape(
                 ShapeKind::Bar,
                 c.bbox,
@@ -327,6 +333,56 @@ fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut 
             ));
         }
     }
+
+    // Filled rectangular regions = cards / sections / panels: the solid
+    // containers modern UIs draw *without* a visible border, which neither the
+    // hollow `Rect` detector (needs an outline) nor the tall-`Bar` filter emits.
+    // Surfacing them lets the zone tree nest a card's text and controls under
+    // the card instead of leaving three flat lists.
+    for component in &comps {
+        if out.len() >= MAX_SHAPES {
+            return;
+        }
+        if bar_bboxes.contains(&component.bbox) {
+            continue;
+        }
+        if filled_panel_qualifies(*component, luma.width, luma.height) {
+            let fill = component.pixels as f32 / component.bbox.area().max(1) as f32;
+            out.push(shape(
+                ShapeKind::Panel,
+                component.bbox,
+                luma.width,
+                luma.height,
+                geometry,
+                (0.4 + fill * 0.4).min(0.85),
+            ));
+        }
+    }
+}
+
+/// Whether a filled connected component reads as a card/section/panel
+/// container: solid, sizeable, roughly rectangular, and neither a thin rule nor
+/// the whole window. Dimensions are in downscaled-image pixels
+/// ([`TARGET_WIDTH`]-wide), so thresholds are relative to that frame.
+fn filled_panel_qualifies(c: Component, img_w: usize, img_h: usize) -> bool {
+    let b = c.bbox;
+    if b.w < 24 || b.h < 16 {
+        return false;
+    }
+    let fill = c.pixels as f32 / b.area().max(1) as f32;
+    if fill < 0.60 {
+        return false;
+    }
+    // Reject thin rules and tall bars; keep card-like aspect ratios.
+    let aspect = b.w as f32 / b.h as f32;
+    if !(0.08..=12.0).contains(&aspect) {
+        return false;
+    }
+    // At least ~1% of the frame (a real card), at most ~75% (not the page
+    // background or the whole window).
+    let img_area = (img_w * img_h).max(1) as f32;
+    let area = b.area() as f32;
+    (0.01 * img_area..=0.75 * img_area).contains(&area)
 }
 
 fn components(mask: &BoolImage, min_pixels: usize) -> Vec<Component> {
@@ -554,5 +610,63 @@ fn iou(a: Bbox, b: Bbox) -> f64 {
         0.0
     } else {
         inter / union
+    }
+}
+
+#[cfg(test)]
+mod panel_tests {
+    use super::*;
+
+    fn comp(x: usize, y: usize, w: usize, h: usize, fill: f32) -> Component {
+        Component {
+            bbox: BoxI { x, y, w, h },
+            pixels: ((w * h) as f32 * fill) as usize,
+        }
+    }
+
+    // Frame is the downscaled TARGET_WIDTH-wide image; use 320x240 here.
+    const W: usize = 320;
+    const H: usize = 240;
+
+    #[test]
+    fn wide_filled_card_qualifies() {
+        // 120x80 solid card at 90% fill, ~12.5% of the frame.
+        assert!(filled_panel_qualifies(comp(40, 40, 120, 80, 0.90), W, H));
+    }
+
+    #[test]
+    fn elongated_header_section_qualifies() {
+        // A wide header band (aspect ~9.3, within the 12.0 cap).
+        assert!(filled_panel_qualifies(comp(20, 10, 280, 30, 0.80), W, H));
+    }
+
+    #[test]
+    fn thin_horizontal_rule_rejected() {
+        // h < 16 (a divider line), not a container.
+        assert!(!filled_panel_qualifies(comp(20, 100, 200, 3, 0.95), W, H));
+    }
+
+    #[test]
+    fn tall_narrow_bar_rejected() {
+        // w < 24 (a chart column), not a container.
+        assert!(!filled_panel_qualifies(comp(50, 40, 6, 90, 0.95), W, H));
+    }
+
+    #[test]
+    fn tiny_blob_rejected_by_area_floor() {
+        // Just meets min dims but falls under the ~1%-of-frame area floor.
+        assert!(!filled_panel_qualifies(comp(10, 10, 24, 16, 0.95), W, H));
+    }
+
+    #[test]
+    fn whole_window_rejected() {
+        // The full frame is the background, not a card (> 75% area cap).
+        assert!(!filled_panel_qualifies(comp(0, 0, W, H, 1.0), W, H));
+    }
+
+    #[test]
+    fn sparse_component_rejected() {
+        // Right size, but only 30% filled — an outline/scatter, not a solid card.
+        assert!(!filled_panel_qualifies(comp(40, 40, 120, 80, 0.30), W, H));
     }
 }
