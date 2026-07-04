@@ -118,11 +118,12 @@ const MEDIUM_KEYWORDS: &[&str] = &[
     "commit",
 ];
 
-/// A keyword compiled once: the `needle` is the normalised form matched against
-/// element text; `original` is the human-readable form used in `reasons`.
+/// A keyword compiled once: `needle` is the normalised form **pre-collected into
+/// chars** so matching allocates nothing per node; `original` is the
+/// human-readable form used in `reasons`.
 #[derive(Debug, Clone)]
 struct Keyword {
-    needle: String,
+    needle: Vec<char>,
     original: &'static str,
 }
 
@@ -175,7 +176,10 @@ impl RiskEngine {
     /// target field is itself low-risk (audit #13). Normalises (lowercase +
     /// accent-fold) then matches high, then medium; highest tier wins.
     pub fn assess_text(&self, text: &str) -> RiskAssessment {
-        let hay = normalize(text);
+        // Collect the haystack chars once here; the keyword loops below borrow it,
+        // instead of re-collecting per keyword (previously ~N_keywords allocations
+        // per node per refresh).
+        let hay: Vec<char> = normalize(text).chars().collect();
         if let Some(reasons) = match_tier(&hay, &self.high) {
             return RiskAssessment {
                 level: RiskLevel::High,
@@ -200,7 +204,7 @@ fn compile(keywords: &[&'static str]) -> Vec<Keyword> {
     keywords
         .iter()
         .map(|&kw| Keyword {
-            needle: normalize(kw),
+            needle: normalize(kw).chars().collect(),
             original: kw,
         })
         .collect()
@@ -210,10 +214,10 @@ fn compile(keywords: &[&'static str]) -> Vec<Keyword> {
 /// pre-normalised needle appears on token boundaries in the normalised haystack.
 /// Returns `None` when nothing matched. No per-keyword normalisation/allocation
 /// here.
-fn match_tier(hay: &str, keywords: &[Keyword]) -> Option<Vec<String>> {
+fn match_tier(hay: &[char], keywords: &[Keyword]) -> Option<Vec<String>> {
     let reasons: Vec<String> = keywords
         .iter()
-        .filter(|kw| contains_keyword(hay, kw.needle.as_str()))
+        .filter(|kw| contains_keyword(hay, &kw.needle))
         .map(|kw| format!("matched keyword: {}", kw.original))
         .collect();
     if reasons.is_empty() {
@@ -223,12 +227,10 @@ fn match_tier(hay: &str, keywords: &[Keyword]) -> Option<Vec<String>> {
     }
 }
 
-fn contains_keyword(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
+fn contains_keyword(h: &[char], n: &[char]) -> bool {
+    if n.is_empty() {
         return true;
     }
-    let h: Vec<char> = haystack.chars().collect();
-    let n: Vec<char> = needle.chars().collect();
     if n.len() > h.len() {
         return false;
     }
