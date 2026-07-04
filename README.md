@@ -120,9 +120,17 @@ cargo run -p dunst-mcp -- demo
 # Build the MCP server used by Codex/Claude stdio clients
 cargo build -p dunst-mcp
 
+# Install the dunst-mcp binary onto PATH (~/.cargo/bin) so MCP hosts launch it
+# directly as `dunst-mcp serve ...`; re-run with --force to update after a pull
+cargo install --path crates/dunst-mcp
+
 # Dump a live window's AX tree as JSON (find the pid/window via the MCP host)
 cargo run -p dunst-platform --example dump -- <pid> <window_id>
 ```
+
+Ensure `~/.cargo/bin` is on your `PATH` (it is by default with a rustup install)
+so the MCP host can find `dunst-mcp`. Until a Homebrew formula ships, `cargo
+install` is the supported way to put the binary on `PATH`.
 
 The fixture demo prints a scene summary, resolves `Nouvelle note`, executes the
 low-risk click, gates a destructive `Supprimer` action as `PendingApproval`, then
@@ -283,6 +291,9 @@ The `demo` narrates: resolve "Nouvelle note" by **label** → click → a destru
 audit trail exported as JSON.
 
 ## Development
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full guide — branch policy,
+Conventional Commits, and the review flow. The essentials, mirrored here:
 
 Run the same core checks as CI:
 
