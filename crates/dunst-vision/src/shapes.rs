@@ -14,6 +14,13 @@ use crate::{coords::vision_norm_to_screen_pt, CaptureGeometry, NormRect};
 
 const TARGET_WIDTH: usize = 320;
 const MAX_SHAPES: usize = 200;
+/// Luma delta (0–255) from the image median above which a pixel is foreground
+/// for the bar/circle detector.
+const FOREGROUND_DELTA: u16 = 38;
+/// Lower foreground delta used **only** for panel (card/section) detection, so
+/// low-contrast fills (e.g. light gray on white) the bar/circle threshold eats
+/// are recovered; the strict panel filter rejects the extra noise.
+const PANEL_FOREGROUND_DELTA: u16 = 14;
 
 /// Classified kind of a detected shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -252,18 +259,26 @@ fn detect_edge_shapes(edges: &BoolImage, geometry: &CaptureGeometry, out: &mut V
     }
 }
 
-fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut Vec<Shape>) {
-    let median = median_luma(&luma.data);
+/// Builds a foreground mask: pixels whose luma differs from `median` by more
+/// than `delta` (0–255), with sparse single-pixel noise removed. A lower `delta`
+/// recovers lower-contrast regions at the cost of more spurious pixels.
+fn foreground_mask(luma: &LumaImage, median: u8, delta: u16) -> BoolImage {
     let mut mask = BoolImage {
         width: luma.width,
         height: luma.height,
         data: luma
             .data
             .iter()
-            .map(|&v| (v as i16 - median as i16).unsigned_abs() > 38)
+            .map(|&v| (v as i16 - median as i16).unsigned_abs() > delta)
             .collect(),
     };
     remove_sparse_noise(&mut mask);
+    mask
+}
+
+fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut Vec<Shape>) {
+    let median = median_luma(&luma.data);
+    let mask = foreground_mask(luma, median, FOREGROUND_DELTA);
 
     // One flood-fill for the whole mask. `components(mask, k)` runs the same
     // connected-components pass regardless of `k` — `k` is only the final size
@@ -339,7 +354,17 @@ fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut 
     // hollow `Rect` detector (needs an outline) nor the tall-`Bar` filter emits.
     // Surfacing them lets the zone tree nest a card's text and controls under
     // the card instead of leaving three flat lists.
-    for component in &comps {
+    //
+    // Panels get their OWN, more sensitive mask. Cards are often low-contrast
+    // fills (light gray on white) whose luma sits *inside* the ±FOREGROUND_DELTA
+    // band, so the bar/circle mask never sees them — the exact "even in grayscale
+    // the diff exists, but the threshold eats it" gap. `PANEL_FOREGROUND_DELTA`
+    // is lower; the strict `filled_panel_qualifies` gate (size/fill/aspect/area)
+    // rejects the extra text/antialias noise a looser threshold surfaces. Bars
+    // and circles keep the original mask, so their output is byte-for-byte
+    // unchanged.
+    let panel_mask = foreground_mask(luma, median, PANEL_FOREGROUND_DELTA);
+    for component in &components(&panel_mask, 20) {
         if out.len() >= MAX_SHAPES {
             return;
         }
@@ -622,6 +647,63 @@ mod panel_tests {
             bbox: BoxI { x, y, w, h },
             pixels: ((w * h) as f32 * fill) as usize,
         }
+    }
+
+    /// A synthetic luma image: uniform `bg`, with one filled `card_luma` rect.
+    fn luma_with_card(
+        w: usize,
+        h: usize,
+        bg: u8,
+        card: (usize, usize, usize, usize),
+        card_luma: u8,
+    ) -> LumaImage {
+        let (cx, cy, cw, ch) = card;
+        let mut data = vec![bg; w * h];
+        for y in cy..cy + ch {
+            for x in cx..cx + cw {
+                data[y * w + x] = card_luma;
+            }
+        }
+        LumaImage {
+            width: w,
+            height: h,
+            data,
+        }
+    }
+
+    fn unit_geometry(w: usize, h: usize) -> CaptureGeometry {
+        CaptureGeometry {
+            window_origin_pt: (0.0, 0.0),
+            window_size_pt: (w as f64, h as f64),
+            image_size_px: (w as f64, h as f64),
+            backing_scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn low_contrast_card_is_detected_as_a_panel() {
+        // Gray card (luma 220) on a white page (240): a 20-level diff — below the
+        // bar/circle FOREGROUND_DELTA (38, so the old mask ate it) but above
+        // PANEL_FOREGROUND_DELTA (14). This is the exact case the fix recovers.
+        let luma = luma_with_card(320, 200, 240, (40, 40, 120, 80), 220);
+        let mut out = Vec::new();
+        detect_filled_shapes(&luma, &unit_geometry(320, 200), &mut out);
+        assert!(
+            out.iter().any(|s| s.kind == ShapeKind::Panel),
+            "expected a Panel for a 20-level card, got {:?}",
+            out.iter().map(|s| s.kind).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ultra_low_contrast_card_is_still_missed() {
+        // 10-level diff is below PANEL_FOREGROUND_DELTA (14): honestly still
+        // missed. Recovering this needs color/segmentation, not a lower luma
+        // threshold — lowering further would flood the mask with noise.
+        let luma = luma_with_card(320, 200, 240, (40, 40, 120, 80), 230);
+        let mut out = Vec::new();
+        detect_filled_shapes(&luma, &unit_geometry(320, 200), &mut out);
+        assert!(!out.iter().any(|s| s.kind == ShapeKind::Panel));
     }
 
     // Frame is the downscaled TARGET_WIDTH-wide image; use 320x240 here.
