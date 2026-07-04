@@ -293,6 +293,16 @@ fn success_action_hint(entry: &AuditEntry) -> Option<Value> {
             "verification": "visible text, OCR, or key element positions should change before relying on the new viewport"
         }));
     }
+    if entry.action == SemanticAction::Type
+        && raw_input_target(&entry.target_id)
+        && entry.graph_diff.changes.iter().all(low_signal_diff_change)
+    {
+        return Some(json!({
+            "reason": "The raw keyboard text returned success, but no field-value change was observed. Success here means the keystrokes were delivered to the focused window, NOT that a field received them — on a background or AX-sparse web surface the focused element is not guaranteed, so the text may have gone nowhere.",
+            "next_step": "Verify the text actually landed before continuing: find_ocr_text/read_text for the typed string (or window_view for the field value). If the placeholder is still shown or the text is absent, the field was not focused — re-focus it (click_near_text on its label/field, then retype); do not assume the value was set or move on to submit.",
+            "verification": "OCR/read_text should show the typed text inside the target field before the next action"
+        }));
+    }
     if entry.action == SemanticAction::Click
         && raw_input_target(&entry.target_id)
         && entry.graph_diff.changes.iter().all(low_signal_diff_change)

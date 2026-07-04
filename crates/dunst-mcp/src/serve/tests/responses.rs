@@ -229,6 +229,69 @@ fn bbox_only_generated_wrapper_click_gets_verification_hint() {
 }
 
 #[test]
+fn raw_type_keys_success_without_landing_gets_verification_hint() {
+    // A raw keyboard@ type that returns Success but moves nothing meaningful in the
+    // AX graph (sparse-AX / background web where focus may have silently moved) must
+    // steer the agent to OCR-verify the text landed rather than trust the success.
+    let stray = |target_id: &str| AuditEntry {
+        ts_ms: 44,
+        target_id: target_id.into(),
+        action: SemanticAction::Type,
+        argument: Some("chirashi x2".into()),
+        risk: dunst_core::RiskAssessment::low(),
+        reasoning: Some("fill the search field".into()),
+        result: ActionResult::Success,
+        effect_verified: None,
+        graph_diff: GraphDiff {
+            changes: vec![NodeChange::Changed {
+                id: "grp_ab12cd34ef56aa01".into(),
+                field: "bbox".into(),
+                before: "Some(Bbox { x: 1.0, y: 1.0, w: 1.0, h: 1.0 })".into(),
+                after: "Some(Bbox { x: 2.0, y: 2.0, w: 1.0, h: 1.0 })".into(),
+            }],
+        },
+        caller: None,
+    };
+
+    let value = audit_entry_value(stray("keyboard@type_keys:00112233445566aa:11"), false);
+    let hint = &value["verification_hint"];
+    assert!(
+        hint["reason"]
+            .as_str()
+            .unwrap()
+            .contains("keystrokes were delivered"),
+        "raw type_keys success without landing must warn the text may not have landed: {hint}"
+    );
+    assert!(
+        hint["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("find_ocr_text"),
+        "hint must steer to OCR verification: {hint}"
+    );
+
+    // But when the target field value actually changed, the type demonstrably landed:
+    // no nag.
+    let landed = AuditEntry {
+        graph_diff: GraphDiff {
+            changes: vec![NodeChange::Changed {
+                id: "field_search".into(),
+                field: "value".into(),
+                before: "".into(),
+                after: "chirashi x2".into(),
+            }],
+        },
+        ..stray("keyboard@type_keys:00112233445566aa:11")
+    };
+    let value = audit_entry_value(landed, false);
+    assert!(
+        value["verification_hint"].is_null(),
+        "an observed field-value change must not trigger the landing nag: {}",
+        value["verification_hint"]
+    );
+}
+
+#[test]
 fn typed_audit_summary_reports_whether_target_value_changed() {
     let changed = AuditEntry {
         ts_ms: 42,
