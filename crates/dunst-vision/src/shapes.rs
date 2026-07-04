@@ -135,7 +135,7 @@ impl BoxI {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct Component {
     bbox: BoxI,
     pixels: usize,
@@ -263,9 +263,15 @@ fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut 
     };
     remove_sparse_noise(&mut mask);
 
+    // One flood-fill for the whole mask. `components(mask, k)` runs the same
+    // connected-components pass regardless of `k` — `k` is only the final size
+    // gate — so `components(mask, 28)` is exactly `components(mask, 20)` filtered
+    // to `pixels >= 28`. Compute the min-20 set once and reuse it for circles
+    // below instead of flooding the mask a second time (O(W*H) saved per call).
     let comps = components(&mask, 20);
     let mut bar_candidates: Vec<Component> = comps
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|c| {
             let b = c.bbox;
             b.w >= 5
@@ -297,7 +303,7 @@ fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut 
         }
     }
 
-    for component in components(&mask, 28) {
+    for component in comps.iter().filter(|c| c.pixels >= 28) {
         if out.len() >= MAX_SHAPES {
             return;
         }
