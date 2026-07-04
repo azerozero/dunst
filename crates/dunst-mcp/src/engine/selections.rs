@@ -95,6 +95,27 @@ pub struct StepResult {
     pub error: Option<String>,
 }
 
+impl StepResult {
+    /// Builds a result for `step`, reusing its `choice_id`/`op` so the batch loop
+    /// only states what differs per branch (status, resolver, label, error).
+    fn for_step(
+        step: &SelectionStep,
+        result: StepResultStatus,
+        resolved_by: Option<ResolvedBy>,
+        label: Option<String>,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            choice_id: step.choice_id.clone(),
+            op: step.op,
+            result,
+            resolved_by,
+            label,
+            error,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepResultStatus {
@@ -294,113 +315,94 @@ impl Engine {
                 remaining_steps.push(step.clone());
                 continue;
             }
-            let resolved = resolve_step(step, &model);
-            let Some(resolved) = resolved else {
-                results.push(StepResult {
-                    choice_id: step.choice_id.clone(),
-                    op: step.op,
-                    result: StepResultStatus::Failed,
-                    resolved_by: None,
-                    label: step.label.clone(),
-                    error: Some("unresolvable".to_string()),
-                });
+            let Some(resolved) = resolve_step(step, &model) else {
+                results.push(StepResult::for_step(
+                    step,
+                    StepResultStatus::Failed,
+                    None,
+                    step.label.clone(),
+                    Some("unresolvable".to_string()),
+                ));
                 remaining_steps.push(step.clone());
                 continue;
             };
 
             if step_already_satisfied(step, &resolved.choice) {
-                results.push(StepResult {
-                    choice_id: step.choice_id.clone(),
-                    op: step.op,
-                    result: StepResultStatus::Success,
-                    resolved_by: Some(resolved.resolved_by),
-                    label: Some(resolved.choice.label),
-                    error: None,
-                });
+                results.push(StepResult::for_step(
+                    step,
+                    StepResultStatus::Success,
+                    Some(resolved.resolved_by),
+                    Some(resolved.choice.label),
+                    None,
+                ));
                 continue;
             }
 
             if !self.consume_batch_budget() {
-                results.push(StepResult {
-                    choice_id: step.choice_id.clone(),
-                    op: step.op,
-                    result: StepResultStatus::Skipped,
-                    resolved_by: Some(resolved.resolved_by),
-                    label: Some(resolved.choice.label.clone()),
-                    error: Some("batch budget exhausted".to_string()),
-                });
+                results.push(StepResult::for_step(
+                    step,
+                    StepResultStatus::Skipped,
+                    Some(resolved.resolved_by),
+                    Some(resolved.choice.label.clone()),
+                    Some("batch budget exhausted".to_string()),
+                ));
                 remaining_steps.extend(plan.steps[idx..].iter().cloned());
                 stopped = true;
                 continue;
             }
 
             let label = resolved.choice.label.clone();
-            let audit = self.execute_selection_step(step, &resolved.choice);
-            match audit {
+            match self.execute_selection_step(step, &resolved.choice) {
                 Ok(Some(entry)) if entry.result == ActionResult::Success => {
-                    results.push(StepResult {
-                        choice_id: step.choice_id.clone(),
-                        op: step.op,
-                        result: StepResultStatus::Success,
-                        resolved_by: Some(resolved.resolved_by),
-                        label: Some(label),
-                        error: None,
-                    });
-                    if idx + 1 < plan.steps.len() {
-                        let current = self.current_ui_epoch_fingerprint();
-                        if current != pinned_epoch {
-                            if graph_diff_looks_like_reflow(&entry.graph_diff) {
-                                if rescans >= MAX_RESCANS {
-                                    remaining_steps.extend(plan.steps[idx + 1..].iter().cloned());
-                                    stopped = true;
-                                } else {
-                                    rescans += 1;
-                                    model = self.enumerate_choices(EnumerateOpts {
-                                        scope: "page",
-                                        include_latent: true,
-                                        scroll_scan: false,
-                                        max_scroll_pages: 1,
-                                        limit: 500,
-                                    })?;
-                                    pinned_epoch = model.ui_epoch.clone();
-                                }
-                            } else {
-                                pinned_epoch = current;
-                            }
-                        }
+                    results.push(StepResult::for_step(
+                        step,
+                        StepResultStatus::Success,
+                        Some(resolved.resolved_by),
+                        Some(label),
+                        None,
+                    ));
+                    // Reflow storm past MAX_RESCANS ⇒ stop; otherwise the model /
+                    // pinned epoch / rescan count are reconciled in place.
+                    if idx + 1 < plan.steps.len()
+                        && self.reconcile_epoch_after_step(
+                            &entry.graph_diff,
+                            &mut pinned_epoch,
+                            &mut model,
+                            &mut rescans,
+                        )?
+                    {
+                        remaining_steps.extend(plan.steps[idx + 1..].iter().cloned());
+                        stopped = true;
                     }
                 }
                 Ok(Some(entry)) => {
-                    results.push(StepResult {
-                        choice_id: step.choice_id.clone(),
-                        op: step.op,
-                        result: StepResultStatus::Failed,
-                        resolved_by: Some(resolved.resolved_by),
-                        label: Some(label),
-                        error: Some(format!("actuator returned {:?}", entry.result)),
-                    });
+                    results.push(StepResult::for_step(
+                        step,
+                        StepResultStatus::Failed,
+                        Some(resolved.resolved_by),
+                        Some(label),
+                        Some(format!("actuator returned {:?}", entry.result)),
+                    ));
                     remaining_steps.extend(plan.steps[idx + 1..].iter().cloned());
                     stopped = true;
                 }
                 Ok(None) => {
-                    results.push(StepResult {
-                        choice_id: step.choice_id.clone(),
-                        op: step.op,
-                        result: StepResultStatus::Success,
-                        resolved_by: Some(resolved.resolved_by),
-                        label: Some(label),
-                        error: None,
-                    });
+                    results.push(StepResult::for_step(
+                        step,
+                        StepResultStatus::Success,
+                        Some(resolved.resolved_by),
+                        Some(label),
+                        None,
+                    ));
                 }
                 Err(err) => {
-                    results.push(StepResult {
-                        choice_id: step.choice_id.clone(),
-                        op: step.op,
-                        result: StepResultStatus::Failed,
-                        resolved_by: Some(resolved.resolved_by),
-                        label: Some(label),
-                        error: Some(err.to_string()),
-                    });
+                    results.push(StepResult::for_step(
+                        step,
+                        StepResultStatus::Failed,
+                        Some(resolved.resolved_by),
+                        Some(label),
+                        Some(err.to_string()),
+                    ));
                     remaining_steps.extend(plan.steps[idx + 1..].iter().cloned());
                     stopped = true;
                 }
@@ -432,6 +434,49 @@ impl Engine {
             remaining_steps,
             reason: None,
         })
+    }
+
+    /// Reconciles the pinned UI epoch after a step that changed the page.
+    ///
+    /// A page mutation shifts the epoch; this decides how to carry the batch
+    /// forward. A cosmetic shift just re-pins the epoch. A structural *reflow*
+    /// re-enumerates the choice model once (bumping `rescans`) so later steps
+    /// resolve against the new layout. When a reflow keeps churning past
+    /// [`MAX_RESCANS`], it returns `true` — a reflow storm the caller stops on.
+    ///
+    /// `pinned_epoch`, `model` and `rescans` are updated in place.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any failure from re-enumerating the choice model.
+    fn reconcile_epoch_after_step(
+        &mut self,
+        diff: &GraphDiff,
+        pinned_epoch: &mut String,
+        model: &mut ChoiceModel,
+        rescans: &mut u32,
+    ) -> dunst_core::Result<bool> {
+        let current = self.current_ui_epoch_fingerprint();
+        if current == *pinned_epoch {
+            return Ok(false);
+        }
+        if !graph_diff_looks_like_reflow(diff) {
+            *pinned_epoch = current;
+            return Ok(false);
+        }
+        if *rescans >= MAX_RESCANS {
+            return Ok(true);
+        }
+        *rescans += 1;
+        *model = self.enumerate_choices(EnumerateOpts {
+            scope: "page",
+            include_latent: true,
+            scroll_scan: false,
+            max_scroll_pages: 1,
+            limit: 500,
+        })?;
+        *pinned_epoch = model.ui_epoch.clone();
+        Ok(false)
     }
 
     fn execute_selection_step(
