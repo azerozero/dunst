@@ -1,5 +1,5 @@
 use super::*;
-use dunst_core::mock::MockPerceptor;
+use dunst_core::mock::{MockPerceptor, NOTES_FIXTURE_WINDOW_ID};
 use dunst_core::{RiskLevel, SessionIdentity};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -54,7 +54,7 @@ fn engine_with_counter() -> (Engine, Arc<AtomicUsize>) {
         exec,
         Target {
             pid: 1363,
-            window_id: 105,
+            window_id: NOTES_FIXTURE_WINDOW_ID,
         },
     )
     .unwrap();
@@ -76,7 +76,7 @@ fn engine_new_normalizes_main_window_placeholder_target() {
     )
     .unwrap();
 
-    assert_eq!(eng.target(), (1363, 105));
+    assert_eq!(eng.target(), (1363, NOTES_FIXTURE_WINDOW_ID));
 }
 
 type RecordedCall = (String, SemanticAction, Option<String>);
@@ -109,7 +109,7 @@ fn engine_with_recorder() -> (Engine, Arc<Mutex<Vec<RecordedCall>>>) {
         exec,
         Target {
             pid: 1363,
-            window_id: 105,
+            window_id: NOTES_FIXTURE_WINDOW_ID,
         },
     )
     .unwrap();

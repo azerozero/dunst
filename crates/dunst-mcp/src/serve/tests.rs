@@ -1,11 +1,11 @@
 use super::*;
-use dunst_core::mock::{MockPerceptor, RecordingExecutor};
+use dunst_core::mock::{MockPerceptor, RecordingExecutor, NOTES_FIXTURE_WINDOW_ID};
 use dunst_core::{Perceptor, RawAxNode, Target, WindowRef};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 fn engine() -> Engine {
-    engine_with_window(105)
+    engine_with_window(NOTES_FIXTURE_WINDOW_ID)
 }
 
 fn engine_with_window(window_id: u32) -> Engine {
@@ -30,7 +30,7 @@ fn engine_with_pid(pid: i32) -> Engine {
         exec,
         Target {
             pid,
-            window_id: 105,
+            window_id: NOTES_FIXTURE_WINDOW_ID,
         },
     )
     .unwrap()
@@ -61,7 +61,7 @@ fn engine_with_capture_counter() -> (Engine, Arc<AtomicUsize>) {
         roots,
         window: WindowRef {
             pid: 1363,
-            window_id: 105,
+            window_id: NOTES_FIXTURE_WINDOW_ID,
             app_name: "Notes".into(),
             title: "Notes – Aucune note".into(),
         },
@@ -73,7 +73,7 @@ fn engine_with_capture_counter() -> (Engine, Arc<AtomicUsize>) {
         exec,
         Target {
             pid: 1363,
-            window_id: 105,
+            window_id: NOTES_FIXTURE_WINDOW_ID,
         },
     )
     .unwrap();

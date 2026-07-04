@@ -7,6 +7,15 @@ use crate::types::{RawAxNode, SceneNode, SemanticAction, WindowRef};
 use crate::Result;
 use std::sync::Mutex;
 
+/// Window id carried by the bundled fixtures. Deliberately far above the range
+/// the macOS window server assigns to real on-screen windows (CGWindowIDs start
+/// low and increment), so `dunst_vision::capture::window_bounds` reliably returns
+/// `None` for it in device-free tests. That keeps geometry guards falling back to
+/// the fixture's cached rect instead of colliding with whatever live desktop
+/// widget happens to own a small CG window id on the developer's machine — the
+/// cause of the "4 raw-approval tests are flaky locally" gremlin.
+pub const NOTES_FIXTURE_WINDOW_ID: u32 = 900_000_105;
+
 /// A [`Perceptor`] backed by an in-memory list of root nodes (typically loaded
 /// from a fixture such as `fixtures/notes.json`).
 pub struct MockPerceptor {
@@ -31,7 +40,7 @@ impl MockPerceptor {
         let json = include_str!("../fixtures/notes.json");
         let window = WindowRef {
             pid: 1363,
-            window_id: 105,
+            window_id: NOTES_FIXTURE_WINDOW_ID,
             app_name: "Notes".into(),
             title: "Notes – Aucune note".into(),
         };

@@ -10,7 +10,7 @@ mod engine;
 mod serve;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use dunst_core::mock::{MockPerceptor, RecordingExecutor};
+use dunst_core::mock::{MockPerceptor, RecordingExecutor, NOTES_FIXTURE_WINDOW_ID};
 use dunst_core::{ActionResult, SemanticAction, Target};
 use engine::Engine;
 use serde_json::json;
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 /// the bundled Notes capture, not a live process.
 const DEMO_TARGET: Target = Target {
     pid: 1363,
-    window_id: 105,
+    window_id: NOTES_FIXTURE_WINDOW_ID,
 };
 const CLI_LONG_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),

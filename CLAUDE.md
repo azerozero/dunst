@@ -61,7 +61,6 @@ feat/* or fix/* ──► PR ──► main ──► release-plz PR ──► t
 - **Conventional commits required**: `feat:` / `fix:` / `refactor:` / `perf:` bump the version via release-plz; `chore:` / `docs:` / `test:` / `style:` do not. The prefix is the gate. Commit messages are in **French**.
 - **No AI/tool attribution in history.** Commits and PR bodies carry **zero** `Co-Authored-By` bot lines and no "Generated with …" trailers.
 - **Check file overlap before parallel PRs**: if two PRs touch the same files, base the second on the first branch (`git checkout -b feat/B feat/A`), not on `main`.
-- The 4 raw-approval tests that reference fixture `window_id 105` are environmental flakes (they fail identically on `main`); a red run limited to those is not a regression.
 
 ### CI Pipeline (`.github/workflows/`)
 
