@@ -4,7 +4,6 @@
 .obsidian/
 .claude/
 .codex/
-/100
 *.trace
 /traces
 .lycheecache

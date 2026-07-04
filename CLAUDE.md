@@ -4,7 +4,7 @@ Companion to [`AGENTS.md`](AGENTS.md) (project map, domain concepts, gotchas). T
 
 ## Architecture
 
-Dunst is an AX-first macOS MCP server for background UI automation. It perceives a target window into a stable scene graph, derives a risk-annotated affordance graph, and executes semantic actions through a least-intrusive capability ladder (native driver → AX → window-scoped background event → `borrow_cursor`), auditing every step with a before/after graph diff. See `AGENTS.md` for the full picture.
+Dunst is an AX-first macOS MCP server for background UI automation. It perceives a target window into a stable scene graph, derives a risk-annotated affordance graph, and executes semantic actions through a least-intrusive capability ladder (AX → window-scoped background event → `borrow_cursor`), auditing every step with a before/after graph diff. See `AGENTS.md` for the full picture.
 
 ### Distribution
 
@@ -20,10 +20,10 @@ crates/
   dunst-graph/     # pure pipeline: scene graph → affordances → risk
   dunst-platform/  # macOS backend: AX, SkyLight, pointer/web events, text input
   dunst-vision/    # capture + OCR
-  dunst-mcp/       # engine (src/engine/) + MCP serve loop (src/serve/) + drivers/
+  dunst-mcp/       # engine (src/engine/) + MCP serve loop (src/serve/)
 ```
 
-The engine (`crates/dunst-mcp/src/engine/`) is split by concern: `action*` (dispatch + gating), `raw_input*` (synthetic input + approval), `read`/`ocr_read`/`scene_query` (perception & query), `window_ops`/`window_geometry` (visibility & raising), `drivers/` (per-app native drivers). Platform primitives live behind `dunst_platform::*` with non-macOS stubs so the workspace still builds on Linux CI.
+The engine (`crates/dunst-mcp/src/engine/`) is split by concern: `action*` (dispatch + gating), `raw_input*` (synthetic input + approval), `read`/`ocr_read`/`scene_query` (perception & query), `window_ops`/`window_geometry` (visibility & raising), `app_ops` (launch/navigate/tab reuse). Platform primitives live behind `dunst_platform::*` with non-macOS stubs so the workspace still builds on Linux CI.
 
 ## Local Setup
 
@@ -94,9 +94,9 @@ Enforced by the `cargo-doc-coverage` pre-push hook: **every public item must hav
 - `// SAFETY:` is **mandatory** before every `unsafe` block (the codebase is FFI-heavy: AX, CoreGraphics, SkyLight). It states why the FFI contract is upheld.
 - No commented-out code (git has history). No closing-brace comments.
 
-### External Documentation (Diátaxis)
+### External Documentation
 
-Each doc file is exactly one type: `docs/tutorials/` (learn), `docs/how-to/` (solve X), `docs/reference/` (exact details), `docs/explanation/` (why it works this way), `docs/decisions/` (ADRs — why a decision was made).
+`docs/` is flat; `docs/README.md` is the routing map that separates **Current** references from **Historical** work-package / audit notes. Add a new doc under `docs/` and link it from `docs/README.md`; prefer updating an existing reference over adding a near-duplicate. Behavioural invariants that a test locks live in `docs/CONTRACTS.md`.
 
 ### What Goes Where
 
@@ -106,5 +106,5 @@ Each doc file is exactly one type: `docs/tutorials/` (learn), `docs/how-to/` (so
 | Why this implementation approach | `//` inline comment |
 | Safety justification for `unsafe` | `// SAFETY:` before the block |
 | Safety contract for callers | `# Safety` in the doc comment |
-| Architecture rationale | `docs/decisions/NNNN-*.md` (ADR) |
-| How components interact | `docs/explanation/` |
+| Behavioural invariant locked by a test | `docs/CONTRACTS.md` |
+| Cross-cutting design / architecture note | a `docs/*.md`, linked from `docs/README.md` |

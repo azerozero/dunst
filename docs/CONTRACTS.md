@@ -72,8 +72,10 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   — `engine::tests::apply_selections_rescans_only_when_fingerprint_changes`,
   `serve::tests::stale_expected_epoch_refuses_apply_selections`.
 - **Enumeration is read-only or survey-only.** `enumerate_choices` mutates no
-  application data: default mode does not scroll; `scroll_scan` is
-  mutation-coordinated but not operator-approval-gated and restores the original
+  application data: the default mode reads without scrolling unless its single pass
+  is incomplete on an AX-sparse surface, in which case it auto-runs one
+  position-restoring `scroll_scan` sweep. `scroll_scan` (explicit or auto-upgraded)
+  is mutation-coordinated but not operator-approval-gated and restores the original
   scroll position on live backends.
   — `engine::tests::enumerate_scroll_scan_restores_origin_and_sets_coverage_complete`.
 - **Approval transport boundary.** `approve` is an operator-side interlock, not a
