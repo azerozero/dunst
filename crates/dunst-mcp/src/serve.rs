@@ -634,7 +634,7 @@ fn add_mutation_preconditions(input_schema: &mut Value) {
     });
 }
 
-fn tool_accepts_mutation_preconditions(name: &str) -> bool {
+pub(super) fn tool_accepts_mutation_preconditions(name: &str) -> bool {
     matches!(
         name,
         "click_element"
@@ -658,6 +658,7 @@ fn tool_accepts_mutation_preconditions(name: &str) -> bool {
             | "open_menu"
             | "press_key"
             | "type_keys"
+            | "set_field_text"
             | "paste_text"
             | "scroll"
             | "scroll_at"

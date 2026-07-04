@@ -336,3 +336,45 @@ fn tool_registry_matches_advertised_catalog() {
         );
     }
 }
+
+#[test]
+fn mutation_precondition_and_coordination_policies_agree() {
+    // Two hand-maintained policy lists must stay in lockstep or a mutating tool
+    // silently loses half its contract: `tool_accepts_mutation_preconditions`
+    // (serve.rs — advertises expected_epoch/fencing_token in the schema) and
+    // `tool_requires_mutation_coordination` (dispatch.rs — grabs the mutation lock
+    // + window lease). Adding a mutating tool touches both; this test fails if only
+    // one is updated. Args that maximise coordination so arg-conditional tools
+    // (borrow_cursor reads, scroll_scan surveys) count as coordinatable.
+    let maximal = json!({ "borrow_cursor": true, "scroll_scan": true });
+
+    // Tools that DO acquire the lease for some args but deliberately do not advertise
+    // mutation preconditions, because they are read-only/survey-only and guarded
+    // elsewhere (enumerate_choices scroll_scan restores the scroll position and is
+    // not approval-gated — docs/CONTRACTS.md "Enumeration is read-only or survey-only").
+    let coordinated_without_preconditions = ["enumerate_choices"];
+
+    for t in TOOL_REGISTRY {
+        let can_coordinate =
+            crate::serve::dispatch::tool_requires_mutation_coordination(t.route, t.name, &maximal);
+        let accepts = crate::serve::tool_accepts_mutation_preconditions(t.name);
+
+        if accepts {
+            assert!(
+                can_coordinate,
+                "{} advertises expected_epoch/fencing_token but is never mutation-coordinated: \
+                 a dead precondition — remove it from tool_accepts_mutation_preconditions",
+                t.name
+            );
+        }
+        if can_coordinate && !accepts {
+            assert!(
+                coordinated_without_preconditions.contains(&t.name),
+                "{} is mutation-coordinated (takes the window lease) but its schema does not \
+                 advertise expected_epoch/fencing_token — add it to \
+                 tool_accepts_mutation_preconditions, or to the documented survey-only exceptions",
+                t.name
+            );
+        }
+    }
+}
