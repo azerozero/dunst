@@ -175,7 +175,11 @@ fn text_response(
     }
 }
 
-fn tool_requires_mutation_coordination(route: ToolRoute, name: &str, args: &Value) -> bool {
+pub(super) fn tool_requires_mutation_coordination(
+    route: ToolRoute,
+    name: &str,
+    args: &Value,
+) -> bool {
     match route {
         ToolRoute::Read => match name {
             "read_at" | "read_series" => arg_bool(args, "borrow_cursor").unwrap_or(false),

@@ -105,6 +105,15 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   `serve::tests::stale_fencing_token_is_rejected_for_same_session`,
   `serve::tests::mutating_tool_rejects_stale_expected_epoch`,
   `serve::tests::tools_list_exposes_read_text_with_object_schema`.
+- **The two mutation policies stay in lockstep.** A tool that acquires the
+  mutation lock + window lease for some arguments
+  (`tool_requires_mutation_coordination`) also advertises the
+  `expected_epoch`/`fencing_token` preconditions in its schema
+  (`tool_accepts_mutation_preconditions`), and vice versa — the only exception is a
+  read-only/survey tool that coordinates without gating (`enumerate_choices`
+  `scroll_scan`). Neither hand-maintained list can silently drift when a mutating
+  tool is added without the other being updated.
+  — `serve::tests::mutation_precondition_and_coordination_policies_agree`.
 - **OS support is advertised by grouped platform capabilities, not inferred from
   the current target.** `dunst-platform` owns the platform-kind switch and
   exposes reusable groups for input, clipboard, perception/OCR/CV, windows, and
