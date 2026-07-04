@@ -152,6 +152,13 @@ pub fn click_web_background(
 /// never warps the real cursor; it is the default hover path for target-window
 /// probes. Callers that need a real OS cursor hover must opt into the cursor
 /// borrow path explicitly.
+///
+/// # Errors
+///
+/// Returns an error if `window_id` is zero or the SkyLight backend is
+/// unavailable, if the user-active guard is blocking, if the background hover
+/// NSEvent cannot be created, or if SkyLight rejects posting the event to the
+/// target process.
 pub fn hover_web_background(
     pid: i32,
     window_id: u32,
@@ -209,6 +216,13 @@ pub(super) fn hover_web_background_impl(
 /// Post a concrete wheel event to a backgrounded web window through SkyLight.
 /// Unlike PageDown, this targets a point inside a scroll container/card and lets
 /// the browser decide which element owns the wheel delta.
+///
+/// # Errors
+///
+/// Returns an error if `window_id` is zero or the SkyLight backend is
+/// unavailable, if the user-active guard is blocking, if the CoreGraphics event
+/// source or scroll-wheel CGEvent cannot be created, or if SkyLight rejects
+/// posting the event to the target process.
 pub fn scroll_web_background(
     pid: i32,
     window_id: u32,
@@ -272,6 +286,13 @@ pub(super) fn scroll_web_background_impl(
 /// `SLSEventAuthenticationMessage` Chromium requires, posted via
 /// `SLEventPostToPid`. No cursor, no foreground. Fails if SkyLight is absent
 /// or if any expected key event cannot be created and posted.
+///
+/// # Errors
+///
+/// Returns an error if a multi-line clipboard paste is attempted and fails
+/// unrecoverably, if the SkyLight backend is unavailable, if `window_id` is
+/// zero, if the user-active guard is blocking, or if any per-character key
+/// CGEvent cannot be created or posted to the target process.
 pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> Result<()> {
     type_text_background_with_paste_fallback(pid, window_id, text).map_err(ActionFailure::into)
 }
@@ -400,6 +421,13 @@ pub(super) fn post_background_key_event(
 /// content via the SkyLight auth-signed keyboard path — used for scrolling
 /// (Page Down/Up, Home, End) and other non-character keys. Fails if SkyLight
 /// is absent or if either key event cannot be created and posted.
+///
+/// # Errors
+///
+/// Returns an error if the SkyLight backend is unavailable, if the user-active
+/// guard is blocking, if the CoreGraphics event source or a key-down/up CGEvent
+/// cannot be created, or if SkyLight rejects posting an event to the target
+/// process.
 pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) -> Result<()> {
     if !skylight::mouse_post_available() {
         return Err(DunstError::Execution(
@@ -431,6 +459,11 @@ pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) ->
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns an error if `key` is not a recognized key name, or if the underlying
+/// [`key_web_background`] call fails (SkyLight unavailable, user-active guard
+/// blocking, CGEvent creation failing, or the SkyLight post being rejected).
 pub fn press_key(pid: i32, window_id: u32, key: &str) -> Result<()> {
     let (keycode, flags) = named_key_event(key).map_err(DunstError::from)?;
     key_web_background(pid, window_id, keycode, flags)

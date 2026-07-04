@@ -166,6 +166,15 @@ struct ResolvedChoice {
 }
 
 impl Engine {
+    /// Applies a batch of choice selections under one operator approval.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the plan is invalid (empty `expected_epoch`, no
+    /// steps, more than the maximum step count, an empty `choice_id`, or a
+    /// `set_text` step without a value), if `expected_epoch` no longer matches
+    /// the current UI epoch, if enumerating the choice model fails, or if
+    /// executing or verifying the batch fails.
     pub fn apply_selections(
         &mut self,
         plan: SelectionPlan,

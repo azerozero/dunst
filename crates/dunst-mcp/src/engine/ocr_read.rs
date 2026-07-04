@@ -5,6 +5,14 @@ impl Engine {
     /// hover and OCRs only the target window. Set `borrow_cursor=true` for the
     /// older real-cursor path: one borrow for the whole sweep, warp to each point,
     /// OCR a screen fovea, then restore the cursor. macOS-only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any point lies outside the target window, if
+    /// `borrow_cursor` is `true` while the target window is covered by other
+    /// windows, if borrowing the OS cursor fails, or if OCR of a fovea fails
+    /// during the sweep. On the default background path, also errors if hovering
+    /// the target window fails.
     #[cfg(target_os = "macos")]
     pub fn read_series(
         &self,
@@ -59,6 +67,10 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: `read_series` requires a macOS backend.
     #[cfg(not(target_os = "macos"))]
     pub fn read_series(
         &self,
@@ -195,6 +207,12 @@ impl Engine {
 
     /// Single-point [`read_series`](Self::read_series): borrow the cursor, hover
     /// `(x, y)`, OCR around it, restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`read_series`](Self::read_series) fails for the
+    /// point — e.g. it lies outside the target window, the cursor borrow fails,
+    /// or OCR of the fovea fails.
     pub fn read_at(&self, x: f64, y: f64, borrow_cursor: bool) -> dunst_core::Result<Vec<TextHit>> {
         Ok(self
             .read_series(&[(x, y)], borrow_cursor)?
@@ -205,6 +223,12 @@ impl Engine {
 
     /// Find OCR text in the target-window capture and return stable hit ids
     /// suitable for a follow-up `click_near_text`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `query` is empty, or if the underlying
+    /// [`read_text_detailed`](Self::read_text_detailed) OCR pass fails (for
+    /// example the target window cannot be captured).
     pub fn find_ocr_text(
         &self,
         query: &str,
@@ -268,6 +292,12 @@ impl Engine {
     /// Click the best OCR match by text, not by hand-picked coordinates. The
     /// click itself still goes through the raw-click approval gate, but the
     /// target point is now derived from a named OCR hit and returned for audit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no OCR hit matches `query`, if the underlying OCR
+    /// read fails, or if the resulting raw click is rejected by the approval
+    /// gate or fails to execute.
     pub fn click_near_text(
         &mut self,
         query: &str,
@@ -341,6 +371,12 @@ impl Engine {
     /// conservative heuristic: it returns candidates when the UI exposes text
     /// such as "Close", "Fermer", "Not now", or "Plus tard"; it does not infer
     /// a close coordinate from decoration alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying
+    /// [`read_text_detailed`](Self::read_text_detailed) OCR pass fails, for
+    /// example when the target window cannot be captured.
     pub fn detect_modal(&self) -> dunst_core::Result<ModalState> {
         let window = self.current_window_bounds();
         let modal_bbox = likely_modal_bbox(self.scene_graph(), window);
@@ -393,6 +429,12 @@ impl Engine {
     /// Dismiss a modal only when a close/dismiss OCR candidate exists. This
     /// deliberately refuses to click guessed corners or backdrop regions because
     /// those were the source of accidental restaurant/card opens in the trace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no safe OCR close/dismiss candidate is found, if the
+    /// underlying modal detection OCR fails, or if the dismiss click is rejected
+    /// by the approval gate or fails to execute.
     pub fn dismiss_modal(
         &mut self,
         reasoning: Option<&str>,
@@ -437,6 +479,12 @@ impl Engine {
     /// Group visible OCR lines into card-like candidates. This is intentionally
     /// heuristic but useful for web grids where AX exposes only a root group:
     /// restaurant/product cards become named click targets with facts and bboxes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying
+    /// [`read_text_detailed`](Self::read_text_detailed) OCR pass fails, for
+    /// example when the target window cannot be captured.
     pub fn extract_ocr_cards(
         &self,
         accurate: bool,
@@ -518,6 +566,11 @@ impl Engine {
     /// reading the value-at-cursor at `samples` points. Returns a blank-but-honest
     /// [`ScanResult`] (`present: false`) when there is nothing to read, instead of
     /// hovering an empty plot. macOS-only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the composited capture of the target window fails —
+    /// there is no live window to scan.
     #[cfg(target_os = "macos")]
     pub fn scan_chart(&self, samples: usize) -> dunst_core::Result<ScanResult> {
         // Make the (possibly backgrounded) window active WITHOUT raising it, so a
@@ -588,6 +641,10 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: `scan_chart` requires a macOS backend.
     #[cfg(not(target_os = "macos"))]
     pub fn scan_chart(&self, _samples: usize) -> dunst_core::Result<ScanResult> {
         Err(DunstError::Execution(

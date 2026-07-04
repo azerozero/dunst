@@ -6,6 +6,13 @@ impl Engine {
     /// `region_screen_pt` limits OCR to a screen-point rectangle; `None` reads the
     /// whole window. Each hit's bbox is mapped from Vision's normalised space to
     /// screen points. macOS-only — see the non-macOS stub below.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying
+    /// [`read_text_detailed`](Self::read_text_detailed) pass fails: an invalid
+    /// region, a region outside the target window, a failed window capture, or a
+    /// Vision OCR failure with no AX terminal-text fallback.
     #[cfg(target_os = "macos")]
     pub fn read_text(
         &self,
@@ -21,6 +28,12 @@ impl Engine {
     /// `read_text` contract intact while exposing window-coverage and
     /// content-region diagnostics to agents that need to decide whether a raw
     /// click would hit the intended surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a supplied region has non-positive width or height or
+    /// falls outside the target window, if capturing the target window fails, or
+    /// if Vision OCR fails and no AX terminal-text fallback is available.
     #[cfg(target_os = "macos")]
     pub fn read_text_detailed(
         &self,
@@ -162,6 +175,10 @@ impl Engine {
 
     /// Non-macOS stub: Apple Vision OCR needs a live macOS window. Keeps
     /// `dunst-mcp` compilable (and the `read_text` tool present) on other targets.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: OCR requires a live macOS window.
     #[cfg(not(target_os = "macos"))]
     pub fn read_text(
         &self,
@@ -173,6 +190,11 @@ impl Engine {
         ))
     }
 
+    /// Non-macOS stub: Apple Vision OCR needs a live macOS window.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: OCR requires a live macOS window.
     #[cfg(not(target_os = "macos"))]
     pub fn read_text_detailed(
         &self,
@@ -189,6 +211,11 @@ impl Engine {
     /// via the CV `shapes` layer — the figures (charts, custom-drawn UI) AX and
     /// OCR can't expose. A pure **read probe** like [`read_text`](Self::read_text):
     /// no risk-gating, no audit entry. macOS-only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if capturing the target window fails — there is no live
+    /// macOS window to run shape detection on.
     #[cfg(target_os = "macos")]
     pub fn read_shapes(&self) -> dunst_core::Result<Vec<ShapeHit>> {
         // Composited capture (see read_text): CGWindowListCreateImage is blank for
@@ -212,6 +239,10 @@ impl Engine {
     }
 
     /// Non-macOS stub: shape detection needs a live macOS window.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: shape detection requires a live macOS window.
     #[cfg(not(target_os = "macos"))]
     pub fn read_shapes(&self) -> dunst_core::Result<Vec<ShapeHit>> {
         Err(DunstError::Perception(

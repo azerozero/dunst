@@ -73,6 +73,12 @@ impl Engine {
     /// Move the target window to the display index returned by `list_displays`.
     /// The default behaviour preserves the window size but clamps it inside the
     /// target display, then centres it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `display_index` is not a known display, if the platform
+    /// rejects the window-frame change, or if the follow-up
+    /// [`refresh`](Self::refresh) fails.
     pub fn move_window_to_display(
         &mut self,
         display_index: usize,
@@ -103,6 +109,11 @@ impl Engine {
     }
 
     /// Move every sizeable top-level window owned by `app` to a display.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `display_index` is not a known display, if no drivable
+    /// window is owned by `app`, or if the platform rejects a window-frame change.
     #[cfg(target_os = "macos")]
     pub fn move_app_to_display(
         &self,
@@ -165,6 +176,10 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: moving app windows requires the macOS backend.
     #[cfg(not(target_os = "macos"))]
     pub fn move_app_to_display(
         &self,
@@ -253,6 +268,13 @@ impl Engine {
 
     /// Arrange selected windows onto one display. Selection must be explicit:
     /// pass `window_ids`, an `app` substring, or `all=true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no selection is given (`window_ids`, `app`, and `all`
+    /// all empty), if `display_index` is unknown, if no matching drivable window
+    /// is found, if `mode` is not a supported layout, or if the platform rejects
+    /// a window-frame change.
     #[cfg(target_os = "macos")]
     pub fn arrange_windows(
         &self,
@@ -436,6 +458,10 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: arranging windows requires the macOS backend.
     #[cfg(not(target_os = "macos"))]
     pub fn arrange_windows(
         &self,

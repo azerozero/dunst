@@ -30,12 +30,21 @@ impl MockPerceptor {
     }
 
     /// Load roots from a JSON array of [`RawAxNode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `json` is not a valid JSON array of [`RawAxNode`].
     pub fn from_json(json: &str, window: WindowRef) -> Result<Self> {
         let roots: Vec<RawAxNode> = serde_json::from_str(json)?;
         Ok(Self::new(roots, window))
     }
 
     /// Convenience: the bundled Notes fixture.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bundled Notes fixture fails to parse as a JSON
+    /// array of [`RawAxNode`].
     pub fn notes_fixture() -> Result<Self> {
         let json = include_str!("../fixtures/notes.json");
         let window = WindowRef {

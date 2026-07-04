@@ -9,6 +9,12 @@ thread_local! {
 impl Engine {
     /// Open a menu-bar menu by name (e.g. "File"/"Fichier") — finds the menubar
     /// item and presses it (AX). Native menus; the items then appear in the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no menu whose label matches `name` is found in the
+    /// menubar, or propagates any error from [`click_element`](Self::click_element)
+    /// when pressing the matched item (e.g. the AX press fails).
     pub fn open_menu(&mut self, name: &str) -> dunst_core::Result<AuditEntry> {
         let id = self
             .scene_graph()
@@ -32,6 +38,13 @@ impl Engine {
 
     /// Press a named key (e.g. `"Return"`/`"Enter"` to submit a typed URL).
     /// Raw keyboard input is high-risk because it is not tied to a scene element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not a supported press-key name (return/enter,
+    /// tab, escape, space, delete, arrows, page up/down, home/end), or if posting
+    /// the synthetic keystroke to the target window fails (including when the
+    /// user-active guard stays blocked).
     #[cfg(target_os = "macos")]
     pub fn press_key(&mut self, key: &str, repeat: usize) -> dunst_core::Result<AuditEntry> {
         if !is_press_key_name(key) {
@@ -76,6 +89,11 @@ impl Engine {
     }
 
     /// Non-macOS stub: raw CGEvent input needs the macOS backend.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: synthetic keyboard input requires the macOS
+    /// backend, which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn press_key(&mut self, _key: &str, _repeat: usize) -> dunst_core::Result<AuditEntry> {
         Err(DunstError::Execution(
@@ -88,6 +106,11 @@ impl Engine {
     /// (trusted, no cursor, no foreground). First focus the field (e.g. click_at
     /// it). Raw keyboard input is high-risk because it is not tied to a scene
     /// element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SkyLight-signed keyboard path fails to deliver
+    /// `text` to the focused element of the target window.
     #[cfg(target_os = "macos")]
     pub fn type_keys(&mut self, text: &str) -> dunst_core::Result<AuditEntry> {
         let target_id = raw_type_keys_target_id(text);
@@ -118,6 +141,11 @@ impl Engine {
     /// select-all-replace, with a keyboard fallback). Robust where raw
     /// clear-by-keystroke (End/Backspace/double-click) garbles the value when
     /// driving a backgrounded form. Focus the field first (e.g. click it).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the AX select-all-replace of the focused field
+    /// (including its keyboard fallback) fails to apply `text`.
     #[cfg(target_os = "macos")]
     pub fn set_field_text(&mut self, text: &str) -> dunst_core::Result<AuditEntry> {
         let target_id = raw_set_field_text_target_id(text);
@@ -153,6 +181,11 @@ impl Engine {
     }
 
     /// Non-macOS stub: AX field replacement needs the macOS backend.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: AX field replacement requires the macOS backend,
+    /// which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn set_field_text(&mut self, text: &str) -> dunst_core::Result<AuditEntry> {
         #[cfg(test)]
@@ -208,6 +241,12 @@ impl Engine {
     /// clipboard, sending Cmd+V to the target window, then restoring the
     /// previous plain-text clipboard contents. This keeps the platform clipboard
     /// mutation on the guarded raw-input path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the platform clipboard paste path fails — writing the
+    /// clipboard, sending Cmd+V to the focused target, or restoring the previous
+    /// contents.
     pub fn paste_text(
         &mut self,
         text: &str,
@@ -245,6 +284,11 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: synthetic keyboard input requires the macOS
+    /// backend, which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn type_keys(&mut self, _text: &str) -> dunst_core::Result<AuditEntry> {
         Err(DunstError::Execution(
@@ -255,6 +299,14 @@ impl Engine {
     /// Scroll the FOCUSED page in the background via auth-signed Page/Home/End keys
     /// (reaches web content, no cursor, no foreground). `direction` =
     /// up|down|top|bottom; `pages` = how many Page presses (down/up). Re-perceives.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DunstError::ActionUnavailable`] when `focus_id` names an element
+    /// whose affordances do not include scrolling. Otherwise propagates any error
+    /// from the chosen scroll path — the direct AX scrollbar action, the
+    /// background Page/Home/End keys, or the wheel-based
+    /// [`scroll_at`](Self::scroll_at).
     #[cfg(target_os = "macos")]
     pub fn scroll(
         &mut self,
@@ -361,6 +413,15 @@ impl Engine {
     /// fallback for web pages/cards that do not expose an AX scrollbar: the point
     /// chooses the scroll container, while the raw input gate still requires
     /// operator approval before mutating the page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `(x, y)` is outside the attached target window. When
+    /// `borrow_cursor` is set (or a session-learned real-cursor strategy forces
+    /// it) and the point is covered rather than visible under the real cursor,
+    /// returns the visibility error unless a remembered strategy allows falling
+    /// back to the background path. Otherwise propagates any platform error from
+    /// the background web scroll or the real-cursor wheel.
     #[cfg(target_os = "macos")]
     pub fn scroll_at(
         &mut self,
@@ -638,6 +699,11 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: background scrolling requires the macOS backend,
+    /// which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn scroll(
         &mut self,
@@ -651,6 +717,11 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: wheel scrolling at a point requires the macOS
+    /// backend, which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn scroll_at(
         &mut self,
@@ -667,6 +738,11 @@ impl Engine {
 
     /// Zoom the focused page (browser/native) in the background: `in`/`out`/`reset`
     /// → Cmd+= / Cmd+- / Cmd+0, auth-signed (reaches web). Re-perceives.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if posting the auth-signed zoom keystroke (Cmd =/-/0) to
+    /// the target window fails.
     #[cfg(target_os = "macos")]
     pub fn zoom(&mut self, direction: &str) -> dunst_core::Result<AuditEntry> {
         const CMD: u64 = 0x0010_0000;
@@ -700,6 +776,11 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: background zoom requires the macOS backend, which
+    /// is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn zoom(&mut self, _direction: &str) -> dunst_core::Result<AuditEntry> {
         Err(DunstError::Execution(
@@ -715,6 +796,14 @@ impl Engine {
     /// sensitive text selection shortcuts such as "cmd+a" are rejected when no
     /// matching AX menu item exists; use `type_into` for field replacement.
     /// Re-perceives.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `combo` is a layout-sensitive selection shortcut (e.g.
+    /// `cmd+a`) with no matching AX menu item, if it cannot be parsed into a
+    /// known key when no menu item matches, or if executing it fails — clicking
+    /// the matched menu path via System Events or posting the auth-signed key
+    /// combo.
     #[cfg(target_os = "macos")]
     pub fn hotkey(&mut self, combo: &str) -> dunst_core::Result<AuditEntry> {
         let menu_item = menu_item_for_hotkey(self.scene_graph(), combo);
@@ -803,6 +892,11 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: background hotkeys require the macOS backend,
+    /// which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn hotkey(&mut self, _combo: &str) -> dunst_core::Result<AuditEntry> {
         Err(DunstError::Execution(

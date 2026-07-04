@@ -14,6 +14,11 @@ const V_KEYCODE: u16 = 0x09;
 const PASTE_CONSUME_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Reads the clipboard's contents as raw bytes via `pbpaste`.
+///
+/// # Errors
+///
+/// Returns [`DunstError::Execution`] if `pbpaste` cannot be spawned or exits
+/// with a non-success status.
 #[cfg(target_os = "macos")]
 pub fn read_clipboard_bytes() -> Result<Vec<u8>> {
     let output = std::process::Command::new("pbpaste")
@@ -30,6 +35,11 @@ pub fn read_clipboard_bytes() -> Result<Vec<u8>> {
 }
 
 /// Non-macOS stub; returns an execution error.
+///
+/// # Errors
+///
+/// Always returns [`DunstError::Execution`]; this operation requires the macOS
+/// backend, which is unavailable on the current platform.
 #[cfg(not(target_os = "macos"))]
 pub fn read_clipboard_bytes() -> Result<Vec<u8>> {
     Err(DunstError::Execution(
@@ -38,6 +48,12 @@ pub fn read_clipboard_bytes() -> Result<Vec<u8>> {
 }
 
 /// Writes `bytes` to the clipboard via `pbcopy`.
+///
+/// # Errors
+///
+/// Returns [`DunstError::Execution`] if `pbcopy` cannot be spawned, its stdin
+/// is unavailable, writing the bytes or waiting on the process fails, or it
+/// exits with a non-success status.
 #[cfg(target_os = "macos")]
 pub fn write_clipboard_bytes(bytes: &[u8]) -> Result<()> {
     use std::io::Write as _;
@@ -65,6 +81,11 @@ pub fn write_clipboard_bytes(bytes: &[u8]) -> Result<()> {
 }
 
 /// Non-macOS stub; returns an execution error.
+///
+/// # Errors
+///
+/// Always returns [`DunstError::Execution`]; this operation requires the macOS
+/// backend, which is unavailable on the current platform.
 #[cfg(not(target_os = "macos"))]
 pub fn write_clipboard_bytes(_bytes: &[u8]) -> Result<()> {
     Err(DunstError::Execution(
@@ -76,6 +97,13 @@ pub fn write_clipboard_bytes(_bytes: &[u8]) -> Result<()> {
 ///
 /// When `restore_clipboard` is set, waits for the target app to consume the
 /// paste, then puts the previous clipboard contents back.
+///
+/// # Errors
+///
+/// Returns [`DunstError::Execution`] if reading the previous clipboard (when
+/// `restore_clipboard` is set) or writing `text` to it fails, if the background
+/// Cmd+V event cannot be delivered, or if restoring the previous clipboard
+/// afterwards fails.
 #[cfg(target_os = "macos")]
 pub fn paste_text_background(
     pid: i32,
@@ -113,6 +141,11 @@ pub fn paste_text_background(
 }
 
 /// Non-macOS stub; returns an execution error.
+///
+/// # Errors
+///
+/// Always returns [`DunstError::Execution`]; this operation requires the macOS
+/// backend, which is unavailable on the current platform.
 #[cfg(not(target_os = "macos"))]
 pub fn paste_text_background(
     _pid: i32,
@@ -134,6 +167,12 @@ pub fn paste_text_background(
 /// the field's real DOM content (no AX char-count under-report), so there is no
 /// trailing fragment. Foregrounds the window (not transparent); the field must
 /// already be focused (click it first). Restores the previous clipboard.
+///
+/// # Errors
+///
+/// Returns [`DunstError::Execution`] if writing `text` to the clipboard fails,
+/// if `osascript` cannot be spawned, or if the select-all/paste script exits
+/// non-zero.
 #[cfg(target_os = "macos")]
 pub fn paste_replace_field_foreground(pid: i32, text: &str) -> Result<()> {
     let previous = read_clipboard_bytes().ok();
@@ -168,6 +207,11 @@ pub fn paste_replace_field_foreground(pid: i32, text: &str) -> Result<()> {
 }
 
 /// Non-macOS stub; returns an execution error.
+///
+/// # Errors
+///
+/// Always returns [`DunstError::Execution`]; this operation requires the macOS
+/// backend, which is unavailable on the current platform.
 #[cfg(not(target_os = "macos"))]
 pub fn paste_replace_field_foreground(_pid: i32, _text: &str) -> Result<()> {
     Err(DunstError::Execution(

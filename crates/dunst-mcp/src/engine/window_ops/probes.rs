@@ -5,6 +5,13 @@ impl Engine {
     /// detector: it samples a spaced luminance grid, compares it with the previous
     /// probe for the same region/grid, and optionally triggers a full AX refresh
     /// if pixels changed. AX itself cannot refresh only a rectangle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `region` falls outside the target window, if its width
+    /// or height is not positive, if the screen capture fails, if the luminance
+    /// signature cannot be sampled, or if a change-triggered
+    /// [`refresh`](Self::refresh) fails.
     #[cfg(target_os = "macos")]
     pub fn visual_change_probe(
         &mut self,
@@ -65,6 +72,10 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: the visual change probe requires the macOS backend.
     #[cfg(not(target_os = "macos"))]
     pub fn visual_change_probe(
         &mut self,
