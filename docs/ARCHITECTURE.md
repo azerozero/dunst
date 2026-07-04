@@ -5,7 +5,7 @@
 
 ## Thesis (validated)
 
-A pulled AX tree of a native macOS app (Notes, 427 elements) already carries
+A pulled AX tree of a native macOS app (Notes, 22 elements) already carries
 everything the Scene/Affordance graph needs — role, native actions, label/help,
 a stable-ish identifier, and risk signals in the labels (`Supprimer`,
 `Éteindre`, …). So the affordance graph is ~free from AX; pixels/OCR are only
