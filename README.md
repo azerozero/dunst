@@ -75,7 +75,7 @@ The full vision path (Tile/Foveal/OCR/ScreenCaptureKit, drag and drop, replay)
 is large. This POC proves the load-bearing hypothesis: the macOS Accessibility
 tree is rich enough to build the first affordance graph without pixels or OCR.
 
-Validated on Notes (pure AX, no screenshot): 427 elements, each actionable one
+Validated on Notes (pure AX, no screenshot): 22 elements, each actionable one
 already carrying `role`, native `actions`, `label`/`help`, an identifier, and
 risk signals in the label text (`Supprimer`, `Éteindre`, ...). Vision and OCR
 are now fallbacks for non-AX surfaces, not the entrypoint.
@@ -132,7 +132,7 @@ Expected shape:
 
 ```text
 # Dunst MCP demo — Notes (fixture, AX-only)
-scene graph: 427 nodes, 1 root(s), window "Notes"
+scene graph: 22 nodes, 2 root(s), window "Notes – Aucune note"
 -> result=Success
 -> result=PendingApproval
 ```
