@@ -32,6 +32,16 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
 - **Composite type risk.** `type_into` gates on `max(risk(field), risk(typed
   text))`: a destructive payload gates an otherwise low-risk field.
   — `engine::tests::destructive_typed_text_gates_low_risk_field_and_is_approvable`.
+- **Destructive and financial-commit labels gate.** The label/help/identifier
+  keyword denylist classifies not only destructive/irreversible verbs
+  (`supprimer`, `delete`, `révoquer`, `écraser`, `uninstall`, …) but also
+  financial / external commits (`payer`/`pay`, `commander`/`checkout`,
+  `acheter`/`buy`, `place order`) as HIGH → `requires_approval`, so an agent
+  cannot place an order or pay on its own. The match is word-boundary-anchored so
+  look-alikes (`payment`, `buyer`, `important`) stay LOW. It remains a heuristic
+  denylist bounded by `approve` being off by default.
+  — `risk::tests::broadened_denylist_gates_destructive_and_financial_commits`,
+  `risk::tests::broadened_denylist_avoids_false_positives_on_lookalike_words`.
 - **Raw mutating input risk.** Raw coordinate/key tools that can mutate UI state
   are high-risk because they are not bound to a scene element. The first call
   records `PendingApproval` and does not execute the platform input path.

@@ -3,12 +3,23 @@
 //! For the POC, risk is derived from the element's label/help/identifier text
 //! against keyword tiers. See WP-B for the keyword lists.
 //!
-//! - HIGH (`requires_approval = true`): destructive / irreversible —
-//!   `supprimer`, `delete`, `effacer`, `éteindre`, `redémarrer`,
-//!   `forcer à quitter`, `réinitialiser`, `remove`, `shut down`, ...
+//! - HIGH (`requires_approval = true`): destructive / irreversible **or a
+//!   financial / external commit** — `supprimer`, `delete`, `effacer`,
+//!   `éteindre`, `redémarrer`, `forcer à quitter`, `réinitialiser`, `remove`,
+//!   `shut down`, `révoquer`/`revoke`, `écraser`/`overwrite`, `payer`/`pay`,
+//!   `commander`/`checkout`, ... These block until the operator approves the
+//!   exact gated id.
 //! - MEDIUM: state-changing but recoverable — `envoyer`, `send`, `publier`,
-//!   `deploy`, `enregistrer`, `coller`, `move`, ...
+//!   `deploy`, `enregistrer`, `coller`, `move`, `submit`, `apply`, ...
 //! - LOW: everything else (navigation, reads, hovers).
+//!
+//! This is a keyword denylist, so it is heuristic by construction: a genuinely
+//! novel destructive label still reads LOW. The list is kept broad (below) to
+//! shrink that fail-open surface, and the whole write path stays bounded by
+//! `approve` being disabled by default (see `docs/CONTRACTS.md`). A structural
+//! "gate every unknown verb" posture is not viable here because the signal is the
+//! element's own label text — most benign controls (icon-only toolbar buttons,
+//! `OK`, `Nouvelle note`) carry no keyword and must stay LOW to remain usable.
 
 use dunst_core::{RiskAssessment, RiskLevel, SceneNode};
 
@@ -17,16 +28,25 @@ use crate::text::normalize;
 /// Original keyword lists (HIGH / MEDIUM), kept as `&'static str` so the
 /// `reasons` strings can report the human-readable form.
 const HIGH_KEYWORDS: &[&str] = &[
+    // Destructive / irreversible (base words also cover their multi-word forms,
+    // e.g. "delete" matches "delete permanently", "reset" matches "factory reset").
     "supprimer",
     "delete",
     "effacer",
     "remove",
+    "détruire",
+    "destroy",
+    "écraser",
+    "overwrite",
     "éteindre",
     "shut down",
     "redémarrer",
     "restart",
     "forcer à quitter",
     "force quit",
+    "forcer l'arrêt",
+    "kill",
+    "terminate",
     "réinitialiser",
     "reset",
     "déconnexion",
@@ -35,6 +55,30 @@ const HIGH_KEYWORDS: &[&str] = &[
     "erase",
     "vider",
     "empty trash",
+    "purger",
+    "purge",
+    "wipe",
+    "révoquer",
+    "revoke",
+    "dépublier",
+    "unpublish",
+    "désinstaller",
+    "uninstall",
+    "discard",
+    "ne pas enregistrer",
+    "don't save",
+    // Financial / external commits: irreversible side effects an agent must not
+    // trigger on its own (the food-ordering / checkout flows this POC drives).
+    "payer",
+    "pay",
+    "acheter",
+    "buy",
+    "purchase",
+    "checkout",
+    "commander",
+    "passer la commande",
+    "place order",
+    "résilier",
 ];
 
 const MEDIUM_KEYWORDS: &[&str] = &[
@@ -55,6 +99,23 @@ const MEDIUM_KEYWORDS: &[&str] = &[
     "partager",
     "share",
     "archiver",
+    "soumettre",
+    "submit",
+    "confirmer",
+    "confirm",
+    "appliquer",
+    "apply",
+    "téléverser",
+    "upload",
+    "installer",
+    "install",
+    "dupliquer",
+    "duplicate",
+    "importer",
+    "import",
+    "exporter",
+    "export",
+    "commit",
 ];
 
 /// A keyword compiled once: the `needle` is the normalised form matched against
@@ -238,5 +299,50 @@ mod tests {
         let risk = engine.assess_text("forcer a quitter Firefox");
         assert_eq!(risk.level, RiskLevel::High);
         assert!(risk.reasons.iter().any(|r| r.contains("forcer à quitter")));
+    }
+
+    #[test]
+    fn broadened_denylist_gates_destructive_and_financial_commits() {
+        let engine = RiskEngine::new();
+        for (text, kw) in [
+            ("Payer maintenant", "payer"),
+            ("Checkout", "checkout"),
+            ("Passer la commande", "passer la commande"),
+            ("Révoquer l'accès", "révoquer"),
+            ("Overwrite file", "overwrite"),
+            ("Uninstall app", "uninstall"),
+            ("Ne pas enregistrer", "ne pas enregistrer"),
+            ("Purge cache", "purge"),
+        ] {
+            let risk = engine.assess_text(text);
+            assert_eq!(risk.level, RiskLevel::High, "{text} should gate");
+            assert!(risk.requires_approval, "{text} should require approval");
+            assert!(
+                risk.reasons.iter().any(|r| r.contains(kw)),
+                "{text}: expected reason for {kw}, got {:?}",
+                risk.reasons
+            );
+        }
+    }
+
+    #[test]
+    fn broadened_denylist_avoids_false_positives_on_lookalike_words() {
+        let engine = RiskEngine::new();
+        // Each embeds a keyword as a substring that the word-boundary check must
+        // reject (payment⊃pay, buyer⊃buy, committee⊃commit, important⊃import,
+        // wipers⊃wipe, applying⊃apply, purchases⊃purchase).
+        for text in [
+            "payment methods",
+            "buyer profile",
+            "committee meeting notes",
+            "important reminder",
+            "windshield wipers",
+            "applying filters",
+            "your recent purchases",
+            "display settings",
+        ] {
+            let risk = engine.assess_text(text);
+            assert_eq!(risk.level, RiskLevel::Low, "{text} should stay LOW");
+        }
     }
 }
