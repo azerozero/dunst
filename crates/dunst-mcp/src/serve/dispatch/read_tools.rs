@@ -269,6 +269,7 @@ fn dispatch_vision_tools(
             .read_shapes()
             .map(|shapes| serde_json::to_value(shapes).unwrap_or(Value::Null))
             .map_err(|e| e.to_string()),
+        "read_zones" => engine.read_zones().map_err(|e| e.to_string()),
         "find_ocr_text" => match arg(args, "query") {
             Some(query) => engine
                 .find_ocr_text(

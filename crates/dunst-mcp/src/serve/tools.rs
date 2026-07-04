@@ -267,6 +267,11 @@ fn query_tools() -> Vec<Value> {
             json!({}),
         ),
         tool(
+            "read_zones",
+            "Nest the target window's flat vision output (shapes + OCR text + visible controls) into a containment tree — region > card > control/text — by pure geometry. Use on sparse-AX surfaces (canvas/WebGL, custom-drawn web UIs) to grasp layout in one call instead of stitching flat lists.",
+            json!({}),
+        ),
+        tool(
             "find_ocr_text",
             "Search target-window OCR for text and return ranked hits with bbox, center point, confidence, target_visibility, and warnings. Use before click_near_text instead of hand-picked coordinates.",
             schema(

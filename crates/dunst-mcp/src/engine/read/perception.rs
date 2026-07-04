@@ -249,6 +249,113 @@ impl Engine {
             "shape detection requires a live macOS window".into(),
         ))
     }
+
+    /// Nested vision zones: a containment tree over detected shapes, OCR text,
+    /// and visible controls, so an agent reads "region > card > control/text"
+    /// instead of three flat lists. Closes the gap where the accessibility tree
+    /// is nested but the vision path ([`read_shapes`](Self::read_shapes) + OCR)
+    /// is flat — most useful on sparse-AX surfaces (canvas/WebGL web apps).
+    ///
+    /// Rectangles become containers; OCR runs and actionable controls nest
+    /// inside them by pure geometry (see [`dunst_vision::zones`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the window capture (for shape detection) or the OCR
+    /// pass fails.
+    #[cfg(target_os = "macos")]
+    pub fn read_zones(&self) -> dunst_core::Result<Value> {
+        use dunst_vision::zones::{build_zone_tree, ZoneItem, ZoneKind};
+
+        let mut items: Vec<ZoneItem> = Vec::new();
+
+        // Detected primitives: rectangles are candidate containers, the rest
+        // (bars/circles/lines) stay leaves.
+        for (idx, shape) in self.read_shapes()?.into_iter().enumerate() {
+            let kind = if shape.kind == "Rect" {
+                ZoneKind::Region
+            } else {
+                ZoneKind::Shape
+            };
+            items.push(ZoneItem {
+                id: format!("shape_{idx}"),
+                bbox: shape.bbox,
+                kind,
+                label: None,
+                confidence: shape.confidence,
+            });
+        }
+
+        // OCR text runs across the whole window.
+        for (idx, hit) in self.read_text_raw(None, true)?.into_iter().enumerate() {
+            items.push(ZoneItem {
+                id: format!("text_{idx}"),
+                bbox: hit.bbox,
+                kind: ZoneKind::Text,
+                label: Some(hit.text),
+                confidence: hit.confidence,
+            });
+        }
+
+        // Visible, actionable controls (AX-derived) so the tree is clickable:
+        // a control lands inside the card/region that visually contains it.
+        for target in self.hit_targets(false, "all", 500, None).targets {
+            if let Some(bbox) = target.bbox {
+                items.push(ZoneItem {
+                    id: target.id,
+                    bbox,
+                    kind: ZoneKind::Control,
+                    label: target.label,
+                    confidence: target.confidence,
+                });
+            }
+        }
+
+        let zones = build_zone_tree(items);
+        Ok(json!({
+            "zones": zones.iter().map(zone_to_json).collect::<Vec<_>>(),
+            "counts": { "roots": zones.len(), "total": count_zones(&zones) },
+        }))
+    }
+
+    /// Non-macOS stub: vision zones need a live macOS window.
+    #[cfg(not(target_os = "macos"))]
+    pub fn read_zones(&self) -> dunst_core::Result<Value> {
+        Err(DunstError::Perception(
+            "vision zones require a live macOS window".into(),
+        ))
+    }
+}
+
+/// Serializes a [`dunst_vision::zones::Zone`] to JSON (the type is serde-free in
+/// `dunst-vision`), omitting an absent label and an empty child list.
+#[cfg(target_os = "macos")]
+fn zone_to_json(zone: &dunst_vision::zones::Zone) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("id".to_string(), json!(zone.id));
+    obj.insert("kind".to_string(), json!(zone.kind.as_str()));
+    if let Some(label) = &zone.label {
+        obj.insert("label".to_string(), json!(label));
+    }
+    obj.insert(
+        "bbox".to_string(),
+        serde_json::to_value(zone.bbox).unwrap_or(Value::Null),
+    );
+    obj.insert("confidence".to_string(), json!(zone.confidence));
+    if !zone.children.is_empty() {
+        let children: Vec<Value> = zone.children.iter().map(zone_to_json).collect();
+        obj.insert("children".to_string(), Value::Array(children));
+    }
+    Value::Object(obj)
+}
+
+/// Total node count of a zone forest, including nested children.
+#[cfg(target_os = "macos")]
+fn count_zones(zones: &[dunst_vision::zones::Zone]) -> usize {
+    zones
+        .iter()
+        .map(|zone| 1 + count_zones(&zone.children))
+        .sum()
 }
 
 fn browser_content_region(app_name: &str, window: Bbox, requested: Option<Bbox>) -> Option<Bbox> {
