@@ -3,6 +3,13 @@ use super::*;
 impl Engine {
     // --- action tools -------------------------------------------------------
 
+    /// Clicks the element resolved from `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `id` does not resolve to a live element, if no
+    /// clickable affordance is available on it or an ancestor, if the risk gate
+    /// requires operator approval, or if the click actuation fails.
     pub fn click_element(
         &mut self,
         id: &str,
@@ -13,6 +20,13 @@ impl Engine {
         self.act_refreshing_missing(&target_id, action, None, reasoning, None)
     }
 
+    /// Raises the element identified by `id` to the front.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `id` does not resolve to a live element, if it
+    /// exposes no raise affordance, if the risk gate requires operator approval,
+    /// or if the raise actuation fails.
     pub fn raise_element(
         &mut self,
         id: &str,
@@ -21,6 +35,12 @@ impl Engine {
         self.act_refreshing_missing(id, SemanticAction::Raise, None, reasoning, None)
     }
 
+    /// Picks the option matching `query` and reports the resulting selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no clickable option matches `query`, if the risk gate
+    /// requires operator approval, or if the pick actuation fails.
     pub fn pick_option(
         &mut self,
         query: &str,
@@ -64,6 +84,13 @@ impl Engine {
         })
     }
 
+    /// Types `text` into the element identified by `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `text` exceeds 100,000 bytes, if `id` does not
+    /// resolve to a live element, if it accepts no typing, if the risk gate
+    /// requires operator approval, or if the keystroke actuation fails.
     pub fn type_into(
         &mut self,
         id: &str,
@@ -81,6 +108,13 @@ impl Engine {
         self.act_refreshing_missing(id, SemanticAction::Type, Some(text), reasoning, None)
     }
 
+    /// Hovers over the element identified by `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `id` does not resolve to a live element, if it
+    /// exposes no hover affordance, if the risk gate requires operator approval,
+    /// or if the hover actuation fails.
     pub fn hover_probe(&mut self, id: &str) -> dunst_core::Result<AuditEntry> {
         self.act_refreshing_missing(id, SemanticAction::Hover, None, Some("hover probe"), None)
     }
@@ -96,6 +130,13 @@ impl Engine {
     /// though the file row is harmless). The drop target's risk is folded in here
     /// and `act` gates on the max, so a high-risk target forces approval even when
     /// the source is low-risk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `target_id` does not resolve to a live element, if
+    /// the target has no bbox to derive a drop point, if `source_id` does not
+    /// resolve or exposes no drag affordance, if the composite source/target
+    /// risk gate requires operator approval, or if the drag actuation fails.
     pub fn drag_element(
         &mut self,
         source_id: &str,

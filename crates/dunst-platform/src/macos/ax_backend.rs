@@ -95,6 +95,11 @@ pub(super) fn ensure_user_idle_action(operation: &str) -> std::result::Result<()
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns an error if accessibility is not granted to this process, if the AX
+/// application element cannot be created for the target pid, if the target
+/// window cannot be resolved, or if walking the AX tree fails.
 pub fn capture(target: &Target) -> Result<Vec<RawAxNode>> {
     ensure_trusted()?;
     clear_cache();
@@ -129,6 +134,11 @@ pub fn capture(target: &Target) -> Result<Vec<RawAxNode>> {
     Ok(roots)
 }
 
+/// # Errors
+///
+/// Returns an error if accessibility is not granted to this process, if the AX
+/// application element cannot be created for the target pid, or if the target
+/// window cannot be resolved.
 pub fn window_ref(target: &Target) -> Result<WindowRef> {
     ensure_trusted()?;
     let app = app_element(target.pid)?;
@@ -141,6 +151,11 @@ pub fn window_ref(target: &Target) -> Result<WindowRef> {
     })
 }
 
+/// # Errors
+///
+/// Returns an error if accessibility is not granted to this process, if the AX
+/// application element cannot be created for the pid, or if the AX hit-test at
+/// the point fails or returns no element.
 pub fn element_at_point(pid: i32, x: f64, y: f64) -> Result<RawAxNode> {
     ensure_trusted()?;
     let app = app_element(pid)?;
@@ -158,6 +173,12 @@ pub fn element_at_point(pid: i32, x: f64, y: f64) -> Result<RawAxNode> {
     Ok(shallow_raw_node(&AxElement::from_owned(raw)))
 }
 
+/// # Errors
+///
+/// Returns an error if accessibility is not granted to this process, if the
+/// target element cannot be resolved, if the requested semantic action is
+/// unsupported by the AX backend, or if the underlying AX action or synthetic
+/// input fails.
 pub fn perform(
     target: &Target,
     node: &SceneNode,
@@ -349,6 +370,11 @@ pub fn accessibility_trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
+/// # Errors
+///
+/// Returns an error if accessibility is not granted to this process, if the AX
+/// application element cannot be created, if the target window cannot be
+/// resolved, or if setting the window's AX size or position attribute fails.
 pub fn set_window_frame(
     pid: i32,
     window_id: u32,

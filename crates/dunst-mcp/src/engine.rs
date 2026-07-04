@@ -153,6 +153,13 @@ struct ScrollStrategyMemory {
 }
 
 impl Engine {
+    /// Builds an engine bound to `target`, resolving its window and running the
+    /// first perception.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the target's window cannot be resolved, or if the
+    /// initial [`refresh`](Self::refresh) fails to capture the scene.
     pub fn new(
         perceptor: Box<dyn Perceptor>,
         executor: Box<dyn ActionExecutor>,
@@ -198,6 +205,11 @@ impl Engine {
 
     /// Re-perceive the target and rebuild scene + affordance graphs. The prior
     /// graph is kept as `previous` for `diff_since`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the perceptor fails to capture the target window's
+    /// accessibility tree.
     pub fn refresh(&mut self) -> dunst_core::Result<()> {
         let roots = self.perceptor.capture(&self.target)?;
         let graph = scene::build_scene_graph(roots, self.window.clone(), dunst_core::now_ms());
@@ -224,6 +236,11 @@ impl Engine {
     /// Re-perceive only if the current AX graph is older than the read-cache TTL.
     /// Mutating action paths call [`refresh`](Self::refresh) directly and bypass
     /// this throttle, so post-action state remains strongly fresh.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any capture error from the underlying [`refresh`](Self::refresh)
+    /// when a re-perception is triggered.
     pub fn refresh_if_stale(&mut self) -> dunst_core::Result<bool> {
         self.refresh_if_older_than(READ_REFRESH_TTL)
     }
@@ -233,6 +250,11 @@ impl Engine {
     /// Read-side callers use this to coalesce bursts of `force_refresh:true`
     /// requests without weakening explicit mutation paths, which still call
     /// [`refresh`](Self::refresh) after an action.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any capture error from [`refresh`](Self::refresh) when the graph
+    /// is older than `ttl` and a re-perception is performed.
     pub fn refresh_if_older_than(&mut self, ttl: Duration) -> dunst_core::Result<bool> {
         if self.last_refresh_at.is_some_and(|at| at.elapsed() <= ttl) {
             return Ok(false);
@@ -256,6 +278,11 @@ impl Engine {
     /// Re-target the engine to a different window at runtime — the MCP client
     /// picks one from `list_windows` and attaches, so the server has no fixed,
     /// hardcoded target. Re-perceives the new window.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the new target's window cannot be resolved, or if the
+    /// following [`refresh`](Self::refresh) fails to capture the scene.
     pub fn attach(&mut self, pid: i32, window_id: u32) -> dunst_core::Result<()> {
         self.approvals.clear();
         self.raw_approvals.clear();
@@ -272,6 +299,11 @@ impl Engine {
     }
 
     /// Attach by `window_id` alone, resolving the owning pid via `list_windows`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no top-level window matches `window_id`, or if the
+    /// subsequent [`attach`](Self::attach) fails to resolve or perceive it.
     #[cfg(target_os = "macos")]
     pub fn attach_window(&mut self, window_id: u32) -> dunst_core::Result<()> {
         let pid = dunst_vision::capture::list_windows()
@@ -290,6 +322,10 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: attaching by window id requires the macOS backend.
     #[cfg(not(target_os = "macos"))]
     pub fn attach_window(&mut self, _window_id: u32) -> dunst_core::Result<()> {
         Err(DunstError::Perception(
@@ -377,6 +413,11 @@ impl Engine {
 
     /// Assert a node's `field` currently equals `expected`. `field` is one of
     /// `label` | `value` | `enabled` | `focused`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no node has `id`, or if `field` is not one of `label`,
+    /// `value`, `enabled`, or `focused`.
     pub fn verify_state(&self, id: &str, field: &str, expected: &str) -> dunst_core::Result<bool> {
         let n = self
             .scene_graph()
@@ -407,6 +448,12 @@ impl Engine {
     ///
     /// Element grants are one-shot and refresh-cleared. Raw grants are event-count and
     /// TTL-limited, and scoped to the currently attached target window.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a synthetic raw target fails structural or window-bound
+    /// validation, if `id` is neither a current scene node nor a pending gate, or
+    /// if the element exists but is not gated (no approval is required).
     pub fn approve(&mut self, id: &str) -> dunst_core::Result<()> {
         if is_synthetic_approval_target_id(id) {
             self.validate_synthetic_raw_approval(id)?;

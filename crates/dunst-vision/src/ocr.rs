@@ -42,6 +42,11 @@ pub enum RecognitionMode {
 }
 
 /// Runs `.fast` OCR over an optional screen-point region of a captured image.
+///
+/// # Errors
+///
+/// Returns an [`OcrError`] if the underlying Vision text-recognition request
+/// fails.
 pub fn ocr_region(
     image: &CGImage,
     geometry: &CaptureGeometry,
@@ -51,6 +56,11 @@ pub fn ocr_region(
 }
 
 /// Runs OCR at the given mode over an optional screen-point region of an image.
+///
+/// # Errors
+///
+/// Returns [`OcrError::Vision`] if the Vision text-recognition request cannot
+/// be performed, carrying Vision's localised description.
 pub fn ocr_region_with_mode(
     image: &CGImage,
     geometry: &CaptureGeometry,
@@ -104,6 +114,11 @@ pub fn ocr_region_with_mode(
 /// that a CGImage window or display capture misses. Returns boxes in normalized
 /// Vision coords (bottom-left origin); the caller maps them with the geometry of
 /// the captured rect. Whole-image (no region of interest).
+///
+/// # Errors
+///
+/// Returns [`OcrError::Vision`] if the Vision request on the image file fails —
+/// for example the file cannot be read or Vision reports a recognition error.
 pub fn ocr_image_file(path: &str, mode: RecognitionMode) -> Result<Vec<OcrBox>, OcrError> {
     // SAFETY: objc2 allocation/init follows the framework convention; the
     // returned retained request owns the Objective-C object.

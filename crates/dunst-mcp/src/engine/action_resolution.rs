@@ -146,6 +146,11 @@ impl Engine {
         &self.trace
     }
 
+    /// Serializes the audit trail to pretty-printed JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serializing the audit trail to JSON fails.
     pub fn export_trace(&self) -> dunst_core::Result<String> {
         Ok(serde_json::to_string_pretty(&self.trace)?)
     }

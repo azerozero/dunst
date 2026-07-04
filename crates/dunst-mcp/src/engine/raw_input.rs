@@ -15,6 +15,12 @@ impl Engine {
     /// element or affordance. A raw click can land on anything under that point,
     /// so it is gated as a high-risk raw action and audited under
     /// `target_id = "screen@x,y"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `(x, y)` is outside the attached target window, or
+    /// propagates the platform error from the background (or fallback cursor)
+    /// click at that point.
     #[cfg(target_os = "macos")]
     pub fn click_at(&mut self, x: f64, y: f64) -> dunst_core::Result<AuditEntry> {
         self.click_at_button(x, y, 0, "click")
@@ -23,6 +29,13 @@ impl Engine {
     /// Borrow the real cursor on an already-visible target point to reveal
     /// hover-only controls, then click the first visible element matching
     /// `query` through AX and restore the user's cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `(x, y)` is outside the target window, if that point
+    /// is not visible under the real cursor, if `query` is empty, or if no
+    /// visible clickable element matching `query` is found after the hover reveal
+    /// (the cursor restore is still attempted).
     #[cfg(target_os = "macos")]
     pub fn reveal_hover_click(
         &mut self,
@@ -121,12 +134,23 @@ impl Engine {
 
     /// Right-click at a raw screen point (context menus). Uses the real cursor
     /// so macOS positions the menu at the requested point, then restores it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `(x, y)` is outside the target window, if the point is
+    /// not visible under the real cursor (required to place the context menu), or
+    /// propagates the platform error from the right-click.
     #[cfg(target_os = "macos")]
     pub fn right_click_at(&mut self, x: f64, y: f64) -> dunst_core::Result<AuditEntry> {
         self.click_at_button(x, y, 1, "right-click")
     }
 
     /// Double-click at a raw screen point — two quick clicks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `(x, y)` is outside the target window, or propagates
+    /// the platform error from either synthetic click.
     #[cfg(target_os = "macos")]
     pub fn double_click_at(&mut self, x: f64, y: f64) -> dunst_core::Result<AuditEntry> {
         self.ensure_point_in_target_window(x, y, "double-click")?;
@@ -283,6 +307,11 @@ impl Engine {
     }
 
     /// Non-macOS stub: raw CGEvent input needs the macOS backend.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: raw CGEvent input requires the macOS backend,
+    /// which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn click_at(&mut self, _x: f64, _y: f64) -> dunst_core::Result<AuditEntry> {
         Err(DunstError::Execution(
@@ -291,6 +320,11 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: raw CGEvent input requires the macOS backend,
+    /// which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn reveal_hover_click(
         &mut self,
@@ -306,6 +340,11 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: raw CGEvent input requires the macOS backend,
+    /// which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn right_click_at(&mut self, _x: f64, _y: f64) -> dunst_core::Result<AuditEntry> {
         Err(DunstError::Execution(
@@ -314,6 +353,11 @@ impl Engine {
     }
 
     /// Non-macOS stub.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: raw CGEvent input requires the macOS backend,
+    /// which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn double_click_at(&mut self, _x: f64, _y: f64) -> dunst_core::Result<AuditEntry> {
         Err(DunstError::Execution(
@@ -345,6 +389,11 @@ impl Engine {
     /// `desktop_view` that the target window is actually visible/topmost under
     /// the point; borrowed-cursor OCR reads the composited display, not the
     /// background target capture.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `(x, y)` is outside the target window, or propagates
+    /// the platform error from posting the background hover event.
     #[cfg(target_os = "macos")]
     pub fn hover_at(&self, x: f64, y: f64) -> dunst_core::Result<()> {
         self.ensure_point_in_target_window(x, y, "hover_at")?;
@@ -352,6 +401,11 @@ impl Engine {
     }
 
     /// Non-macOS stub: raw CGEvent input needs the macOS backend.
+    ///
+    /// # Errors
+    ///
+    /// Always returns an error: raw CGEvent input requires the macOS backend,
+    /// which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
     pub fn hover_at(&self, _x: f64, _y: f64) -> dunst_core::Result<()> {
         Err(DunstError::Execution(

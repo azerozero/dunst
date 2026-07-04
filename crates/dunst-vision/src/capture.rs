@@ -89,6 +89,11 @@ pub struct CapturedWindow {
 }
 
 /// Captures a window's pixels by id via CoreGraphics.
+///
+/// # Errors
+///
+/// Returns a [`CaptureError`] if no window has this id, if CoreGraphics cannot
+/// read the window's bounds, or if it cannot capture the window's image.
 pub fn capture_window(window_id: u32) -> Result<CapturedWindow, CaptureError> {
     let bounds = cg_window_bounds(window_id)?;
     capture_cg_window_with_bounds(window_id, bounds)
@@ -99,6 +104,11 @@ pub fn capture_window(window_id: u32) -> Result<CapturedWindow, CaptureError> {
 /// misses) around a global screen-point rect. Returns the same [`CapturedWindow`]
 /// shape, so the OCR + coord-mapping path is unchanged. App/browser agnostic —
 /// it reads pixels off the screen, not a specific window's backing store.
+///
+/// # Errors
+///
+/// Returns a [`CaptureError`] if neither the CoreGraphics rect capture nor the
+/// `screencapture` fallback (including decoding its PNG) produces an image.
 pub fn capture_screen_rect(x: f64, y: f64, w: f64, h: f64) -> Result<CapturedWindow, CaptureError> {
     let display = display_containing(x + w / 2.0, y + h / 2.0);
     let db = display.bounds();
@@ -205,6 +215,11 @@ pub fn sample_luma_signature(
 /// unlike `CGWindowListCreateImage` — includes the GPU/WebGL canvas (a rendered
 /// chart curve) and works even when the window is off-screen / occluded. Returns
 /// the same [`CapturedWindow`] shape (geometry from the window bounds).
+///
+/// # Errors
+///
+/// Returns a [`CaptureError`] if the window id has no readable bounds, or if the
+/// `screencapture` composited grab (or decoding its PNG) fails.
 pub fn capture_window_composited(window_id: u32) -> Result<CapturedWindow, CaptureError> {
     let bounds = cg_window_bounds(window_id)?;
     let path = unique_png_path(&format!("dunst_win_{window_id}"));

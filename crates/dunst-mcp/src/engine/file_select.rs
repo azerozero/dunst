@@ -5,6 +5,13 @@ impl Engine {
     /// is provided, this asks the platform backend to real-click inside the
     /// target window first because browser `input[type=file]` controls often
     /// reject AX/background clicks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path` cannot be canonicalized, if the trigger
+    /// element does not resolve or has no usable bbox, if the trigger point lies
+    /// outside the target window, or if driving the native file chooser through
+    /// the platform backend fails.
     pub fn select_file(
         &mut self,
         path: &str,

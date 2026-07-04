@@ -88,6 +88,12 @@ pub(super) fn parse_drop_point(
     Ok(CGPoint::new(x, y))
 }
 
+/// # Errors
+///
+/// Returns an error if the user-active guard is blocking (recent operator
+/// input), the CoreGraphics event source cannot be created, the current cursor
+/// position cannot be read, a mouse-down or mouse-up CGEvent cannot be created,
+/// or the cursor cannot be warped back to its saved position afterward.
 pub fn click_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
     click_at_point_impl(pid, x, y).map_err(ActionFailure::into)
 }
@@ -117,6 +123,12 @@ pub(super) fn click_at_point_impl(
     result.and(restore)
 }
 
+/// # Errors
+///
+/// Returns an error if the user-active guard is blocking, the CoreGraphics
+/// event source cannot be created, the current cursor position cannot be read,
+/// the cursor cannot be warped to the target point, a right mouse-down or
+/// mouse-up CGEvent cannot be created, or the cursor cannot be restored.
 pub fn right_click_at_point(_pid: i32, x: f64, y: f64) -> Result<()> {
     right_click_at_point_impl(x, y).map_err(ActionFailure::into)
 }
@@ -160,6 +172,11 @@ pub(super) fn right_click_at_point_impl(x: f64, y: f64) -> std::result::Result<(
     result.and(restore)
 }
 
+/// # Errors
+///
+/// Returns an error if the user-active guard is blocking, the cursor cannot be
+/// warped to the target point, the CoreGraphics event source cannot be created,
+/// or the MouseMoved CGEvent cannot be created.
 pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
     hover_at_point_impl(pid, x, y).map_err(ActionFailure::into)
 }
@@ -188,10 +205,22 @@ pub(super) fn hover_at_point_impl(
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns an error if the CoreGraphics event source cannot be created, the
+/// cursor cannot be warped to the target point, or the MouseMoved CGEvent
+/// cannot be created.
 pub fn cursor_borrow_move_to(x: f64, y: f64) -> Result<()> {
     cursor_borrow_move_to_impl(x, y).map_err(ActionFailure::into)
 }
 
+/// # Errors
+///
+/// Returns an error if the user-active guard is blocking, the CoreGraphics
+/// event source cannot be created, the current cursor position cannot be read,
+/// the cursor cannot be warped to the point, the pre-scroll MouseMoved or the
+/// scroll-wheel CGEvent cannot be created, or the cursor cannot be restored
+/// afterward.
 pub fn scroll_at_point(x: f64, y: f64, delta_y: i32) -> Result<()> {
     scroll_at_point_impl(x, y, delta_y).map_err(ActionFailure::into)
 }
@@ -237,6 +266,12 @@ pub(super) fn scroll_at_point_impl(
     result.and(restore)
 }
 
+/// # Errors
+///
+/// Returns an error if the user-active guard is blocking, the CoreGraphics
+/// event source cannot be created, the current cursor position cannot be read,
+/// the cursor cannot be warped to the target point, or the MouseMoved CGEvent
+/// cannot be created.
 pub fn cursor_borrow_to(x: f64, y: f64) -> Result<(f64, f64)> {
     cursor_borrow_to_impl(x, y).map_err(ActionFailure::into)
 }
@@ -289,10 +324,19 @@ pub(super) fn cursor_borrow_move_to_impl(x: f64, y: f64) -> std::result::Result<
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns an error if the cursor cannot be warped back to the given position
+/// via CoreGraphics.
 pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
     cursor_restore_impl(x, y).map_err(ActionFailure::into)
 }
 
+/// # Errors
+///
+/// Returns an error if the CoreGraphics event source cannot be created, the
+/// current cursor position cannot be read, or one of the Apple-menu click
+/// CGEvents cannot be created.
 pub fn unstick_cursor() -> Result<()> {
     unstick_cursor_impl().map_err(ActionFailure::into)
 }
@@ -302,6 +346,12 @@ pub fn unstick_cursor() -> Result<()> {
 /// active, so the intrusive Apple-menu maneuver never fights a user who just
 /// resumed control. The bare `unstick_cursor` above stays unguarded so an
 /// operator can always force recovery on demand.
+///
+/// # Errors
+///
+/// Returns an error if the user-active guard is blocking (the operator is not
+/// idle), or if the underlying unstick maneuver cannot create its CoreGraphics
+/// event source or Apple-menu click CGEvents.
 pub fn unstick_cursor_if_idle() -> Result<()> {
     unstick_cursor_if_idle_impl().map_err(ActionFailure::into)
 }

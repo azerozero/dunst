@@ -14,6 +14,13 @@ const SELECT_FILE_OSASCRIPT_TIMEOUT: Duration = Duration::from_secs(12);
 ///
 /// When `trigger_point` is set, clicks it first to open the chooser; `target_pid`
 /// scopes which process's open/save panel is targeted. Runs under a timeout.
+///
+/// # Errors
+///
+/// Returns [`DunstError::Execution`] if `osascript` cannot be spawned, the run
+/// exceeds the `select_file` timeout and is killed, or the AppleScript exits
+/// non-zero (for example the native chooser never opened, or stayed open after
+/// the path was entered).
 #[cfg(target_os = "macos")]
 pub fn select_file(file: &Path, trigger_point: Option<(f64, f64)>, target_pid: i32) -> Result<()> {
     let mut cmd = std::process::Command::new("/usr/bin/osascript");
@@ -45,6 +52,11 @@ pub fn select_file(file: &Path, trigger_point: Option<(f64, f64)>, target_pid: i
 }
 
 /// Non-macOS stub; returns an execution error.
+///
+/// # Errors
+///
+/// Always returns [`DunstError::Execution`]; this operation requires the macOS
+/// backend, which is unavailable on the current platform.
 #[cfg(not(target_os = "macos"))]
 pub fn select_file(
     _file: &Path,
@@ -64,6 +76,12 @@ pub fn select_file(
 /// links for latent menus churn too much to name the bar item reliably.
 /// Menu tracking needs the app frontmost, so the script borrows the
 /// foreground and hands it back before returning.
+///
+/// # Errors
+///
+/// Returns [`DunstError::Execution`] if `labels` is empty, if `osascript`
+/// cannot be spawned or exceeds its timeout, or if the script exits non-zero
+/// because the menu item was not found under any menu bar item.
 #[cfg(target_os = "macos")]
 pub fn click_menu_path(pid: i32, labels: &[String]) -> Result<()> {
     if labels.is_empty() {
@@ -130,6 +148,11 @@ pub fn click_menu_path(pid: i32, labels: &[String]) -> Result<()> {
 }
 
 /// Non-macOS stub; returns an execution error.
+///
+/// # Errors
+///
+/// Always returns [`DunstError::Execution`]; this operation requires the macOS
+/// backend, which is unavailable on the current platform.
 #[cfg(not(target_os = "macos"))]
 pub fn click_menu_path(_pid: i32, _labels: &[String]) -> Result<()> {
     Err(DunstError::Execution(
@@ -146,6 +169,12 @@ fn escape_applescript(value: &str) -> String {
 ///
 /// Activates `target`'s process, AXRaises the window whose title matches, and
 /// returns the prior frontmost unix id as a string, or `None` if there was none.
+///
+/// # Errors
+///
+/// Returns [`DunstError::Execution`] if `osascript` cannot be spawned or the
+/// script exits non-zero while activating the process and raising the matching
+/// window.
 #[cfg(target_os = "macos")]
 pub fn borrow_target_frontmost(target: &WindowRef) -> Result<Option<String>> {
     let mut cmd = std::process::Command::new("/usr/bin/osascript");
@@ -168,6 +197,11 @@ pub fn borrow_target_frontmost(target: &WindowRef) -> Result<Option<String>> {
 }
 
 /// Non-macOS stub; returns an execution error.
+///
+/// # Errors
+///
+/// Always returns [`DunstError::Execution`]; this operation requires the macOS
+/// backend, which is unavailable on the current platform.
 #[cfg(not(target_os = "macos"))]
 pub fn borrow_target_frontmost(_target: &WindowRef) -> Result<Option<String>> {
     Err(DunstError::Execution(
@@ -176,6 +210,12 @@ pub fn borrow_target_frontmost(_target: &WindowRef) -> Result<Option<String>> {
 }
 
 /// Re-activates the application with unix id `pid`; no-ops for an empty or `"0"` value.
+///
+/// # Errors
+///
+/// Returns [`DunstError::Execution`] if `osascript` cannot be spawned or the
+/// script exits non-zero while re-activating the process. An empty or `"0"`
+/// `pid` short-circuits to `Ok`.
 #[cfg(target_os = "macos")]
 pub fn restore_frontmost_pid(pid: &str) -> Result<()> {
     if pid.trim().is_empty() || pid == "0" {
@@ -199,6 +239,11 @@ pub fn restore_frontmost_pid(pid: &str) -> Result<()> {
 }
 
 /// Non-macOS stub; returns an execution error.
+///
+/// # Errors
+///
+/// Always returns [`DunstError::Execution`]; this operation requires the macOS
+/// backend, which is unavailable on the current platform.
 #[cfg(not(target_os = "macos"))]
 pub fn restore_frontmost_pid(_pid: &str) -> Result<()> {
     Err(DunstError::Execution(

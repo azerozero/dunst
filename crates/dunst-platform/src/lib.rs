@@ -59,6 +59,13 @@ impl MacosBackend {
 
 /// Post a background click at a screen point to a macOS process without moving
 /// the visible cursor.
+///
+/// # Errors
+///
+/// Returns an error if the user-active guard blocks the click (recent operator
+/// input), the CoreGraphics event source cannot be created, the current cursor
+/// position cannot be read, a mouse-down/up event cannot be created, or the
+/// cursor cannot be restored to its saved position afterwards.
 #[cfg(target_os = "macos")]
 pub fn click_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
     macos::click_at_point(pid, x, y)
@@ -66,12 +73,25 @@ pub fn click_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
 
 /// Post a real-cursor right-click at a screen point. Context menus on macOS
 /// position from the real cursor, so this path briefly warps and restores it.
+///
+/// # Errors
+///
+/// Returns an error if the user-active guard blocks the click, the CoreGraphics
+/// event source cannot be created, the current cursor position cannot be read,
+/// warping the cursor to the target point fails, a right mouse-down/up event
+/// cannot be created, or the cursor cannot be restored afterwards.
 #[cfg(target_os = "macos")]
 pub fn right_click_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
     macos::right_click_at_point(pid, x, y)
 }
 
 /// Post a named keyboard key to a macOS window without touching the mouse.
+///
+/// # Errors
+///
+/// Returns an error if `key` is not a recognized key name, if the SkyLight
+/// keyboard backend is unavailable, if the user-active guard blocks the press,
+/// if a key event cannot be created, or if the SkyLight post is rejected.
 #[cfg(target_os = "macos")]
 pub fn press_key(pid: i32, window_id: u32, key: &str) -> Result<()> {
     macos::press_key(pid, window_id, key)
@@ -80,6 +100,12 @@ pub fn press_key(pid: i32, window_id: u32, key: &str) -> Result<()> {
 /// Trigger a real cursor hover at a screen point so non-web surfaces can reveal
 /// hover state. This can move the visible cursor; web callers should prefer
 /// [`hover_web_background`] when they need a cursorless probe.
+///
+/// # Errors
+///
+/// Returns an error if the user-active guard blocks the hover, if warping the
+/// cursor to the point fails, if the CoreGraphics event source cannot be
+/// created, or if the hover mouse-moved event cannot be created.
 #[cfg(target_os = "macos")]
 pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
     macos::hover_at_point(pid, x, y)
@@ -91,6 +117,14 @@ pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
 /// mouse intentionally stays coupled because decoupling prevents web hover
 /// events from reaching the window under the warped cursor. Keep the borrow
 /// brief and always restore.
+///
+/// # Errors
+///
+/// Returns an error if the user-active guard blocks the borrow, if the
+/// CoreGraphics event source cannot be created, if the current cursor position
+/// cannot be read, if warping the cursor to the point fails, or if the hover
+/// mouse-moved event cannot be created (in which case the cursor is restored
+/// before returning).
 #[cfg(target_os = "macos")]
 pub fn cursor_borrow_to(x: f64, y: f64) -> Result<(f64, f64)> {
     macos::cursor_borrow_to(x, y)
@@ -99,6 +133,12 @@ pub fn cursor_borrow_to(x: f64, y: f64) -> Result<(f64, f64)> {
 /// Move an already-borrowed cursor without re-running the user-idle guard.
 /// Callers must first use [`cursor_borrow_to`] and must restore with
 /// [`cursor_restore`].
+///
+/// # Errors
+///
+/// Returns an error if the CoreGraphics event source cannot be created, if
+/// warping the cursor to the point fails, or if the mouse-moved event cannot be
+/// created.
 #[cfg(target_os = "macos")]
 pub fn cursor_borrow_move_to(x: f64, y: f64) -> Result<()> {
     macos::cursor_borrow_move_to(x, y)
@@ -107,6 +147,12 @@ pub fn cursor_borrow_move_to(x: f64, y: f64) -> Result<()> {
 /// End a [`cursor_borrow_to`]: release mouse buttons defensively, warp the
 /// cursor back to `(x, y)`, and re-couple the hardware mouse so the user
 /// controls it again.
+///
+/// # Errors
+///
+/// Returns an error if warping the cursor back to `(x, y)` fails. The defensive
+/// button release and hardware re-coupling are best-effort and never surface an
+/// error.
 #[cfg(target_os = "macos")]
 pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
     macos::cursor_restore(x, y)
@@ -115,6 +161,12 @@ pub fn cursor_restore(x: f64, y: f64) -> Result<()> {
 /// Unstick the OS cursor after driving a backgrounded window: drives a menu-bar
 /// focus cycle (open + close the Apple menu) so the window server re-evaluates
 /// the cursor shape. Workaround for the macOS stuck-cursor bug. macOS-only.
+///
+/// # Errors
+///
+/// Returns an error if the CoreGraphics event source cannot be created, if the
+/// current cursor position cannot be read, or if either mouse-down/up event of
+/// the Apple-menu click cannot be created.
 #[cfg(target_os = "macos")]
 pub fn unstick_cursor() -> Result<()> {
     macos::unstick_cursor()
@@ -125,12 +177,23 @@ pub fn unstick_cursor() -> Result<()> {
 /// is active, so callers can wrap it in the idle retry loop and never fight a
 /// user who resumed control. Use `unstick_cursor` for operator-requested,
 /// immediate recovery. macOS-only.
+///
+/// # Errors
+///
+/// Returns the user-active-guard error while the operator is active; otherwise
+/// returns an error if the CoreGraphics event source cannot be created, if the
+/// current cursor position cannot be read, or if either mouse-down/up event of
+/// the Apple-menu click cannot be created.
 #[cfg(target_os = "macos")]
 pub fn unstick_cursor_if_idle() -> Result<()> {
     macos::unstick_cursor_if_idle()
 }
 
 /// Non-macOS stub.
+///
+/// # Errors
+///
+/// Always returns an error: cursor recovery requires a macOS backend.
 #[cfg(not(target_os = "macos"))]
 pub fn unstick_cursor_if_idle() -> Result<()> {
     Err(dunst_core::DunstError::Execution(
@@ -164,6 +227,13 @@ pub fn focus_without_raise(window_id: u32) -> bool {
 /// Move/resize a target window by writing its AXPosition/AXSize attributes.
 /// Coordinates are global macOS screen points. Passing `None` for width/height
 /// preserves that dimension.
+///
+/// # Errors
+///
+/// Returns an error if Accessibility permission is not granted, if the AX
+/// application element cannot be created for `pid`, if the requested window id
+/// cannot be resolved (e.g. the window was closed), or if writing the AXSize or
+/// AXPosition attribute is rejected by the app.
 #[cfg(target_os = "macos")]
 pub fn set_window_frame(
     pid: i32,
@@ -177,6 +247,10 @@ pub fn set_window_frame(
 }
 
 /// Non-macOS stub.
+///
+/// # Errors
+///
+/// Always returns an error: moving or resizing a window requires a macOS backend.
 #[cfg(not(target_os = "macos"))]
 pub fn set_window_frame(
     _pid: i32,
@@ -212,6 +286,12 @@ pub fn click_web_background(
 /// Post a background mouse-move (hover) to a web window via SkyLight without
 /// moving the visible cursor. `window_origin` is the window's top-left in screen
 /// points so the event can be stamped with the window-local coordinate.
+///
+/// # Errors
+///
+/// Returns an error if the SkyLight backend is unavailable (a zero window id or
+/// the mouse-post SPI missing), if the user-active guard blocks the hover, if
+/// the hover event cannot be created, or if the SkyLight post is rejected.
 #[cfg(target_os = "macos")]
 pub fn hover_web_background(
     pid: i32,
@@ -227,6 +307,13 @@ pub fn hover_web_background(
 /// Post a wheel-scroll event to a backgrounded web window at a concrete screen
 /// point. `delta_y` follows CoreGraphics convention: positive scrolls up,
 /// negative scrolls down.
+///
+/// # Errors
+///
+/// Returns an error if the SkyLight backend is unavailable (a zero window id or
+/// the mouse-post SPI missing), if the user-active guard blocks the scroll, if
+/// the CoreGraphics event source or scroll event cannot be created, or if the
+/// SkyLight post is rejected.
 #[cfg(target_os = "macos")]
 pub fn scroll_web_background(
     pid: i32,
@@ -245,6 +332,14 @@ pub fn scroll_web_background(
 /// web, Electron, and canvas surfaces that only respond to real pointer wheel
 /// input. `delta_y` follows CoreGraphics convention: positive scrolls up,
 /// negative scrolls down.
+///
+/// # Errors
+///
+/// Returns an error if the user-active guard blocks the scroll, if the
+/// CoreGraphics event source cannot be created, if the current cursor position
+/// cannot be read, if warping the cursor to the point fails, if the pre-scroll
+/// hover or wheel-scroll event cannot be created, or if the cursor cannot be
+/// restored afterwards.
 #[cfg(target_os = "macos")]
 pub fn scroll_at_point(x: f64, y: f64, delta_y: i32) -> Result<()> {
     macos::scroll_at_point(x, y, delta_y)
@@ -255,6 +350,14 @@ pub fn scroll_at_point(x: f64, y: f64, delta_y: i32) -> Result<()> {
 /// caller should first focus the field (e.g. a [`click_web_background`] on it).
 /// Fails if SkyLight is unavailable or any expected key event cannot be created
 /// and posted.
+///
+/// # Errors
+///
+/// Returns an error if the SkyLight backend is unavailable, if `window_id` is
+/// zero, if the user-active guard blocks the input, or if any per-character or
+/// Return key event cannot be created and posted. Multi-line `text` is routed
+/// through a clipboard paste that fails if the clipboard cannot be read/written
+/// or restored.
 #[cfg(target_os = "macos")]
 pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> Result<()> {
     macos::type_text_background(pid, window_id, text)
@@ -265,6 +368,12 @@ pub fn type_text_background(pid: i32, window_id: u32, text: &str) -> Result<()> 
 /// fallback). Robust against the erratic cursor of raw clear-by-keystroke
 /// (End/Backspace), even for sparse-AX web inputs absent from the scene graph.
 /// Focus the field first (e.g. a click on it).
+///
+/// # Errors
+///
+/// Returns an error if the AX application element cannot be created for `pid`,
+/// if no element currently holds keyboard focus (`AXFocusedUIElement` is
+/// absent), or if the foreground select-all-and-paste replacement fails.
 #[cfg(target_os = "macos")]
 pub fn set_focused_field_text(pid: i32, window_id: u32, text: &str) -> Result<()> {
     macos::set_focused_field_text(pid, window_id, text)
@@ -276,6 +385,12 @@ pub fn set_focused_field_text(pid: i32, window_id: u32, text: &str) -> Result<()
 /// path — for scrolling (Page/Home/End), zoom (Cmd =/-/0), and hotkeys (Cmd+L,
 /// Cmd+T, …). Fails if SkyLight is unavailable or any expected key event cannot
 /// be created and posted.
+///
+/// # Errors
+///
+/// Returns an error if the SkyLight backend is unavailable, if the user-active
+/// guard blocks the key, if a key event cannot be created, or if the SkyLight
+/// post is rejected.
 #[cfg(target_os = "macos")]
 pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) -> Result<()> {
     macos::key_web_background(pid, window_id, keycode, flags)
@@ -285,12 +400,22 @@ pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) ->
 /// it the app's key window (window-scoped via `_AXUIElementGetWindow`, robust
 /// to duplicate/volatile titles). Use before a menu-bar command so it targets
 /// the attached window and not whichever window of the app is currently key.
+///
+/// # Errors
+///
+/// Returns an error if the AX application element cannot be created for `pid`,
+/// if the requested window id cannot be resolved (e.g. the window was closed),
+/// or if the AXRaise action is rejected by the app.
 #[cfg(target_os = "macos")]
 pub fn raise_window_by_id(pid: i32, window_id: u32) -> Result<()> {
     macos::raise_window_by_id(pid, window_id)
 }
 
 /// Non-macOS stub.
+///
+/// # Errors
+///
+/// Always returns an error: raising a window requires a macOS backend.
 #[cfg(not(target_os = "macos"))]
 pub fn raise_window_by_id(_pid: i32, _window_id: u32) -> Result<()> {
     Err(dunst_core::DunstError::Execution(
@@ -317,12 +442,22 @@ pub fn cursor_shape_fingerprint() -> Option<u64> {
 /// snapshot. This is the AX-side primitive for region analysis by sampling a
 /// spaced grid of points; macOS does not expose a direct "subtree by rectangle"
 /// API.
+///
+/// # Errors
+///
+/// Returns an error if Accessibility permission is not granted, if the AX
+/// application element cannot be created for `pid`, or if the AX hit-test at
+/// `(x, y)` fails or resolves no element.
 #[cfg(target_os = "macos")]
 pub fn element_at_point(pid: i32, x: f64, y: f64) -> Result<RawAxNode> {
     macos::element_at_point(pid, x, y)
 }
 
 /// Non-macOS stub.
+///
+/// # Errors
+///
+/// Always returns an error: AX hit-testing requires a macOS backend.
 #[cfg(not(target_os = "macos"))]
 pub fn element_at_point(_pid: i32, _x: f64, _y: f64) -> Result<RawAxNode> {
     Err(dunst_core::DunstError::Perception(
