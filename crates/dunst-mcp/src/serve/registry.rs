@@ -36,6 +36,7 @@ pub(super) const TOOL_REGISTRY: &[RegisteredTool] = &[
     tool("read_text", ToolRoute::Read),
     tool("read_text_detailed", ToolRoute::Read),
     tool("read_shapes", ToolRoute::Read),
+    tool("read_zones", ToolRoute::Read),
     tool("find_ocr_text", ToolRoute::Read),
     tool("detect_modal", ToolRoute::Read),
     tool("extract_ocr_cards", ToolRoute::Read),
