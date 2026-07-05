@@ -21,6 +21,10 @@ const FOREGROUND_DELTA: u16 = 38;
 /// low-contrast fills (e.g. light gray on white) the bar/circle threshold eats
 /// are recovered; the strict panel filter rejects the extra noise.
 const PANEL_FOREGROUND_DELTA: u16 = 14;
+/// Opponent-chroma distance from the image's median color above which a pixel is
+/// panel-foreground **regardless of luma** — recovers iso-luminant cards (same
+/// brightness, different hue) that no luma threshold can see.
+const CHROMA_DELTA: i16 = 40;
 
 /// Classified kind of a detected shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,6 +72,12 @@ struct LumaImage {
     width: usize,
     height: usize,
     data: Vec<u8>,
+    /// Brightness-invariant opponent chroma per pixel, aligned with `data`: see
+    /// [`opponent`]. Lets the panel detector separate iso-luminant regions (same
+    /// brightness, different hue) that `data` alone cannot. Zero on grayscale
+    /// sources, so luma-only behaviour is preserved there.
+    rg: Vec<i16>,
+    yb: Vec<i16>,
 }
 
 impl LumaImage {
@@ -89,19 +99,26 @@ impl LumaImage {
 
         let dst_w = TARGET_WIDTH.min(src_w).max(1);
         let dst_h = ((src_h as f64 * dst_w as f64 / src_w as f64).round() as usize).max(1);
-        let mut data = vec![0; dst_w * dst_h];
+        let mut data = vec![0u8; dst_w * dst_h];
+        let mut rg = vec![0i16; dst_w * dst_h];
+        let mut yb = vec![0i16; dst_w * dst_h];
 
         for y in 0..dst_h {
             let sy = ((y as f64 + 0.5) * src_h as f64 / dst_h as f64).floor() as usize;
             for x in 0..dst_w {
                 let sx = ((x as f64 + 0.5) * src_w as f64 / dst_w as f64).floor() as usize;
-                data[y * dst_w + x] = sample_luma(
+                let (c0, c1, c2) = sample_channels(
                     raw,
                     bytes_per_row,
                     bytes_per_pixel,
                     sx.min(src_w - 1),
                     sy.min(src_h - 1),
                 );
+                let idx = y * dst_w + x;
+                data[idx] = ((c0 as u16 + c1 as u16 + c2 as u16) / 3) as u8;
+                let (p, q) = opponent(c0, c1, c2);
+                rg[idx] = p;
+                yb[idx] = q;
             }
         }
 
@@ -109,6 +126,8 @@ impl LumaImage {
             width: dst_w,
             height: dst_h,
             data,
+            rg,
+            yb,
         })
     }
 
@@ -150,23 +169,40 @@ struct Component {
     pixels: usize,
 }
 
-fn sample_luma(raw: &[u8], bytes_per_row: usize, bytes_per_pixel: usize, x: usize, y: usize) -> u8 {
+/// Samples the raw channel triple `(c0, c1, c2)` at `(x, y)`. On <3-channel
+/// (grayscale) buffers all three equal the single sample, so the averaged luma is
+/// unchanged and [`opponent`] chroma reads as zero.
+fn sample_channels(
+    raw: &[u8],
+    bytes_per_row: usize,
+    bytes_per_pixel: usize,
+    x: usize,
+    y: usize,
+) -> (u8, u8, u8) {
     let offset = y
         .saturating_mul(bytes_per_row)
         .saturating_add(x.saturating_mul(bytes_per_pixel));
     if offset >= raw.len() {
-        return 0;
+        return (0, 0, 0);
     }
     if bytes_per_pixel >= 3 && offset + 2 < raw.len() {
-        // CGImage window captures are usually BGRA on macOS. Average RGB-like
-        // channels so BGRA/RGBA ordering does not matter for edge geometry.
-        let a = raw[offset] as u16;
-        let b = raw[offset + 1] as u16;
-        let c = raw[offset + 2] as u16;
-        ((a + b + c) / 3) as u8
+        (raw[offset], raw[offset + 1], raw[offset + 2])
     } else {
-        raw[offset]
+        let v = raw[offset];
+        (v, v, v)
     }
+}
+
+/// Brightness-invariant opponent chroma of a raw channel triple:
+/// `(c2 - c1, (c1 + c2)/2 - c0)`. Adding a constant to all three channels leaves
+/// both components unchanged, so two colors with equal luma but different hue
+/// still differ here. Channel *order* (BGRA vs RGBA) only flips signs/labels; the
+/// distance between two pixels' opponent values is preserved either way, so the
+/// detector needs no knowledge of the pixel format.
+fn opponent(c0: u8, c1: u8, c2: u8) -> (i16, i16) {
+    let rg = c2 as i16 - c1 as i16;
+    let yb = (c1 as i16 + c2 as i16) / 2 - c0 as i16;
+    (rg, yb)
 }
 
 fn edge_map(luma: &LumaImage) -> BoolImage {
@@ -276,6 +312,53 @@ fn foreground_mask(luma: &LumaImage, median: u8, delta: u16) -> BoolImage {
     mask
 }
 
+/// Foreground mask for panels: a pixel is foreground when it differs from the
+/// image's background reference in **luma** (by more than [`PANEL_FOREGROUND_DELTA`])
+/// **or** in **opponent chroma** (by more than [`CHROMA_DELTA`]). The chroma arm
+/// catches iso-luminant cards — same brightness, different hue — that the luma
+/// arm and the bar/circle mask are both blind to. Sparse single-pixel noise is
+/// removed; the strict panel filter downstream discards the rest.
+fn panel_foreground_mask(luma: &LumaImage, median: u8) -> BoolImage {
+    let med_rg = median_i16(&luma.rg);
+    let med_yb = median_i16(&luma.yb);
+    let mut mask = BoolImage {
+        width: luma.width,
+        height: luma.height,
+        data: (0..luma.data.len())
+            .map(|i| {
+                let luma_fg =
+                    (luma.data[i] as i16 - median as i16).unsigned_abs() > PANEL_FOREGROUND_DELTA;
+                let chroma_fg =
+                    (luma.rg[i] - med_rg).abs() + (luma.yb[i] - med_yb).abs() > CHROMA_DELTA;
+                luma_fg || chroma_fg
+            })
+            .collect(),
+    };
+    remove_sparse_noise(&mut mask);
+    mask
+}
+
+/// Median of `data` via a 512-bin histogram over the opponent range
+/// `[-256, 255]`; mirrors [`median_luma`]. Returns `0` when empty.
+fn median_i16(data: &[i16]) -> i16 {
+    if data.is_empty() {
+        return 0;
+    }
+    let mut hist = [0usize; 512];
+    for &v in data {
+        hist[(v as i32 + 256).clamp(0, 511) as usize] += 1;
+    }
+    let mid = data.len() / 2;
+    let mut acc = 0usize;
+    for (i, count) in hist.iter().enumerate() {
+        acc += count;
+        if acc >= mid {
+            return i as i16 - 256;
+        }
+    }
+    0
+}
+
 fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut Vec<Shape>) {
     let median = median_luma(&luma.data);
     let mask = foreground_mask(luma, median, FOREGROUND_DELTA);
@@ -363,7 +446,7 @@ fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut 
     // rejects the extra text/antialias noise a looser threshold surfaces. Bars
     // and circles keep the original mask, so their output is byte-for-byte
     // unchanged.
-    let panel_mask = foreground_mask(luma, median, PANEL_FOREGROUND_DELTA);
+    let panel_mask = panel_foreground_mask(luma, median);
     for component in &components(&panel_mask, 20) {
         if out.len() >= MAX_SHAPES {
             return;
@@ -650,6 +733,42 @@ mod panel_tests {
     }
 
     /// A synthetic luma image: uniform `bg`, with one filled `card_luma` rect.
+    /// A synthetic image: uniform `bg` color with one filled `card_rgb` rect.
+    /// Fills `data`/`rg`/`yb` exactly as `from_cg_image` would.
+    fn image_with_card(
+        w: usize,
+        h: usize,
+        bg: (u8, u8, u8),
+        card: (usize, usize, usize, usize),
+        card_rgb: (u8, u8, u8),
+    ) -> LumaImage {
+        fn luma((c0, c1, c2): (u8, u8, u8)) -> u8 {
+            ((c0 as u16 + c1 as u16 + c2 as u16) / 3) as u8
+        }
+        let (cx, cy, cw, ch) = card;
+        let (brg, byb) = opponent(bg.0, bg.1, bg.2);
+        let (crg, cyb) = opponent(card_rgb.0, card_rgb.1, card_rgb.2);
+        let mut data = vec![luma(bg); w * h];
+        let mut rg = vec![brg; w * h];
+        let mut yb = vec![byb; w * h];
+        for y in cy..cy + ch {
+            for x in cx..cx + cw {
+                let i = y * w + x;
+                data[i] = luma(card_rgb);
+                rg[i] = crg;
+                yb[i] = cyb;
+            }
+        }
+        LumaImage {
+            width: w,
+            height: h,
+            data,
+            rg,
+            yb,
+        }
+    }
+
+    /// Grayscale convenience over [`image_with_card`]: neutral gray triples.
     fn luma_with_card(
         w: usize,
         h: usize,
@@ -657,18 +776,7 @@ mod panel_tests {
         card: (usize, usize, usize, usize),
         card_luma: u8,
     ) -> LumaImage {
-        let (cx, cy, cw, ch) = card;
-        let mut data = vec![bg; w * h];
-        for y in cy..cy + ch {
-            for x in cx..cx + cw {
-                data[y * w + x] = card_luma;
-            }
-        }
-        LumaImage {
-            width: w,
-            height: h,
-            data,
-        }
+        image_with_card(w, h, (bg, bg, bg), card, (card_luma, card_luma, card_luma))
     }
 
     fn unit_geometry(w: usize, h: usize) -> CaptureGeometry {
@@ -704,6 +812,26 @@ mod panel_tests {
         let mut out = Vec::new();
         detect_filled_shapes(&luma, &unit_geometry(320, 200), &mut out);
         assert!(!out.iter().any(|s| s.kind == ShapeKind::Panel));
+    }
+
+    #[test]
+    fn isoluminant_card_is_detected_via_chroma() {
+        // Card (168,128,88) and background (128,128,128) share luma 128 — the
+        // luma arm is completely blind — but differ in hue. The opponent-chroma
+        // arm (rg/yb) separates them, so the card still nests as a Panel.
+        let luma = image_with_card(320, 200, (128, 128, 128), (40, 40, 120, 80), (168, 128, 88));
+        assert_eq!(
+            luma.data[0],
+            luma.data[40 * 320 + 40],
+            "card and bg share luma"
+        );
+        let mut out = Vec::new();
+        detect_filled_shapes(&luma, &unit_geometry(320, 200), &mut out);
+        assert!(
+            out.iter().any(|s| s.kind == ShapeKind::Panel),
+            "expected a Panel for an iso-luminant card, got {:?}",
+            out.iter().map(|s| s.kind).collect::<Vec<_>>()
+        );
     }
 
     // Frame is the downscaled TARGET_WIDTH-wide image; use 320x240 here.
