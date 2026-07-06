@@ -377,12 +377,12 @@ fn element_tools() -> Vec<Value> {
         ),
         tool(
             "click_at",
-            "Click at a raw screen point (x,y) inside the target window. Prefer click_near_text or click_element whenever possible. Raw mutating input is high-risk and requires approval. If pending_approval is not explicitly approved, switch to ui_fallback_hint: map the UI with window_view/get_affordances/find_element/find_ocr_text, then use element-bound or OCR-bound actions. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1. If the user-active guard blocks it, wait until the operator is idle and retry once.",
-            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"}, "expected_text": {"type":"string", "description":"optional text expected to be visible after the raw click"}, "include_diff": {"type":"boolean"} }), &["x", "y"]),
+            "Click at a raw screen point (x,y) inside the target window. Prefer click_near_text or click_element whenever possible. Raw mutating input is high-risk and requires approval. By default the click is posted to the attached window/pid in the background; set borrow_cursor=true to deliver a REAL cursor click (warp + global click + restore) — required for native popups such as an open <select> menu or a panel window, which never receive window-targeted clicks. If pending_approval is not explicitly approved, switch to ui_fallback_hint: map the UI with window_view/get_affordances/find_element/find_ocr_text, then use element-bound or OCR-bound actions. Off-target points are rejected unless DUNST_MCP_ALLOW_OFF_TARGET_RAW=1. If the user-active guard blocks it, wait until the operator is idle and retry once.",
+            schema(json!({ "x": {"type":"number"}, "y": {"type":"number"}, "expected_text": {"type":"string", "description":"optional text expected to be visible after the raw click"}, "borrow_cursor": {"type":"boolean","description":"briefly move and restore the real OS cursor and post a global click; use for native popups (<select> menus, panel windows) that ignore window-targeted clicks; the point must be visibly occupied by the target (default false)"}, "include_diff": {"type":"boolean"} }), &["x", "y"]),
         ),
         tool(
             "click_near_text",
-            "OCR the target window, choose a ranked text hit by query, click its bbox centre or a bounded offset from that centre, and optionally verify expected_text afterward. This is still raw input and approval-gated, but safer than manual click_at because the returned audit includes the OCR hit and any offset used.",
+            "OCR the target window, choose a ranked text hit by query, click its bbox centre or a bounded offset from that centre, and optionally verify expected_text afterward. This is still raw input and approval-gated, but safer than manual click_at because the returned audit includes the OCR hit and any offset used. Set borrow_cursor=true to deliver a REAL cursor click — required for items of a native popup (an open <select> menu, a panel window), which never receive the default window-targeted click.",
             schema(
                 json!({
                     "query": {"type":"string", "description":"visible OCR text to click"},
@@ -392,6 +392,7 @@ fn element_tools() -> Vec<Value> {
                     "expected_text": {"type":"string", "description":"optional text that should be visible after the click"},
                     "content_only": {"type":"boolean", "description":"filter browser chrome/tab strip and low-confidence text (default true)"},
                     "accurate": {"type":"boolean", "description":"use slower accurate OCR (default true)"},
+                    "borrow_cursor": {"type":"boolean","description":"briefly move and restore the real OS cursor and post a global click; use for native popup items (<select> menus, panel windows) that ignore window-targeted clicks; the point must be visibly occupied (default false)"},
                     "reasoning": {"type":"string"},
                     "include_diff": {"type":"boolean"}
                 }),

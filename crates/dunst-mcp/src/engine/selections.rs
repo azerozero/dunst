@@ -508,6 +508,7 @@ impl Engine {
                             expected_text: None,
                             reasoning: Some("batch OCR choice click"),
                             offset: (0.0, 0.0),
+                            borrow_cursor: false,
                         },
                     )
                     .map(|result| Some(result.audit)),

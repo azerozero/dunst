@@ -8,28 +8,30 @@ pub(super) fn dispatch(
 ) -> Option<Result<Value, String>> {
     Some(match name {
         "click_at" => match point(args) {
-            Some((x, y)) => match engine.click_at(x, y) {
-                Ok(entry) => {
-                    let include_diff = arg_bool(args, "include_diff").unwrap_or(false);
-                    let expected = arg(args, "expected_text");
-                    if let Some(expected) = expected {
-                        let found = raw_expected_text_found(engine, &expected);
-                        Ok(json!({
-                            "audit": audit_entry_value(entry, include_diff),
-                            "expected_text": expected,
-                            "expected_text_found": found,
-                            "verification_hint": if found {
-                                Value::Null
-                            } else {
-                                json!("Raw click completed, but expected_text was not visible afterward; treat it as semantically unverified.")
-                            }
-                        }))
-                    } else {
-                        Ok(audit_entry_value(entry, include_diff))
+            Some((x, y)) => {
+                match engine.click_at(x, y, arg_bool(args, "borrow_cursor").unwrap_or(false)) {
+                    Ok(entry) => {
+                        let include_diff = arg_bool(args, "include_diff").unwrap_or(false);
+                        let expected = arg(args, "expected_text");
+                        if let Some(expected) = expected {
+                            let found = raw_expected_text_found(engine, &expected);
+                            Ok(json!({
+                                "audit": audit_entry_value(entry, include_diff),
+                                "expected_text": expected,
+                                "expected_text_found": found,
+                                "verification_hint": if found {
+                                    Value::Null
+                                } else {
+                                    json!("Raw click completed, but expected_text was not visible afterward; treat it as semantically unverified.")
+                                }
+                            }))
+                        } else {
+                            Ok(audit_entry_value(entry, include_diff))
+                        }
                     }
+                    Err(err) => Err(err.to_string()),
                 }
-                Err(err) => Err(err.to_string()),
-            },
+            }
             None => Err("click_at requires numeric 'x' and 'y'".into()),
         },
         "click_near_text" => match arg(args, "query") {
@@ -47,6 +49,7 @@ pub(super) fn dispatch(
                             args.get("offset_x").and_then(Value::as_f64).unwrap_or(0.0),
                             args.get("offset_y").and_then(Value::as_f64).unwrap_or(0.0),
                         ),
+                        borrow_cursor: arg_bool(args, "borrow_cursor").unwrap_or(false),
                     },
                 )
                 .map(|result| {

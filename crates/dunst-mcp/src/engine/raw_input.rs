@@ -16,14 +16,26 @@ impl Engine {
     /// so it is gated as a high-risk raw action and audited under
     /// `target_id = "screen@x,y"`.
     ///
+    /// With `borrow_cursor`, the click is delivered with the REAL cursor
+    /// (warp, global HID down/up, restore) instead of the PID-targeted
+    /// background path — required for native popups (a `<select>` menu, a
+    /// panel-service window) that live outside the attached window and never
+    /// receive window-targeted events.
+    ///
     /// # Errors
     ///
     /// Returns an error if `(x, y)` is outside the attached target window, or
     /// propagates the platform error from the background (or fallback cursor)
-    /// click at that point.
+    /// click at that point. With `borrow_cursor`, also errors if the point is
+    /// not visibly occupied by the target window.
     #[cfg(target_os = "macos")]
-    pub fn click_at(&mut self, x: f64, y: f64) -> dunst_core::Result<AuditEntry> {
-        self.click_at_button(x, y, 0, "click")
+    pub fn click_at(
+        &mut self,
+        x: f64,
+        y: f64,
+        borrow_cursor: bool,
+    ) -> dunst_core::Result<AuditEntry> {
+        self.click_at_button(x, y, 0, "click", borrow_cursor)
     }
 
     /// Borrow the real cursor on an already-visible target point to reveal
@@ -142,7 +154,7 @@ impl Engine {
     /// propagates the platform error from the right-click.
     #[cfg(target_os = "macos")]
     pub fn right_click_at(&mut self, x: f64, y: f64) -> dunst_core::Result<AuditEntry> {
-        self.click_at_button(x, y, 1, "right-click")
+        self.click_at_button(x, y, 1, "right-click", false)
     }
 
     /// Double-click at a raw screen point — two quick clicks.
@@ -165,10 +177,10 @@ impl Engine {
         ) {
             return Ok(entry);
         }
-        let mut outcome = self.raw_click_outcome(x, y, 0);
+        let mut outcome = self.raw_click_outcome(x, y, 0, false);
         std::thread::sleep(std::time::Duration::from_millis(90));
         if outcome.is_ok() {
-            outcome = self.raw_click_outcome(x, y, 0);
+            outcome = self.raw_click_outcome(x, y, 0, false);
         }
         self.audit_raw_input(
             target_id,
@@ -191,10 +203,17 @@ impl Engine {
         y: f64,
         button: u8,
         label: &str,
+        borrow_cursor: bool,
     ) -> dunst_core::Result<AuditEntry> {
         self.ensure_point_in_target_window(x, y, label)?;
         let target_id = format!("screen@{x},{y}:{label}");
-        let risk = self.raw_point_risk(x, y);
+        let mut risk = self.raw_point_risk(x, y);
+        if borrow_cursor {
+            risk.reasons
+                .push("briefly moves and restores the real OS cursor".to_string());
+            risk.reasons
+                .push("the click is delivered to the visible surface under the cursor".to_string());
+        }
         if let Some(entry) = self.gate_raw_input(
             &target_id,
             SemanticAction::Click,
@@ -204,7 +223,7 @@ impl Engine {
         ) {
             return Ok(entry);
         }
-        let outcome = self.raw_click_outcome(x, y, button);
+        let outcome = self.raw_click_outcome(x, y, button, borrow_cursor);
         self.audit_raw_input(
             target_id,
             SemanticAction::Click,
@@ -222,7 +241,7 @@ impl Engine {
         action_label: &str,
         reasoning: Option<&str>,
     ) -> dunst_core::Result<AuditEntry> {
-        self.click_ocr_text_hit_at(hit, action_label, hit.center, (0.0, 0.0), reasoning)
+        self.click_ocr_text_hit_at(hit, action_label, hit.center, (0.0, 0.0), reasoning, false)
     }
 
     #[cfg(target_os = "macos")]
@@ -233,6 +252,7 @@ impl Engine {
         click_point: (f64, f64),
         offset: (f64, f64),
         reasoning: Option<&str>,
+        borrow_cursor: bool,
     ) -> dunst_core::Result<AuditEntry> {
         let (x, y) = click_point;
         self.ensure_point_in_target_window(x, y, action_label)?;
@@ -244,7 +264,13 @@ impl Engine {
         } else {
             format!("ocr@{}:{action_label}", hit.id)
         };
-        let risk = self.ocr_point_risk_at(hit, click_point, offset);
+        let mut risk = self.ocr_point_risk_at(hit, click_point, offset);
+        if borrow_cursor {
+            risk.reasons
+                .push("briefly moves and restores the real OS cursor".to_string());
+            risk.reasons
+                .push("the click is delivered to the visible surface under the cursor".to_string());
+        }
         let argument = if offset.0.abs() > f64::EPSILON || offset.1.abs() > f64::EPSILON {
             Some(format!(
                 "{action_label} {:?} at {x:.1},{y:.1} offset {:+.1},{:+.1} from OCR bbox centre",
@@ -263,7 +289,7 @@ impl Engine {
         ) {
             return Ok(entry);
         }
-        let outcome = self.raw_click_outcome(x, y, 0);
+        let outcome = self.raw_click_outcome(x, y, 0, borrow_cursor);
         self.audit_raw_input(
             target_id,
             SemanticAction::Click,
@@ -275,12 +301,26 @@ impl Engine {
     }
 
     #[cfg(target_os = "macos")]
-    pub(super) fn raw_click_outcome(&self, x: f64, y: f64, button: u8) -> dunst_core::Result<()> {
+    pub(super) fn raw_click_outcome(
+        &self,
+        x: f64,
+        y: f64,
+        button: u8,
+        borrow_cursor: bool,
+    ) -> dunst_core::Result<()> {
         if button == 1 {
             self.ensure_real_cursor_point_visible(x, y, "right_click_at")?;
             return retry_user_active_guard(|| {
                 dunst_platform::right_click_at_point(self.target.pid, x, y)
             });
+        }
+        if borrow_cursor && button == 0 {
+            // Real-cursor click for native popups (a <select> menu, an
+            // open/save panel window): those live outside the attached
+            // window/pid, so the background PID-targeted paths below never
+            // reach them — the popup just closes without selecting.
+            self.ensure_real_cursor_point_visible(x, y, "click borrow_cursor")?;
+            return retry_user_active_guard(|| dunst_platform::click_at_point_cursor(x, y));
         }
         retry_user_active_guard(|| {
             let (ox, oy) = dunst_vision::capture::window_bounds(self.target.window_id)
@@ -313,7 +353,12 @@ impl Engine {
     /// Always returns an error: raw CGEvent input requires the macOS backend,
     /// which is unavailable on this platform.
     #[cfg(not(target_os = "macos"))]
-    pub fn click_at(&mut self, _x: f64, _y: f64) -> dunst_core::Result<AuditEntry> {
+    pub fn click_at(
+        &mut self,
+        _x: f64,
+        _y: f64,
+        _borrow_cursor: bool,
+    ) -> dunst_core::Result<AuditEntry> {
         Err(DunstError::Execution(
             "click_at requires a macOS backend".into(),
         ))
