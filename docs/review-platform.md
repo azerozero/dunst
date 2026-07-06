@@ -1,101 +1,100 @@
 > **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
 
-# Review — `crates/visualops-platform` (backend macOS AX)
+# Review - `crates/visualops-platform` (macOS AX backend)
 
-Revue **lecture seule** du backend FFI macOS (`src/lib.rs` module `macos`,
-`examples/dump.rs`). Aucun fichier `.rs` modifié. Référentiels : le contrat
-`visualops-core` (gelé, non modifié) et `docs/WP-A-platform.md` (spec du WP).
+**Read-only** review of the macOS FFI backend (`src/lib.rs` module `macos`,
+`examples/dump.rs`). No `.rs` file modified. References: the `visualops-core`
+contract (frozen, unmodified) and `docs/WP-A-platform.md` (WP spec).
 
-Méthode : trace de l'ownership Core Foundation (Create/Copy → CFRelease),
-vérification des `unsafe`, des null-checks, de l'exactitude des types
-`AXValueGetValue`, de la traversée, du mapping des `SemanticAction`, des bornes
-et de la conformité au contrat. La sémantique exacte des helpers
-`core-foundation 0.10` (`downcast`, `downcast_into`, `wrap_under_get_rule`,
-`wrap_under_create_rule`) a été relue dans la source du crate pour fonder
-l'analyse retain/release. Le crate **compile sans aucun warning** sur cette
-machine (`cargo build`/`clippy -p visualops-platform`), donc les types FFI
-(`AXValueGetValue -> bool`, constantes `kAXValueType*`) sont cohérents.
+Method: trace Core Foundation ownership (Create/Copy → CFRelease), verify
+`unsafe`, null-checks, `AXValueGetValue` type correctness, traversal, mapping of
+`SemanticAction`, bounds, and contract compliance. The exact semantics of
+`core-foundation 0.10` helpers (`downcast`, `downcast_into`, `wrap_under_get_rule`,
+`wrap_under_create_rule`) were reread in the crate source to ground the
+retain/release analysis. The crate **compiles with no warnings** on this machine
+(`cargo build`/`clippy -p visualops-platform`), so the FFI types
+(`AXValueGetValue -> bool`, `kAXValueType*` constants) are consistent.
 
-## Synthèse de l'ownership (ce qui est correct)
+## Ownership Summary (What Is Correct)
 
-Pour éviter les faux positifs, voici ce qui est **sain** :
+To avoid false positives, here is what is **healthy**:
 
-- `attr_value` (l.346) : `AXUIElementCopyAttributeValue` (Copy) → `value`
-  enveloppé par `wrap_under_create_rule` ⇒ libéré au `Drop` du `CFType`. Le
-  null-check (`err == kAXErrorSuccess && !value.is_null()`) est correct.
-- `attr_string`/`attr_bool` (l.359/367) : `downcast::<T>()` suit la Get Rule
-  (+1 indépendant, libéré au Drop) ; le `CFType` source est libéré séparément.
-  **Équilibré, pas de fuite, pas de double-free.**
-- `attr_array` (l.372) : `downcast_into::<CFArray>()` consomme le `CFType` sans
-  toucher le compteur (transfert) ⇒ le `CFArray` est libéré à son Drop.
+- `attr_value` (l.346): `AXUIElementCopyAttributeValue` (Copy) → `value`
+  wrapped by `wrap_under_create_rule` ⇒ freed at `CFType` Drop. The null-check
+  (`err == kAXErrorSuccess && !value.is_null()`) is correct.
+- `attr_string`/`attr_bool` (l.359/367): `downcast::<T>()` follows the Get Rule
+  (+1 independent, freed at Drop); the source `CFType` is freed separately.
+  **Balanced, no leak, no double-free.**
+- `attr_array` (l.372): `downcast_into::<CFArray>()` consumes the `CFType`
+  without touching the counter (transfer) ⇒ the `CFArray` is freed at Drop.
   **Correct.**
-- `action_names` (l.388) : `AXUIElementCopyActionNames` (Copy) →
-  `wrap_under_create_rule` ⇒ libéré. `cf_strings` (l.407) utilise
-  `wrap_under_get_rule` (+1) puis Drop (−1) par élément. **Équilibré.**
-- `attr_ax_element`/`attr_ax_value` (l.377/500) : `mem::forget(value)` après
-  test de type transfère correctement le +1 au pointeur brut renvoyé ; sur le
-  chemin d'échec de type, le `CFType` est bien libéré (Drop). Le **transfert**
-  est correct — le défaut est en aval (cf. BLOQUANT/MAJEUR : le destinataire ne
-  libère jamais).
-- Types `AXValueGetValue` : `kAXValueTypeCGRect/CGPoint/CGSize` appariés aux
-  buffers `CGRect`/`CGPoint`/`CGSize` (`core-graphics`, `repr(C)`, champs
-  `f64`/CGFloat) — tailles 32/16/16 octets exactes. `then_some` confirme un
-  retour `bool`. **Pas d'UB.**
-- Aucune panique sur attribut manquant : `Option` + `unwrap_or(_else)` partout
-  (l.195, 215, 216…). Conforme au done-criteria « No panics ».
-- Bornes `MAX_NODES`/`MAX_DEPTH` (l.51-52) effectivement appliquées dans
-  `walk_element` (l.220, 227) et `find_element` (l.244). Profondeur ≤ 40 ⇒ pas
-  de risque de débordement de pile.
+- `action_names` (l.388): `AXUIElementCopyActionNames` (Copy) →
+  `wrap_under_create_rule` ⇒ freed. `cf_strings` (l.407) uses
+  `wrap_under_get_rule` (+1) then Drop (−1) per element. **Balanced.**
+- `attr_ax_element`/`attr_ax_value` (l.377/500): `mem::forget(value)` after type
+  check correctly transfers the +1 to the returned raw pointer; on the type
+  failure path, the `CFType` is freed correctly (Drop). The **transfer** is
+  correct - the defect is downstream (see BLOCKING/MAJOR: the receiver never
+  releases it).
+- `AXValueGetValue` types: `kAXValueTypeCGRect/CGPoint/CGSize` matched to
+  `CGRect`/`CGPoint`/`CGSize` buffers (`core-graphics`, `repr(C)`, `f64`/CGFloat
+  fields) - exact 32/16/16-byte sizes. `then_some` confirms a `bool` return.
+  **No UB.**
+- No panic on missing attribute: `Option` + `unwrap_or(_else)` everywhere
+  (l.195, 215, 216...). Compliant with the "No panics" done criteria.
+- `MAX_NODES`/`MAX_DEPTH` bounds (l.51-52) are effectively applied in
+  `walk_element` (l.220, 227) and `find_element` (l.244). Depth ≤ 40 ⇒ no stack
+  overflow risk.
 
-**Conclusion soundness : aucun double-free, aucun use-after-free, aucune UB.**
-Le seul défaut d'ownership est une **fuite** (release absent), traitée ci-dessous.
+**Soundness conclusion: no double-free, no use-after-free, no UB.**
+The only ownership defect is a **leak** (missing release), handled below.
 
 ---
 
-## MAJEUR
+## MAJOR
 
-### M1 — Fuite Core Foundation systématique : aucun `CFRelease` n'est jamais exécuté
+### M1 - Systematic Core Foundation leak: no `CFRelease` is ever executed
 
-**Fichier:ligne :**
-- `release_ax_element` — `src/lib.rs:511-516` : **seul** appelant de `CFRelease`,
-  marqué `#[allow(dead_code)]`, **jamais appelé**.
-- `ax_elements` — `src/lib.rs:435` : `CFRetain(cf_ref)` (+1) sur **chaque**
-  élément, sans release jumelé.
-- `app_element` — `src/lib.rs:132` : `AXUIElementCreateApplication` (Create, +1)
-  jamais libéré par `capture` (l.62), `window_ref` (l.76), `perform` (l.93).
-- `attr_ax_value` — `src/lib.rs:500-509` : `AXValueRef` (+1 via `forget`) renvoyé
-  à `attr_cgrect/cgpoint/cgsize` (l.457/475/487) puis jamais libéré.
-- `attr_ax_element` — `src/lib.rs:377-386` : `AXUIElementRef` (+1) de
-  `AXMainWindow` renvoyé à `resolve_window`, jamais libéré.
+**File:line:**
+- `release_ax_element` - `src/lib.rs:511-516`: **only** caller of `CFRelease`,
+  marked `#[allow(dead_code)]`, **never called**.
+- `ax_elements` - `src/lib.rs:435`: `CFRetain(cf_ref)` (+1) on **every**
+  element, with no paired release.
+- `app_element` - `src/lib.rs:132`: `AXUIElementCreateApplication` (Create, +1)
+  never released by `capture` (l.62), `window_ref` (l.76), `perform` (l.93).
+- `attr_ax_value` - `src/lib.rs:500-509`: `AXValueRef` (+1 via `forget`) returned
+  to `attr_cgrect/cgpoint/cgsize` (l.457/475/487) then never released.
+- `attr_ax_element` - `src/lib.rs:377-386`: `AXUIElementRef` (+1) from
+  `AXMainWindow` returned to `resolve_window`, never released.
 
-**Problème.** Le backend **ne libère jamais** un seul `AXUIElementRef` ou
-`AXValueRef` qu'il possède. Conséquences par `capture` :
-- l'élément application (+1),
-- la fenêtre résolue (+1),
-- **chaque nœud de l'arbre** : `walk_element` (l.225-233) itère
-  `ax_elements(&children)` (chaque enfant retenu +1) puis recurse sans libérer ⇒
-  jusqu'à `MAX_NODES` (5 000) refs fuités par capture,
-- **1 à 2 `AXValueRef` par nœud** (`AXFrame`, ou `AXPosition`+`AXSize`).
+**Problem.** The backend **never releases** a single `AXUIElementRef` or
+`AXValueRef` that it owns. Consequences per `capture`:
+- the application element (+1),
+- the resolved window (+1),
+- **every node in the tree**: `walk_element` (l.225-233) iterates
+  `ax_elements(&children)` (each child retained +1) then recurses without
+  releasing ⇒ up to `MAX_NODES` (5 000) refs leaked per capture,
+- **1 to 2 `AXValueRef`s per node** (`AXFrame`, or `AXPosition`+`AXSize`).
 
-`resolve_window` (l.145-175) aggrave : `ax_elements` retient **toutes** les
-fenêtres mais n'en renvoie qu'une ⇒ les autres fuient ; en cas d'échec il
-re-lit `kAXWindowsAttribute` une 2ᵉ fois (l.146 puis l.163), re-retenant tout.
+`resolve_window` (l.145-175) makes it worse: `ax_elements` retains **all**
+windows but returns only one ⇒ the others leak; on failure it rereads
+`kAXWindowsAttribute` a 2nd time (l.146 then l.163), retaining everything again.
 
-> ⚠️ **Nuance importante — le `CFRetain` de `ax_elements` (l.435) est correct et
-> nécessaire, ce n'est PAS lui le bug.** Dans `find_element` (l.238-263) les
-> enfants sont empilés sur `stack` (l.256) et déréférencés à des itérations
-> *ultérieures*, **après** que le `CFArray` parent a été libéré (fin du bloc
-> `if let Some(children)`). Sans le retain, ce serait un **use-after-free**. Le
-> défaut n'est donc pas le retain mais l'**absence du `CFRelease` jumelé**.
+> ⚠️ **Important nuance - the `CFRetain` in `ax_elements` (l.435) is correct and
+> necessary; it is NOT the bug.** In `find_element` (l.238-263), children are
+> pushed onto `stack` (l.256) and dereferenced in *later* iterations, **after**
+> the parent `CFArray` has been freed (end of the `if let Some(children)` block).
+> Without the retain, this would be a **use-after-free**. The defect is therefore
+> not the retain but the **absence of the paired `CFRelease`**.
 
-**Gravité.** Sain (pas d'UB), et **inoffensif pour le livrable WP-A** : l'exemple
-`dump` (`examples/dump.rs`) est un process one-shot, l'OS récupère tout à la
-sortie. **Mais** le contrat sera câblé dans `visualops-mcp`, un serveur
-long-running qui capture en boucle : la fuite y est **non bornée** (~5 000 refs
-AX + AXValues par capture). → **À traiter avant intégration serveur (BLOQUANT en
-contexte serveur).**
+**Severity.** Sound (no UB), and **harmless for the WP-A deliverable**: the
+`dump` example (`examples/dump.rs`) is a one-shot process, and the OS reclaims
+everything on exit. **But** the contract will be wired into `visualops-mcp`, a
+long-running server that captures in a loop: the leak there is **unbounded**
+(~5 000 AX refs + AXValues per capture). → **Fix before server integration
+(BLOCKING in server context).**
 
-**Correction concrète.** Introduire un wrapper RAII propriétaire, p.ex. :
+**Concrete fix.** Introduce an owning RAII wrapper, for example:
 
 ```rust
 struct AxElement(AXUIElementRef);
@@ -108,119 +107,117 @@ impl Drop for AxElement {
 }
 ```
 
-puis :
-- `ax_elements` renvoie `Vec<AxElement>` (le `CFRetain` actuel devient le +1 du
-  wrapper) ; `walk_element`/`find_element` détiennent des `AxElement` qui se
-  libèrent au Drop. Pour l'élément *retourné* par `find_element`/`resolve_window`,
-  faire `mem::forget` du wrapper (transfert) ou renvoyer le `AxElement` lui-même.
-- `app_element` renvoie un `AxElement` (libère l'app en fin de `capture`/
+then:
+- `ax_elements` returns `Vec<AxElement>` (the current `CFRetain` becomes the +1
+  owned by the wrapper); `walk_element`/`find_element` hold `AxElement`s that
+  release at Drop. For the element *returned* by `find_element`/`resolve_window`,
+  `mem::forget` the wrapper (transfer) or return the `AxElement` itself.
+- `app_element` returns an `AxElement` (releases the app at the end of `capture`/
   `window_ref`/`perform`).
-- `attr_ax_value` : libérer le `AXValueRef` après `AXValueGetValue` (le wrapper
-  RAII, ou un `CFRelease` explicite en fin de `attr_cgrect/cgpoint/cgsize`).
-- `attr_ax_element` : même traitement pour la fenêtre principale.
-- Supprimer `#[allow(dead_code)]` sur `release_ax_element` une fois utilisé, ou
-  le retirer au profit du `Drop`.
+- `attr_ax_value`: release the `AXValueRef` after `AXValueGetValue` (RAII wrapper,
+  or explicit `CFRelease` at the end of `attr_cgrect/cgpoint/cgsize`).
+- `attr_ax_element`: same treatment for the main window.
+- Remove `#[allow(dead_code)]` on `release_ax_element` once used, or remove it in
+  favor of `Drop`.
 
 ---
 
-## MINEUR
+## MINOR
 
-### m1 — `Type` : pas de repli CGEvent alors que le spec l'exige
-**`src/lib.rs:107-112`** (et `set_string_attr` l.304). Le WP-A précise pour
-`Type` : « `AXUIElementSetAttributeValue(...)` ; **if that errors, fall back to
-CGEvent keystrokes** ». L'implémentation renvoie directement l'erreur AX sans
-repli. Beaucoup de champs refusent `setValue` sur `kAXValueAttribute` (web
-views, NSTextView en lecture indirecte) ⇒ `Type` échouera là où le spec attend
-un succès. **Correction :** sur `Err`, synthétiser les frappes via
-`CGEvent::new_keyboard_event` (séquence de caractères) avant de renoncer.
+### m1 - `Type`: no CGEvent fallback although the spec requires it
+**`src/lib.rs:107-112`** (and `set_string_attr` l.304). WP-A specifies for
+`Type`: "`AXUIElementSetAttributeValue(...)`; **if that errors, fall back to
+CGEvent keystrokes**". The implementation returns the AX error directly with no
+fallback. Many fields reject `setValue` on `kAXValueAttribute` (web views,
+NSTextView through indirect editing) ⇒ `Type` will fail where the spec expects
+success. **Fix:** on `Err`, synthesize keystrokes via
+`CGEvent::new_keyboard_event` (character sequence) before giving up.
 
-### m2 — `element_matches` : repli de label incohérent avec `walk_element`
-**`src/lib.rs:280`** vs **`src/lib.rs:197-205`**. À la capture, le label dérive
-de `title → description → (value seulement si AXStaticText)`. À la résolution,
-`element_matches` essaie `title → description → value` (**value pour tout
-rôle**). Un élément dont le `value` (non vide) coïncide avec le `label` recherché
-peut donc matcher un autre élément que celui capturé. **Correction :** aligner la
-dérivation de label sur celle de `walk_element` (value en repli **uniquement**
-pour `AXStaticText`).
+### m2 - `element_matches`: label fallback inconsistent with `walk_element`
+**`src/lib.rs:280`** vs **`src/lib.rs:197-205`**. During capture, the label
+derives from `title → description → (value only if AXStaticText)`. During
+resolution, `element_matches` tries `title → description → value` (**value for
+every role**). An element whose `value` (non-empty) matches the searched `label`
+can therefore match a different element than the captured one. **Fix:** align
+label derivation with `walk_element` (value fallback **only** for `AXStaticText`).
 
-### m3 — `attr_string` masque les chaînes vides → perte « vide vs absent »
-**`src/lib.rs:364`** : `.filter(|s| !s.is_empty())`. Un champ texte réellement
-vide (`AXValue == ""`) devient `value = None` au lieu de `Some("")`. Pour le
-diff/audit (`visualops-graph::audit::diff`), on ne distingue plus « champ vidé »
-de « pas de valeur ». **Correction :** ne filtrer le vide que pour `label`
-(esthétique d'ID), pas pour `value` ; ou conserver `Some("")` pour `value`.
+### m3 - `attr_string` masks empty strings → loss of "empty vs absent"
+**`src/lib.rs:364`**: `.filter(|s| !s.is_empty())`. A genuinely empty text field
+(`AXValue == ""`) becomes `value = None` instead of `Some("")`. For the
+diff/audit (`visualops-graph::audit::diff`), "field cleared" can no longer be
+distinguished from "no value". **Fix:** filter emptiness only for `label`
+(aesthetic ID concern), not for `value`; or preserve `Some("")` for `value`.
 
-### m4 — Affordance `Drag` émise par WP-B mais refusée par `perform`
-**`src/lib.rs:114-116`**. `perform` renvoie `Execution(...)` pour
-`Drag`/`Toggle`/`Scroll` — conforme au spec (« others → Execution error »).
-Mais `visualops-graph::derive_affordances` **expose `Drag`** sur les
-`Row`/`Cell`. Un agent qui suit le graphe d'affordances demandera donc une
-action qui échoue toujours à l'exécution (pas de panique, mais incohérence
-inter-crates). **Correction (côté plateforme, optionnel POC) :** implémenter
-`Drag` via deux CGEvents (mouse down au centre source → mouse up sur la cible),
-ou documenter explicitement la non-prise en charge pour que la couche MCP filtre
-`Drag` des actions exécutables.
+### m4 - `Drag` affordance emitted by WP-B but rejected by `perform`
+**`src/lib.rs:114-116`**. `perform` returns `Execution(...)` for
+`Drag`/`Toggle`/`Scroll` - compliant with the spec ("others → Execution error").
+But `visualops-graph::derive_affordances` **exposes `Drag`** on `Row`/`Cell`. An
+agent following the affordance graph will therefore request an action that always
+fails at execution (no panic, but inter-crate inconsistency). **Fix (platform
+side, optional for POC):** implement `Drag` via two CGEvents (mouse down at
+source center → mouse up on the target), or explicitly document non-support so
+the MCP layer filters `Drag` out of executable actions.
 
-### m5 — Re-résolution first-match : nœuds à suffixe de collision inatteignables
-**`src/lib.rs:238-283`**. `find_element` matche `(role, identifier, label)` et
-renvoie le **premier** en pré-ordre — explicitement accepté par le WP-A (« first
-match wins (POC heuristic) »). Limite à documenter : quand `synth_id` (WP-B) a dû
-désambiguïser par `_2/_3` (même role+label+identifier), `find_element` renvoie
-**toujours le premier**. L'exécuteur agit alors sur un élément *différent* de
-celui évalué par le Risk Engine — implication de sûreté à garder en tête.
-**Correction (post-POC) :** propager un index structurel (le `path` de WP-B) dans
-`SceneNode`/la résolution, ou matcher par ordinal parmi les éléments de même clé.
+### m5 - First-match re-resolution: nodes with collision suffixes are unreachable
+**`src/lib.rs:238-283`**. `find_element` matches `(role, identifier, label)` and
+returns the **first** in preorder - explicitly accepted by WP-A ("first match
+wins (POC heuristic)"). Limit to document: when `synth_id` (WP-B) had to
+disambiguate with `_2/_3` (same role+label+identifier), `find_element` **always
+returns the first**. The executor then acts on an element *different* from the one
+evaluated by the Risk Engine - a safety implication to keep in mind.
+**Fix (post-POC):** propagate a structural index (the WP-B `path`) into
+`SceneNode`/resolution, or match by ordinal among elements with the same key.
 
-### m6 — Robustesse / efficacité (regroupé, non bloquant)
-- **`src/lib.rs:146` & `163`** : `resolve_window` lit `kAXWindowsAttribute`
-  **deux fois** (copie + traversée CFArray redondantes). Mémoriser la 1ʳᵉ lecture.
-- **`src/lib.rs:244`** : borne `seen > MAX_NODES || depth > MAX_DEPTH` (strict)
-  vs `walk_element` `>=` (l.220) — incohérence off-by-one, inoffensive.
-- **`src/lib.rs:139`** : valeur de retour de `AXUIElementSetMessagingTimeout`
-  ignorée (acceptable, setter non critique).
-- **`src/lib.rs:57,179`** : dépendance au SPI privé `_AXUIElementGetWindow`
-  (recommandé par le WP-A, avec fallbacks corrects `AXMainWindow` → 1ʳᵉ fenêtre) —
-  fragile entre versions macOS ; les fallbacks couvrent l'échec, OK pour POC.
+### m6 - Robustness / efficiency (grouped, non-blocking)
+- **`src/lib.rs:146` & `163`**: `resolve_window` reads `kAXWindowsAttribute`
+  **twice** (redundant CFArray copy + traversal). Memoize the 1st read.
+- **`src/lib.rs:244`**: bound `seen > MAX_NODES || depth > MAX_DEPTH` (strict) vs
+  `walk_element` `>=` (l.220) - harmless off-by-one inconsistency.
+- **`src/lib.rs:139`**: return value of `AXUIElementSetMessagingTimeout` ignored
+  (acceptable, non-critical setter).
+- **`src/lib.rs:57,179`**: dependency on private SPI `_AXUIElementGetWindow`
+  (recommended by WP-A, with correct fallbacks `AXMainWindow` → 1st window) -
+  fragile across macOS versions; fallbacks cover failure, OK for POC.
 
 ---
 
-## Informationnel (conforme au WP-A — pas un défaut)
+## Informational (Compliant With WP-A - Not a Defect)
 
-- **`src/lib.rs:71`** — `capture` renvoie une racine unique (la fenêtre). Conforme
-  au WP-A (« Return the window element as the single root »). À noter pour les
-  intégrateurs : la **barre de menus** (et donc les items destructeurs
-  `Supprimer`/`Éteindre`/`Forcer à quitter`/`Redémarrer…` du scénario de risque
-  d'`ARCHITECTURE.md`) **n'apparaît pas** dans une capture live — elle est un
-  attribut de l'élément *application* (`AXMenuBar`), pas un descendant de la
-  fenêtre. La fixture à 2 racines est mintée séparément par l'architecte ; le
-  démo de risque s'appuie sur cette fixture, pas sur la capture live. Si l'on
-  veut les items de menu en réel, il faudra aussi parcourir `AXMenuBar` de l'app.
-- **`src/lib.rs:81`** — `window_ref.app_name` via `kAXTitleAttribute` de l'app
-  (souvent vide ⇒ `""`). Conforme au WP-A, qui mentionne aussi
-  `NSRunningApplication.localizedName` comme option plus fiable.
-- **`src/lib.rs:103`** — `Pick → kAXPressAction` : conforme à la table du WP-A.
-- **`examples/dump.rs`** — parsing pid/window_id, message d'usage, `exit(1)` sur
-  erreur, JSON pretty via `serde_json` (dev-dependency) : conforme et propre.
-- **Contrat `visualops-core`** : tous les champs de `RawAxNode` sont renseignés
+- **`src/lib.rs:71`** - `capture` returns a single root (the window). Compliant
+  with WP-A ("Return the window element as the single root"). Note for
+  integrators: the **menu bar** (and therefore the destructive items
+  `Supprimer`/`Éteindre`/`Forcer à quitter`/`Redémarrer…` from the
+  `ARCHITECTURE.md` risk scenario) **does not appear** in a live capture - it is
+  an attribute of the *application* element (`AXMenuBar`), not a descendant of
+  the window. The 2-root fixture is minted separately by the architect; the risk
+  demo relies on that fixture, not on live capture. If real menu items are
+  needed, `AXMenuBar` on the app will also have to be traversed.
+- **`src/lib.rs:81`** - `window_ref.app_name` via the app's `kAXTitleAttribute`
+  (often empty ⇒ `""`). Compliant with WP-A, which also mentions
+  `NSRunningApplication.localizedName` as a more reliable option.
+- **`src/lib.rs:103`** - `Pick → kAXPressAction`: compliant with the WP-A table.
+- **`examples/dump.rs`** - pid/window_id parsing, usage message, `exit(1)` on
+  error, pretty JSON via `serde_json` (dev-dependency): compliant and clean.
+- **`visualops-core` contract**: all `RawAxNode` fields are populated
   (`ax_role`, `label`, `help`, `value`, `ax_identifier`, `ax_actions`, `frame`,
-  `enabled`, `focused`, `children`) ; `ax_actions` normalisées (strip `AX` +
-  lowercase) ⇒ cohérentes avec `visualops-graph::map_action`. **Aucune
-  modification du contrat.**
+  `enabled`, `focused`, `children`); `ax_actions` normalized (strip `AX` +
+  lowercase) ⇒ consistent with `visualops-graph::map_action`. **No contract
+  modification.**
 
 ---
 
-## Résumé par sévérité
+## Summary by Severity
 
-| Sévérité | # | Constat |
+| Severity | # | Finding |
 |---|---|---|
-| **BLOQUANT** | 0 | Aucun double-free, use-after-free, UB, panique ou rupture de build/contrat. |
-| **MAJEUR** | 1 | **M1** Fuite CF systématique : `CFRelease` jamais exécuté (app + tout l'arbre AX + AXValues fuités par capture). Sain mais **non borné** ⇒ **BLOQUANT une fois câblé dans le serveur `visualops-mcp`**. Le `CFRetain` (l.435) est correct/nécessaire (sûreté de `find_element`) ; le défaut est l'**absence de release**. Correctif : wrapper RAII `Drop→CFRelease`. |
-| **MINEUR** | 6 | **m1** `Type` sans repli CGEvent (spec non respecté) · **m2** repli label `value` incohérent capture/résolution · **m3** `attr_string` masque `""` (perte vide/absent pour le diff) · **m4** `Drag` exposé par WP-B mais refusé par `perform` · **m5** first-match inatteignable pour les ID suffixés `_2` (sûreté de l'exécuteur) · **m6** divers (double lecture fenêtres, off-by-one borne, retour timeout ignoré, SPI privé). |
+| **BLOCKING** | 0 | No double-free, use-after-free, UB, panic, or build/contract breakage. |
+| **MAJOR** | 1 | **M1** Systematic CF leak: `CFRelease` never executed (app + entire AX tree + AXValues leaked per capture). Sound but **unbounded** ⇒ **BLOCKING once wired into the `visualops-mcp` server**. The `CFRetain` (l.435) is correct/necessary (`find_element` safety); the defect is the **absence of release**. Fix: RAII wrapper `Drop→CFRelease`. |
+| **MINOR** | 6 | **m1** `Type` without CGEvent fallback (spec not respected) · **m2** `value` label fallback inconsistent between capture/resolution · **m3** `attr_string` masks `""` (empty/absent loss for diff) · **m4** `Drag` exposed by WP-B but rejected by `perform` · **m5** first-match unreachable for IDs suffixed `_2` (executor safety) · **m6** misc (double window read, bound off-by-one, ignored timeout return, private SPI). |
 
-**Verdict.** Code FFI **sûr** (aucune UB, null-checks corrects, types
-`AXValueGetValue` exacts, pas de panique, bornes respectées, contrat respecté) et
-**conforme au WP-A** sur le périmètre fonctionnel. Le seul vrai défaut est la
-**fuite mémoire CF généralisée (M1)** : tolérable pour le livrable `dump`
-one-shot, mais à corriger impérativement (wrapper RAII) avant branchement dans le
-serveur long-running. Les points MINEUR sont des écarts de robustesse/cohérence,
-non bloquants pour le POC.
+**Verdict.** FFI code is **safe** (no UB, correct null-checks, exact
+`AXValueGetValue` types, no panic, bounds respected, contract respected) and
+**compliant with WP-A** in functional scope. The only real defect is the
+**generalized CF memory leak (M1)**: tolerable for the one-shot `dump`
+deliverable, but must be fixed (RAII wrapper) before connecting it to the
+long-running server. The MINOR points are robustness/coherence gaps, not
+blockers for the POC.

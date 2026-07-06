@@ -1,129 +1,129 @@
 > **Historical note:** This file records an earlier VisualOps-era work package or review. Current crate names, setup commands, and status live in docs/README.md, docs/ARCHITECTURE.md, and docs/CONTRACTS.md.
 
-# AUDIT platform — visualops-platform + risk gate
+# AUDIT platform - visualops-platform + risk gate
 
 Date: 2026-06-09
-Scope: `crates/visualops-platform` en profondeur, passe transverse sur `crates/visualops-mcp/src/engine.rs::act`.
-Mode: audit uniquement, aucun correctif appliqué.
+Scope: deep review of `crates/visualops-platform`, cross-cutting pass on `crates/visualops-mcp/src/engine.rs::act`.
+Mode: audit only, no fixes applied.
 
-## Findings priorisés
+## Prioritized Findings
 
-### 1. `crates/visualops-mcp/src/serve.rs:206` — BLOQUANT — `approve` est exposé comme outil libre, donc le gate est contournable par le même agent
+### 1. `crates/visualops-mcp/src/serve.rs:206` - BLOCKING - `approve` is exposed as an unrestricted tool, so the gate is bypassable by the same agent
 
-`approve` est un outil MCP ordinaire qui appelle directement `engine.approve(&eid)` sans preuve d'approbation externe, capability séparée, challenge opérateur, ni restriction de rôle. Un agent qui reçoit `PendingApproval` peut simplement appeler `approve` puis réessayer l'action. Le commentaire `High-risk elements return pending_approval until approve() is called` décrit le mécanisme, mais pas une barrière de sécurité réelle.
+`approve` is an ordinary MCP tool that directly calls `engine.approve(&eid)` without proof of external approval, a separate capability, an operator challenge, or a role restriction. An agent that receives `PendingApproval` can simply call `approve` and then retry the action. The comment `High-risk elements return pending_approval until approve() is called` describes the mechanism, but not a real security barrier.
 
-Fix proposé: séparer l'approbation du canal d'action agent. Exiger un token/capability délivré hors modèle, lier l'approbation à `(scene_generation, id, action, risk_hash, argument_hash)`, et refuser `approve` depuis la même surface autonome que `click_element`/`drag_element`.
+Proposed fix: separate approval from the agent action channel. Require a token/capability issued outside the model, bind approval to `(scene_generation, id, action, risk_hash, argument_hash)`, and reject `approve` from the same autonomous surface as `click_element`/`drag_element`.
 
-### 2. `crates/visualops-mcp/src/engine.rs:290` — BLOQUANT — les approbations sont persistantes, non consommées, et non validées
+### 2. `crates/visualops-mcp/src/engine.rs:290` - BLOCKING - approvals are persistent, unconsumed, and unvalidated
 
-`approve(&mut self, id)` insère n'importe quelle chaîne dans `BTreeSet<String>`. `act` teste ensuite `self.approvals.contains(id)` mais ne consomme jamais l'approbation. Une approbation reste valable pour toutes les actions futures sur le même id, après refresh, après changement de label/risque, et peut être pré-positionnée pour un id inexistant qui apparaîtrait ensuite.
+`approve(&mut self, id)` inserts any string into `BTreeSet<String>`. `act` then tests `self.approvals.contains(id)` but never consumes the approval. An approval remains valid for all future actions on the same id, after refresh, after a label/risk change, and can be pre-positioned for a nonexistent id that might appear later.
 
-Fix proposé: rendre l'approbation one-shot et la consommer dans `act`; valider que l'id existe et que son risque courant nécessite vraiment approbation au moment de `approve`; stocker l'action, l'argument, la génération de scène, le label/identifier/bbox hashés, puis invalider à chaque `refresh`.
+Proposed fix: make approval one-shot and consume it in `act`; validate that the id exists and that its current risk really requires approval at `approve` time; store the action, argument, scene generation, and hashed label/identifier/bbox, then invalidate on every `refresh`.
 
-### 3. `crates/visualops-mcp/src/engine.rs:319` — BLOQUANT — `drag_element` gate uniquement le risque de la source, pas celui de la cible
+### 3. `crates/visualops-mcp/src/engine.rs:319` - BLOCKING - `drag_element` gates only the source risk, not the target risk
 
-`drag_element` calcule le centre bbox de `target_id`, puis appelle `act(source_id, Drag, Some("x,y"))`. Le gate de `act` charge seulement l'affordance et le risque du `source_id`. Un drag depuis une source bénigne vers une cible destructrice ou irréversible peut donc passer si la source est low-risk.
+`drag_element` computes the bbox center of `target_id`, then calls `act(source_id, Drag, Some("x,y"))`. The `act` gate loads only the affordance and risk for `source_id`. A drag from a benign source to a destructive or irreversible target can therefore pass if the source is low-risk.
 
-Fix proposé: évaluer un risque composite pour `Drag`: `max(risk(source), risk(target), risk(action+target_role+target_label))`. L'approbation doit être liée au couple `(source_id, target_id, Drag, drop_point)`, pas à la source seule.
+Proposed fix: evaluate composite risk for `Drag`: `max(risk(source), risk(target), risk(action+target_role+target_label))`. Approval must be bound to `(source_id, target_id, Drag, drop_point)`, not to the source alone.
 
-### 4. `crates/visualops-platform/src/lib.rs:297` — BLOQUANT — si la fenêtre demandée disparaît, le backend peut agir sur `AXMainWindow` ou la première fenêtre du process
+### 4. `crates/visualops-platform/src/lib.rs:297` - BLOCKING - if the requested window disappears, the backend can act on `AXMainWindow` or the first process window
 
-`resolve_window` cherche `requested_window_id`, puis retombe sur `AXMainWindow`, puis sur la première fenêtre AX. Pour une action, cela peut envoyer un click/type/drag dans une autre fenêtre du même process si la fenêtre ciblée a été fermée ou remplacée. C'est un problème de sécurité et d'intégrité de cible.
+`resolve_window` looks for `requested_window_id`, then falls back to `AXMainWindow`, then to the first AX window. For an action, this can send a click/type/drag into another window in the same process if the targeted window was closed or replaced. This is a security and target-integrity problem.
 
-Fix proposé: rendre la résolution stricte pour `requested_window_id != 0`: si l'id n'est pas trouvé, retourner une erreur `WindowNotFound/WindowGone`. Réserver le fallback `AXMainWindow` uniquement à une cible explicitement wildcard (`window_id == 0`) et l'auditer comme tel.
+Proposed fix: make resolution strict for `requested_window_id != 0`: if the id is not found, return a `WindowNotFound/WindowGone` error. Reserve the `AXMainWindow` fallback only for an explicitly wildcard target (`window_id == 0`) and audit it as such.
 
-### 5. `crates/visualops-platform/src/lib.rs:71` — BLOQUANT — `AX_CACHE` est thread-local global mais non namespacé par `pid/window_id`
+### 5. `crates/visualops-platform/src/lib.rs:71` - BLOCKING - `AX_CACHE` is thread-local global but not namespaced by `pid/window_id`
 
-Le cache stocke `ElementKey -> AxElement` globalement par thread. `ElementKey` ne contient ni `pid`, ni `window_id`, ni génération de capture. Deux `Engine`/targets dans le même thread peuvent se polluer: une capture B efface/remplit le cache, puis une action A peut toucher un élément B si la clé `(role,label,bbox,identifier)` collisionne.
+The cache stores `ElementKey -> AxElement` globally per thread. `ElementKey` contains neither `pid`, nor `window_id`, nor capture generation. Two `Engine`/targets in the same thread can pollute each other: capture B clears/fills the cache, then action A can touch an element from B if the key `(role,label,bbox,identifier)` collides.
 
-Fix proposé: inclure `(pid, window_id, capture_generation, ElementKey)` dans la clé, ou déplacer le cache dans une instance liée au backend/target. Avant tout fast-path cached, revalider `_AXUIElementGetWindow(element) == target.window_id`.
+Proposed fix: include `(pid, window_id, capture_generation, ElementKey)` in the key, or move the cache into an instance tied to the backend/target. Before any cached fast path, revalidate `_AXUIElementGetWindow(element) == target.window_id`.
 
-### 6. `crates/visualops-mcp/src/engine.rs:343` — MAJEUR — `act` exécute sur une scène potentiellement stale sans refresh/revalidation pré-action
+### 6. `crates/visualops-mcp/src/engine.rs:343` - MAJOR - `act` executes on a potentially stale scene without pre-action refresh/revalidation
 
-`act` clone le `SceneNode` et l'affordance depuis `current`, puis exécute immédiatement. Si l'UI change entre le dernier `refresh` et l'action, le risque, la disponibilité d'action, la bbox de drag, et le mapping AX peuvent ne plus correspondre à la cible réelle. La re-perception arrive après l'exécution, trop tard pour protéger.
+`act` clones the `SceneNode` and affordance from `current`, then executes immediately. If the UI changes between the last `refresh` and the action, the risk, action availability, drag bbox, and AX mapping may no longer match the real target. Re-perception happens after execution, too late to protect.
 
-Fix proposé: avant une action non purement read/probe, revalider la cible: refresh léger ou lookup AX live, confirmer id/role/label/identifier/bbox/risk, puis exécuter. Pour les actions approuvées, invalider si la génération ou le hash de cible a changé.
+Proposed fix: before a non-read/probe action, revalidate the target: lightweight refresh or live AX lookup, confirm id/role/label/identifier/bbox/risk, then execute. For approved actions, invalidate if the generation or target hash changed.
 
-### 7. `crates/visualops-mcp/src/engine.rs:385` — MAJEUR — l'échec de `refresh()` après action est ignoré
+### 7. `crates/visualops-mcp/src/engine.rs:385` - MAJOR - post-action `refresh()` failure is ignored
 
-Après `executor.perform`, le code fait `let _ = self.refresh();` puis calcule `diff_since`. Si la re-perception échoue, l'audit peut quand même retourner `Success` avec un diff faux ou obsolète. Cela affaiblit la traçabilité et peut masquer une action qui a changé l'état.
+After `executor.perform`, the code does `let _ = self.refresh();` and then computes `diff_since`. If re-perception fails, the audit can still return `Success` with a false or stale diff. This weakens traceability and can hide an action that changed state.
 
-Fix proposé: propager l'erreur de refresh dans l'`AuditEntry` ou introduire un résultat `SuccessUnverified/VerificationFailed`; ne pas produire un diff comme s'il était fiable.
+Proposed fix: propagate the refresh error in the `AuditEntry` or introduce a `SuccessUnverified/VerificationFailed` result; do not produce a diff as if it were reliable.
 
-### 8. `crates/visualops-platform/src/lib.rs:271` — MAJEUR — le timeout AX de 1s n'est appliqué qu'à l'application, pas aux éléments retenus ensuite
+### 8. `crates/visualops-platform/src/lib.rs:271` - MAJOR - the 1s AX timeout is applied only to the application, not to elements retained afterward
 
-`AXUIElementSetMessagingTimeout(app, 1.0)` est appelé sur l'élément application. Les `AXUIElementRef` extraits via attributs, arrays, cache ou fallback ne reçoivent pas explicitement ce timeout. Si le timeout est par élément, des appels sur enfants peuvent bloquer plus longtemps que prévu.
+`AXUIElementSetMessagingTimeout(app, 1.0)` is called on the application element. The `AXUIElementRef`s extracted via attributes, arrays, cache, or fallback are not explicitly given this timeout. If the timeout is per-element, calls on children can block longer than expected.
 
-Fix proposé: appliquer le timeout à chaque `AxElement` construit (`app_element`, `attr_ax_element`, `ax_elements`, `retain_clone`) via un helper `AxElement::new_retained/non_null` qui centralise `AXUIElementSetMessagingTimeout`.
+Proposed fix: apply the timeout to every constructed `AxElement` (`app_element`, `attr_ax_element`, `ax_elements`, `retain_clone`) through an `AxElement::new_retained/non_null` helper that centralizes `AXUIElementSetMessagingTimeout`.
 
-### 9. `crates/visualops-platform/src/lib.rs:773` — MAJEUR — un drag partiel peut laisser l'app cible dans un état "mouse down"
+### 9. `crates/visualops-platform/src/lib.rs:773` - MAJOR - a partial drag can leave the target app in a "mouse down" state
 
-`drag` poste `LeftMouseDown`, puis plusieurs `LeftMouseDragged`, puis `LeftMouseUp`. Si `post_mouse` échoue après le down, la closure retourne avant le `LeftMouseUp`; le curseur est restauré, mais l'app cible peut avoir reçu un down sans up. `CGEventPostToPid` ne renvoie pas de statut, mais la création d'événements peut échouer.
+`drag` posts `LeftMouseDown`, then several `LeftMouseDragged`, then `LeftMouseUp`. If `post_mouse` fails after the down, the closure returns before `LeftMouseUp`; the cursor is restored, but the target app may have received a down without an up. `CGEventPostToPid` returns no status, but event creation can fail.
 
-Fix proposé: suivre `mouse_down_posted` et poster un `LeftMouseUp` best-effort dans un cleanup/defer dès qu'un down a été émis. Auditer séparément l'échec de cleanup.
+Proposed fix: track `mouse_down_posted` and post a best-effort `LeftMouseUp` in cleanup/defer once a down has been emitted. Audit cleanup failure separately.
 
-### 10. `crates/visualops-platform/src/lib.rs:827` — MAJEUR — la restauration curseur peut déplacer le curseur d'un utilisateur humain concurrent
+### 10. `crates/visualops-platform/src/lib.rs:827` - MAJOR - cursor restoration can move the cursor of a concurrent human user
 
-`hover`/`drag` sauvegardent la position puis appellent toujours `CGDisplay::warp_mouse_cursor_position(saved)`. Si l'utilisateur bouge physiquement la souris pendant les ~64ms du drag, le backend la ramène à l'ancienne position. C'est non-intrusif pour le geste synthétique, mais intrusif pour un humain concurrent.
+`hover`/`drag` save the position and always call `CGDisplay::warp_mouse_cursor_position(saved)`. If the user physically moves the mouse during the ~64ms drag, the backend returns it to the old position. This is non-intrusive for the synthetic gesture, but intrusive for a concurrent human.
 
-Fix proposé: restaurer seulement si la position courante est proche de la trajectoire synthétique ou si un déplacement synthétique a été observé. Sinon, ne pas warper et journaliser `cursor_not_restored_user_moved`.
+Proposed fix: restore only if the current position is near the synthetic trajectory or if synthetic movement was observed. Otherwise, do not warp and log `cursor_not_restored_user_moved`.
 
-### 11. `crates/visualops-platform/src/lib.rs:715` — MAJEUR — `post_to_pid` ne fournit pas d'accusé de réception; le backend peut retourner `Ok` pour un événement ignoré
+### 11. `crates/visualops-platform/src/lib.rs:715` - MAJOR - `post_to_pid` provides no acknowledgement; the backend can return `Ok` for an ignored event
 
-Les chemins clavier, hover et drag postent au PID avec `CGEventPostToPid`, qui retourne `void`. Si l'app ignore les événements parce qu'elle est inactive, sandboxée, non key-window, ou qu'un contrôle ne consomme pas les événements background, `perform` retourne quand même `Ok(())`. Le no-foreground est préservé, mais l'audit peut marquer `Success` sans effet.
+Keyboard, hover, and drag paths post to the PID with `CGEventPostToPid`, which returns `void`. If the app ignores events because it is inactive, sandboxed, not key-window, or a control does not consume background events, `perform` still returns `Ok(())`. No-foreground behavior is preserved, but the audit can mark `Success` with no effect.
 
-Fix proposé: pour les actions mutantes, vérifier l'effet attendu via refresh/diff ou un probe AX ciblé. Pour hover/drag, retourner un statut "posted_unverified" ou ajouter une confirmation optionnelle par changement de graph/état.
+Proposed fix: for mutating actions, verify the expected effect through refresh/diff or a targeted AX probe. For hover/drag, return a "posted_unverified" status or add optional confirmation via graph/state change.
 
-### 12. `crates/visualops-platform/src/lib.rs:677` — MAJEUR — le fallback `type_text` peut modifier le focus AX avant de poster au PID
+### 12. `crates/visualops-platform/src/lib.rs:677` - MAJOR - the `type_text` fallback can modify AX focus before posting to the PID
 
-Quand `AXValue` n'est pas settable ou ne prend pas l'effet attendu, le code fait `set_bool_attr(element, kAXFocusedAttribute, true)` avant les keystrokes. Le WP considère Focus non-intrusif, mais selon l'app et le contrôle, ce focus AX peut changer l'état interne, faire défiler, ouvrir un champ, voire provoquer une activation indirecte.
+When `AXValue` is not settable or does not have the expected effect, the code calls `set_bool_attr(element, kAXFocusedAttribute, true)` before keystrokes. The WP treats Focus as non-intrusive, but depending on the app and control, this AX focus can change internal state, scroll, open a field, or even cause indirect activation.
 
-Fix proposé: séparer `TypeSetValue` et `TypeKeystrokes`; rendre le fallback clavier opt-in par politique, revalider que l'app est restée background, et auditer explicitement le focus side-effect.
+Proposed fix: separate `TypeSetValue` and `TypeKeystrokes`; make the keyboard fallback opt-in by policy, revalidate that the app remained backgrounded, and explicitly audit the focus side effect.
 
-### 13. `crates/visualops-mcp/src/engine.rs:300` — MAJEUR — le risk gate ignore le contenu tapé
+### 13. `crates/visualops-mcp/src/engine.rs:300` - MAJOR - the risk gate ignores typed content
 
-`type_into` gate seulement le risque de l'élément cible. Le texte `argument` n'est jamais évalué. Sur un champ low-risk mais sémantiquement dangereux (terminal, champ de commande, prompt admin, URL, recherche avec raccourcis), du contenu destructif peut passer sans approbation.
+`type_into` gates only the target element risk. The text `argument` is never evaluated. On a low-risk but semantically dangerous field (terminal, command field, admin prompt, URL, search with shortcuts), destructive content can pass without approval.
 
-Fix proposé: intégrer `argument` dans l'évaluation de risque pour `Type`, avec politiques par rôle/app: commandes shell, AppleScript, URLs sensibles, mots clés destructifs, secrets, ou texte multi-ligne avec entrée implicite.
+Proposed fix: integrate `argument` into risk evaluation for `Type`, with policies by role/app: shell commands, AppleScript, sensitive URLs, destructive keywords, secrets, or multiline text with implicit enter.
 
-### 14. `crates/visualops-graph/src/risk.rs:95` — MAJEUR — la classification de risque est heuristique label/help/identifier uniquement
+### 14. `crates/visualops-graph/src/risk.rs:95` - MAJOR - risk classification is based only on label/help/identifier heuristics
 
-Le risque dépend de mots clés dans label/help/identifier. Un élément destructif sans mot clé reconnu, icon-only, localisé hors FR/EN, ou renommé par l'app sera low-risk. C'est acceptable pour un POC, pas pour un gate "infranchissable".
+Risk depends on keywords in label/help/identifier. A destructive element with no recognized keyword, icon-only UI, localization outside FR/EN, or app-renamed label will be low-risk. This is acceptable for a POC, not for a "non-bypassable" gate.
 
-Fix proposé: compléter avec signaux structurels et contextuels: rôle menu item sous menus système, native action/identifier allow/deny-lists, app bundle, position dans menus "File/Edit", confirmation OS, historique de diff, et politiques par action.
+Proposed fix: add structural and contextual signals: menu item role under system menus, native action/identifier allow/deny lists, app bundle, position in "File/Edit" menus, OS confirmation, diff history, and per-action policies.
 
-### 15. `crates/visualops-platform/src/lib.rs:561` — MAJEUR — le fast-path cached ne revalide pas que l'élément retenu correspond encore au `SceneNode`
+### 15. `crates/visualops-platform/src/lib.rs:561` - MAJOR - the cached fast path does not revalidate that the retained element still matches the `SceneNode`
 
-`cached_element(key)` retourne un `AXUIElementRef` retenu et `perform_on_element` l'utilise directement. La seule protection est le fallback sur erreurs stale (`kAXErrorInvalidUIElement`/`CannotComplete`). Un élément AX encore valide mais sémantiquement différent peut recevoir l'action.
+`cached_element(key)` returns a retained `AXUIElementRef` and `perform_on_element` uses it directly. The only protection is fallback on stale errors (`kAXErrorInvalidUIElement`/`CannotComplete`). An AX element that is still valid but semantically different can receive the action.
 
-Fix proposé: avant action cached, recalculer `element_key(element)` et comparer à `key`, vérifier `_AXUIElementGetWindow`, et idéalement comparer un hash minimal `(role,label,identifier,bbox,enabled)` au snapshot courant.
+Proposed fix: before a cached action, recompute `element_key(element)` and compare it to `key`, check `_AXUIElementGetWindow`, and ideally compare a minimal `(role,label,identifier,bbox,enabled)` hash against the current snapshot.
 
-### 16. `crates/visualops-platform/src/lib.rs:516` — MINEUR — `find_element` peut faire un fallback vers une collision de clé
+### 16. `crates/visualops-platform/src/lib.rs:516` - MINOR - `find_element` can fall back to a key collision
 
-Le fallback live search utilise `element_key(element) == ElementKey::from_scene(wanted)`. La clé est utile mais pas unique: beaucoup d'éléments peuvent partager rôle, label vide, identifier absent et bbox arrondie. Le premier match DFS gagne.
+The live-search fallback uses `element_key(element) == ElementKey::from_scene(wanted)`. The key is useful but not unique: many elements can share a role, empty label, absent identifier, and rounded bbox. The first DFS match wins.
 
-Fix proposé: enrichir `ElementKey` avec parent path/id stable, index sibling, window id, et/ou score multi-critères plutôt qu'égalité stricte sur peu de champs.
+Proposed fix: enrich `ElementKey` with parent path/stable id, sibling index, window id, and/or multi-criteria scoring instead of strict equality on a small set of fields.
 
-### 17. `crates/visualops-platform/src/lib.rs:134` — MINEUR — `clear_cache()` global à chaque capture peut invalider des actions concurrentes
+### 17. `crates/visualops-platform/src/lib.rs:134` - MINOR - global `clear_cache()` on every capture can invalidate concurrent actions
 
-Le cache est thread-local, mais `capture` efface tout le cache de ce thread sans tenir compte du target. Dans un usage multi-engine synchrone, une capture d'un target peut dégrader ou détourner le fast-path d'un autre target.
+The cache is thread-local, but `capture` clears the entire cache for that thread regardless of target. In synchronous multi-engine use, a capture for one target can degrade or misdirect another target's fast path.
 
-Fix proposé: namespacer le cache par target/génération, ou l'attacher à l'instance `MacosBackend` au lieu d'un `thread_local`.
+Proposed fix: namespace the cache by target/generation, or attach it to the `MacosBackend` instance instead of a `thread_local`.
 
-### 18. `crates/visualops-platform/src/lib.rs:841` — MINEUR — les erreurs AX d'attribut sont silencieusement écrasées en `None`
+### 18. `crates/visualops-platform/src/lib.rs:841` - MINOR - AX attribute errors are silently collapsed to `None`
 
-`attr_value` retourne `None` pour toute erreur AX. Cela simplifie la capture, mais masque les différences entre attribut absent, timeout, permission, stale element, et erreur système. La capture peut produire un graphe incomplet sans signal fiable hors `MAX_NODES/MAX_DEPTH`.
+`attr_value` returns `None` for every AX error. This simplifies capture, but hides the difference between absent attribute, timeout, permission, stale element, and system error. Capture can produce an incomplete graph without a reliable signal beyond `MAX_NODES/MAX_DEPTH`.
 
-Fix proposé: en mode debug ou métrique, compter les erreurs par code AX et les exposer dans stderr/trace; traiter certains codes (`CannotComplete`, timeout) comme capture dégradée explicite.
+Proposed fix: in debug or metrics mode, count errors by AX code and expose them on stderr/trace; treat some codes (`CannotComplete`, timeout) as explicit degraded capture.
 
-## Points FFI sans finding bloquant
+## FFI Points Without Blocking Findings
 
-- `AxElement::retain_clone`/`Drop` (`crates/visualops-platform/src/lib.rs:111`, `:119`) équilibrent bien `CFRetain`/`CFRelease` pour les refs non nulles.
-- `attr_ax_element` (`crates/visualops-platform/src/lib.rs:873`) transfère correctement l'ownership du `CFType` create-rule vers `AxElement` via `mem::forget` après type-check.
-- `ax_elements` (`crates/visualops-platform/src/lib.rs:921`) retient explicitement les valeurs borrowed d'un `CFArray` avant de construire des `AxElement`.
-- `BatchValues` (`crates/visualops-platform/src/lib.rs:368`) garde le `CFArray` vivant pendant l'utilisation des `CFTypeRef` borrowed; pas de use-after-free visible dans ce chemin.
-- `retain_core_graphics_image` n'existe pas dans `visualops-platform`; le risque précédemment lié à cette conversion n'est pas applicable à ce crate.
+- `AxElement::retain_clone`/`Drop` (`crates/visualops-platform/src/lib.rs:111`, `:119`) correctly balance `CFRetain`/`CFRelease` for non-null refs.
+- `attr_ax_element` (`crates/visualops-platform/src/lib.rs:873`) correctly transfers ownership of the create-rule `CFType` to `AxElement` through `mem::forget` after type-checking.
+- `ax_elements` (`crates/visualops-platform/src/lib.rs:921`) explicitly retains borrowed values from a `CFArray` before constructing `AxElement`.
+- `BatchValues` (`crates/visualops-platform/src/lib.rs:368`) keeps the `CFArray` alive while borrowed `CFTypeRef`s are used; no visible use-after-free on this path.
+- `retain_core_graphics_image` does not exist in `visualops-platform`; the risk previously tied to this conversion is not applicable to this crate.
 
-## Verdict synthétique
+## Summary Verdict
 
-Le backend FFI est globalement prudent sur retain/release, mais la sécurité système repose sur des invariants non encodés: cache AX global, résolution de fenêtre permissive, scène stale, et approbation trop large. Le risk gate n'est pas infranchissable aujourd'hui: un agent peut appeler `approve`, un drag peut contourner le risque de la cible, et une approbation persiste sans être consommée.
+The FFI backend is generally careful about retain/release, but system safety rests on invariants that are not encoded: global AX cache, permissive window resolution, stale scene, and overly broad approval. The risk gate is not non-bypassable today: an agent can call `approve`, a drag can bypass the target risk, and an approval persists without being consumed.

@@ -1,28 +1,28 @@
-# Plan de passage POC → CLI distribuable
+# POC -> Distributable CLI Transition Plan
 
-Date : 2026-06-14
-Projet : `dunst-mcp` / `dunst-mcp`
+Date: 2026-06-14
+Project: `dunst-mcp` / `dunst-mcp`
 
-> **Statut (2026-07-06) : note de planification interne (français) — partiellement livrée.**
-> Plusieurs priorités ci-dessous ont été livrées depuis le 2026-06-14 : CLI `clap`
-> avec les sous-commandes `doctor`/`setup`, `release-plz`, alignement `objc2` entre
-> `dunst-platform` et `dunst-vision`, et le README transformé en landing page
-> utilisateur. Traiter les points restants comme le backlog ouvert, pas comme un
-> état complet du produit.
+> **Status (2026-07-06): internal planning note (English) - partially delivered.**
+> Several priorities below have been delivered since 2026-06-14: the `clap` CLI
+> with the `doctor`/`setup` subcommands, `release-plz`, `objc2` alignment between
+> `dunst-platform` and `dunst-vision`, and the README converted into a user-facing
+> landing page. Treat the remaining items as open backlog, not as a complete
+> product status.
 
-## Contexte
+## Context
 
-Une revue large du projet a été menée avec plusieurs axes d'audit : code, documentation, packaging, shell, tangle, tests et comparaison avec `grob`.
+A broad project review was conducted across several audit tracks: code, documentation, packaging, shell, tangle, tests, and comparison with `grob`.
 
-Conclusion commune : le POC Rust/MCP est techniquement intéressant et plutôt sain, mais il n'est pas encore prêt pour une distribution Homebrew propre. Les blocages principaux ne sont pas un gros tangle architectural ; ils concernent surtout la surface produit/distribution : fiabilité des actions, formatage, contrat CLI, licences, CI, packaging, setup/doctor et documentation utilisateur.
+Shared conclusion: the Rust/MCP POC is technically interesting and fairly healthy, but it is not yet ready for clean Homebrew distribution. The main blockers are not a major architectural tangle; they are mostly in the product/distribution surface: action reliability, formatting, CLI contract, licenses, CI, packaging, setup/doctor, and user documentation.
 
-Le point le plus prioritaire découvert par l'audit code est un risque de faux succès sur l'entrée clavier background : certaines fonctions peuvent signaler `true` même si une création ou un post d'événement clavier échoue partiellement. Ce point touche la fiabilité MCP réelle et doit passer avant Homebrew ou README.
+The highest-priority issue discovered by the code audit is a false-success risk in background keyboard input: some functions can report `true` even if a keyboard event was only partially created or posted. This affects real MCP reliability and must come before Homebrew or README work.
 
-## État de l'audit
+## Audit Status
 
-Les audits sont considérés comme terminés.
+The audits are considered complete.
 
-Agents ayant fourni une synthèse exploitable :
+Agents that provided a usable synthesis:
 
 - `audit_code`
 - `audit_doc`
@@ -32,28 +32,28 @@ Agents ayant fourni une synthèse exploitable :
 - `audit_test`
 - `grob_compare`
 
-Les notifications `idle` signifient que les agents sont disponibles ou en attente, pas qu'ils continuent à travailler.
+The `idle` notifications mean that agents are available or waiting, not that they are still working.
 
-Important : audit terminé ne veut pas dire corrections terminées.
+Important: audit complete does not mean fixes complete.
 
-## Priorité 1 — Corriger la fiabilité de l'entrée clavier background
+## Priority 1 - Fix Background Keyboard Input Reliability
 
-Objectif : ne jamais retourner un succès si une action clavier background a échoué partiellement.
+Goal: never return success if a background keyboard action partially failed.
 
-Fichiers principaux :
+Main files:
 
 - `crates/dunst-platform/src/lib.rs`
 - `crates/dunst-mcp/src/engine.rs`
 
-Actions :
+Actions:
 
-1. Inspecter les fonctions `type_text_background` et `key_web_background` dans `dunst-platform`.
-2. Modifier la logique pour ne plus retourner succès si une paire d'événements attendue n'a pas été créée ou postée correctement.
-3. Propager l'échec côté `Engine` en erreur MCP claire au lieu de convertir un faux succès en `Ok(())`.
-4. Ajouter ou adapter des tests si le code peut être isolé sans dépendance macOS live.
-5. Lancer le formatage Rust.
+1. Inspect the `type_text_background` and `key_web_background` functions in `dunst-platform`.
+2. Change the logic so it no longer returns success when an expected event pair was not created or posted correctly.
+3. Propagate the failure on the `Engine` side as a clear MCP error instead of converting a false success into `Ok(())`.
+4. Add or adapt tests if the code can be isolated without a live macOS dependency.
+5. Run Rust formatting.
 
-Vérification :
+Verification:
 
 ```bash
 cargo fmt --all -- --check
@@ -61,43 +61,43 @@ cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-## Priorité 2 — Nettoyer le formatage
+## Priority 2 - Clean Up Formatting
 
-L'audit a confirmé que `cargo fmt --check` échoue.
+The audit confirmed that `cargo fmt --check` fails.
 
-Action :
+Action:
 
 ```bash
 cargo fmt --all
 ```
 
-Puis vérifier :
+Then verify:
 
 ```bash
 cargo fmt --all -- --check
 ```
 
-## Priorité 3 — Stabiliser le contrat CLI
+## Priority 3 - Stabilize the CLI Contract
 
-Objectif : faire de `dunst-mcp` un vrai CLI installable avant de parler Homebrew.
+Goal: make `dunst-mcp` a real installable CLI before discussing Homebrew.
 
-Fichier principal :
+Main file:
 
 - `crates/dunst-mcp/src/main.rs`
 
-Actions :
+Actions:
 
-1. Remplacer le parsing manuel `demo|serve` par `clap`.
-2. Ajouter les commandes et aides suivantes :
+1. Replace manual `demo|serve` parsing with `clap`.
+2. Add the following commands and help output:
    - `dunst-mcp --help`
    - `dunst-mcp --version`
    - `dunst-mcp demo`
    - `dunst-mcp serve --help`
    - `dunst-mcp doctor`
-3. Garder le comportement existant de `demo` et `serve` autant que possible.
-4. Ajouter un `doctor` minimal qui diagnostique l'environnement et explique les prérequis macOS/TCC si tout ne peut pas être testé automatiquement.
+3. Preserve the existing `demo` and `serve` behavior as much as possible.
+4. Add a minimal `doctor` command that diagnoses the environment and explains macOS/TCC prerequisites if not everything can be tested automatically.
 
-Vérification :
+Verification:
 
 ```bash
 cargo run -p dunst-mcp -- --help
@@ -106,47 +106,47 @@ cargo run -p dunst-mcp -- serve --help
 cargo run -p dunst-mcp -- doctor
 ```
 
-## Priorité 4 — Ajouter licences et métadonnées Cargo
+## Priority 4 - Add Licenses and Cargo Metadata
 
-Objectif : rendre le manifeste cohérent avec une distribution propre.
+Goal: make the manifest consistent with clean distribution.
 
-Fichiers concernés :
+Affected files:
 
 - `Cargo.toml`
 - `crates/dunst-mcp/Cargo.toml`
-- racine du repo pour les licences
+- repository root for licenses
 
-Actions :
+Actions:
 
-1. Ajouter les fichiers licence correspondant à `MIT OR Apache-2.0` :
+1. Add the license files corresponding to `MIT OR Apache-2.0`:
    - `LICENSE-MIT`
    - `LICENSE-APACHE`
-   - éventuellement `LICENSE` synthétique indiquant le double choix.
-2. Ajouter ou compléter les métadonnées Cargo nécessaires :
+   - optionally a synthetic `LICENSE` indicating the dual choice.
+2. Add or complete the required Cargo metadata:
    - `description`
    - `repository`
    - `readme`
    - `keywords`
    - `categories`
-   - `rust-version` si absent ou incomplet.
-3. Clarifier la stratégie `publish = false` ou publication future.
+   - `rust-version` if absent or incomplete.
+3. Clarify the `publish = false` strategy or future publication plan.
 
-Vérification :
+Verification:
 
 ```bash
 cargo metadata --no-deps
 cargo package -p dunst-mcp --allow-dirty --no-verify
 ```
 
-## Priorité 5 — Ajouter une CI minimale
+## Priority 5 - Add Minimal CI
 
-Objectif : transformer les vérifications locales en gate automatique.
+Goal: turn local checks into an automatic gate.
 
-Fichier cible :
+Target file:
 
 - `.github/workflows/ci.yml`
 
-Workflow minimal :
+Minimal workflow:
 
 ```bash
 cargo fmt --all -- --check
@@ -156,32 +156,32 @@ cargo build --locked -p dunst-mcp
 shellcheck scripts/*.sh
 ```
 
-À ne pas ajouter dans le premier socle :
+Do not add in the first foundation:
 
 - release-plz
-- formule Homebrew
-- cargo-deny/gitleaks/semgrep complets
-- mutation/fuzz lourds
+- Homebrew formula
+- full cargo-deny/gitleaks/semgrep
+- heavy mutation/fuzz testing
 
-## Priorité 6 — Séparer wrapper dev et binaire installé
+## Priority 6 - Separate Dev Wrapper and Installed Binary
 
-Objectif : éviter que la configuration utilisateur dépende de chemins locaux comme `/Users/ludwig/workspace/...`.
+Goal: prevent user configuration from depending on local paths such as `/Users/ludwig/workspace/...`.
 
-Fichiers concernés :
+Affected files:
 
 - `scripts/mcp-dunst.sh`
 - `.mcp.json`
 - `.codex/config.toml`
-- `README.md` plus tard
+- `README.md` later
 
-Actions :
+Actions:
 
-1. Garder `scripts/mcp-dunst.sh` comme wrapper de développement.
-2. Durcir le wrapper :
-   - valider `DUNST_MCP_BIN`
-   - valider `DUNST_MCP_MODE`
-   - éviter les fallback silencieux
-3. Documenter que la configuration installée devra appeler le binaire depuis le `PATH` :
+1. Keep `scripts/mcp-dunst.sh` as a development wrapper.
+2. Harden the wrapper:
+   - validate `DUNST_MCP_BIN`
+   - validate `DUNST_MCP_MODE`
+   - avoid silent fallbacks
+3. Document that installed configuration should call the binary from `PATH`:
 
 ```json
 {
@@ -194,34 +194,34 @@ Actions :
 }
 ```
 
-Ne pas faire encore un setup complet qui écrit les configs client, sauf demande explicite.
+Do not yet implement a complete setup command that writes client configs, unless explicitly requested.
 
-## Backlog après le premier socle
+## Backlog After the First Foundation
 
-À traiter après les priorités ci-dessus :
+Handle after the priorities above:
 
-- Aligner les versions `objc2` entre `dunst-platform` et `dunst-vision`.
-- Remplacer les chemins `/tmp` prévisibles par `tempfile` ou équivalent.
-- Créer un registre MCP déclaratif unique pour éviter la dérive schéma/dispatcher/tests.
-- Réécrire le README en landing page utilisateur : quickstart, config MCP, TCC, troubleshooting.
-- Ajouter `setup --dry-run` / `setup --client codex|claude`.
-- Ajouter release-plz.
-- Créer un tap Homebrew privé seulement quand CLI, CI, licences et packaging passent.
+- Align the `objc2` versions between `dunst-platform` and `dunst-vision`.
+- Replace predictable `/tmp` paths with `tempfile` or equivalent.
+- Create a single declarative MCP registry to avoid schema/dispatcher/test drift.
+- Rewrite the README as a user-facing landing page: quickstart, MCP config, TCC, troubleshooting.
+- Add `setup --dry-run` / `setup --client codex|claude`.
+- Add release-plz.
+- Create a private Homebrew tap only once CLI, CI, licenses, and packaging pass.
 
-## Non-objectifs immédiats
+## Immediate Non-Goals
 
-- Pas de refactor massif de `engine.rs` maintenant.
-- Pas de split complet de `dunst-platform/src/lib.rs` maintenant.
-- Pas de formule Homebrew immédiate.
-- Pas de workflow release complet immédiat.
-- Pas de documentation Diátaxis complète dans le premier patch.
+- No massive refactor of `engine.rs` now.
+- No full split of `dunst-platform/src/lib.rs` now.
+- No immediate Homebrew formula.
+- No immediate full release workflow.
+- No complete Diataxis documentation in the first patch.
 
-## Résultat attendu
+## Expected Result
 
-Après le premier lot, le projet doit passer de :
+After the first batch, the project should move from:
 
-> POC local utilisable
+> usable local POC
 
-à :
+to:
 
-> base CLI alpha fiable, vérifiée localement, prête à recevoir CI/packaging propre.
+> reliable alpha CLI foundation, verified locally, ready to receive clean CI/packaging.
