@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/azerozero/dunst/compare/v0.1.0...v0.1.1) - 2026-07-06
+
+### Added
+
+- cycle Phoenix — CI ré-armée, doc réalignée, doctor JSON, perf vision ([#35](https://github.com/azerozero/dunst/pull/35))
+- *(vision)* détecte les cartes pleines comme conteneurs (ShapeKind::Panel) ([#29](https://github.com/azerozero/dunst/pull/29))
+- *(vision)* arbre de zones imbriquées (read_zones) sur la sortie vision plate ([#28](https://github.com/azerozero/dunst/pull/28))
+- *(approval)* preauthorize — pré-autorisation brute bornée pour couper les allers-retours MCP↔LLM ([#14](https://github.com/azerozero/dunst/pull/14))
+- *(choices)* auto scroll_scan sur surface incomplète + recommandations d'enchaînement ([#13](https://github.com/azerozero/dunst/pull/13))
+- *(mcp)* enumerate_choices + apply_selections (remplissage de choix par lot) ([#4](https://github.com/azerozero/dunst/pull/4))
+
+### Fixed
+
+- *(release)* retire publish=false des manifests — il cassait le diff git-only ([#36](https://github.com/azerozero/dunst/pull/36))
+- *(input)* clic curseur réel (borrow_cursor) pour les popups natives ([#32](https://github.com/azerozero/dunst/pull/32))
+- *(coordination)* set_field_text advertise ses préconditions de mutation + test anti-dérive ([#18](https://github.com/azerozero/dunst/pull/18))
+- *(type_keys)* signale quand la saisie brute peut ne pas avoir atterri ([#16](https://github.com/azerozero/dunst/pull/16))
+- *(epoch)* exclut la barre de menus du fingerprint (plus de « stale UI epoch ») ([#12](https://github.com/azerozero/dunst/pull/12))
+- *(perception)* classe les champs de la barre de menus en chrome, pas en page ([#11](https://github.com/azerozero/dunst/pull/11))
+- *(scroll)* oriente vers enumerate_choices scroll_scan pour énumérer les feeds sparse-AX ([#10](https://github.com/azerozero/dunst/pull/10))
+- *(navigate+launch+open_url)* cible navigateur, launched honnête, réutilisation d'onglet correcte ([#9](https://github.com/azerozero/dunst/pull/9))
+- *(audit)* robustesse iTerm/web backgroundé — hotkey ciblé, visibilité, auto-unstick curseur idle-gaté ([#7](https://github.com/azerozero/dunst/pull/7))
+- *(epoch+set_text)* epoch stable au focus + repli de saisie sur champ web ([#6](https://github.com/azerozero/dunst/pull/6))
+- *(epoch)* fingerprint structurel, ne churn plus sur le texte vivant des pages web ([#5](https://github.com/azerozero/dunst/pull/5))
+
+### Other
+
+- *(rustdoc)* documente les conditions d'erreur des fn publiques (# Errors) ([#27](https://github.com/azerozero/dunst/pull/27))
+- *(selections)* aplatit execute_selection_batch (nesting 6 → helper plat) ([#26](https://github.com/azerozero/dunst/pull/26))
+- *(read)* scinde le god-module read.rs sous 1000 lignes (clôt C3-001) ([#25](https://github.com/azerozero/dunst/pull/25))
+- *(read)* extrait le cluster epoch/fingerprint en sous-module (XRAY-004/T-002) ([#24](https://github.com/azerozero/dunst/pull/24))
+- *(readme)* documente l'installation sur PATH + lien vers CONTRIBUTING ([#23](https://github.com/azerozero/dunst/pull/23))
+- corrige le compte de nœuds du fixture Notes (427 → 22, 1 → 2 racines) ([#19](https://github.com/azerozero/dunst/pull/19))
+- sort le window_id des fixtures de la plage réelle (fin des 4 flakes locaux) ([#17](https://github.com/azerozero/dunst/pull/17))
+- supprime la fiction driver/Diátaxis, aligne CONTRACTS + nettoie le cruft ([#15](https://github.com/azerozero/dunst/pull/15))
+
 ## [0.1.0](https://github.com/azerozero/dunst/releases/tag/v0.1.0) - 2026-06-29
 
 ### Added
