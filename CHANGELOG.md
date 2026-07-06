@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/azerozero/dunst/compare/v0.1.1...v0.1.2) - 2026-07-06
+
+### Fixed
+
+- *(raise)* activation fenêtre-seule — le raise ramenait toutes les fenêtres de l'app ([#39](https://github.com/azerozero/dunst/pull/39))
+
 ## [0.1.1](https://github.com/azerozero/dunst/compare/v0.1.0...v0.1.1) - 2026-07-06
 
 ### Added
