@@ -8,7 +8,6 @@ repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
 description = "Scene graph, affordance graph, and risk derivation for dunst-mcp"
-publish = false
 
 [dependencies]
 dunst-core = { workspace = true }
