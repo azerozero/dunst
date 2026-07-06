@@ -21,7 +21,11 @@ core-graphics = { version = "0.24", features = ["elcapitan", "highsierra"] }
 foreign-types = "0.5"
 objc2 = "0.6.4"
 objc2-foundation = "0.3.2"
-objc2-app-kit = { version = "0.3.2", features = ["NSEvent", "NSGraphicsContext"] }
+objc2-app-kit = { version = "0.3.2", features = [
+    "NSEvent",
+    "NSGraphicsContext",
+    "NSRunningApplication",
+] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

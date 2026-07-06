@@ -264,7 +264,7 @@ pub(super) fn perform_on_element(
         SemanticAction::Raise => {
             let element = require_ax_element(element)?;
             perform_ax_action(element, kAXRaiseAction)?;
-            activate_process_for_raise(target, node)
+            activate_process_for_raise(target)
                 .map_err(|err| ActionFailure::Execution(err.to_string()))
         }
         SemanticAction::Focus => {
@@ -289,14 +289,25 @@ pub(super) fn perform_on_element(
     }
 }
 
-fn activate_process_for_raise(target: &Target, node: &SceneNode) -> Result<()> {
-    let window = WindowRef {
-        pid: target.pid,
-        window_id: target.window_id,
-        app_name: String::new(),
-        title: node.label.clone().unwrap_or_default(),
-    };
-    crate::borrow_target_frontmost(&window).map(|_| ())
+fn activate_process_for_raise(target: &Target) -> Result<()> {
+    // Window-scoped activation: the kAXRaiseAction just performed made the
+    // target the app's key window, and activating WITHOUT
+    // `NSApplicationActivateAllWindows` only brings that key window forward.
+    // The previous osascript variant (`set frontmost of process to true`) was
+    // process-level: it raised every window of the app, on every display,
+    // over the user's foreground.
+    let app =
+        objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(target.pid)
+            .ok_or_else(|| {
+                DunstError::Execution(format!("no running application with pid {}", target.pid))
+            })?;
+    if app.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions::empty()) {
+        Ok(())
+    } else {
+        Err(DunstError::Execution(
+            "AppKit refused the window-scoped activation of the target app".into(),
+        ))
+    }
 }
 
 pub(super) fn require_ax_element(
