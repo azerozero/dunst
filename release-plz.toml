@@ -1,5 +1,8 @@
 [workspace]
-# Don't publish to crates.io — release via git tags only
+# Don't publish to crates.io — release via git tags only. This flag lives HERE,
+# not in the crate manifests: `publish = false` in a Cargo.toml excludes the
+# crate from the `cargo package --workspace` dependency overlay, which breaks
+# release-plz's git-only version diffing ("no matching package named …").
 publish = false
 # Determine versions from git tags, not the cargo registry
 git_only = true

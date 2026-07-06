@@ -8,7 +8,6 @@ repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
 description = "Shared data model and traits for dunst-mcp"
-publish = false
 
 [dependencies]
 serde = { workspace = true }
