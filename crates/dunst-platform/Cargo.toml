@@ -8,7 +8,6 @@ repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
 description = "macOS Accessibility and event backend for dunst-mcp"
-publish = false
 
 [dependencies]
 dunst-core = { workspace = true }
