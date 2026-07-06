@@ -23,7 +23,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   exit 0
 fi
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 export DUNST_MCP_MODE="${DUNST_MCP_MODE:-live}"
 export DUNST_MCP_APP="${DUNST_MCP_APP:-${VO_APP:-Notes}}"
