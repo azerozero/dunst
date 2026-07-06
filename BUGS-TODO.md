@@ -269,3 +269,19 @@ Concevoir un scope de pré-autorisation par session/cible (ex. `approve` accepta
 Point d'entrée : `raw_input_gate.rs` (`validate_synthetic_raw_approval`,
 `raw_approval_policy`) + `serve/coordination.rs`. À faire en dernier, design à
 documenter dans le commit.
+
+## 6. Popup native de `<select>` inatteignable en clic synthétique — CORRIGÉ (2026-07-06)
+
+Rencontré sur lacartedescolocs.fr/Firefox (champ « Meublée ») : le 1er clic ouvre
+la popup native du `<select>`, mais le 2e clic (posté `SLEventPostToPid` vers la
+fenêtre attachée) ne l'atteint jamais — la popup est une AUTRE fenêtre (parfois un
+autre process, ex. « Open and Save Panel Service ») → le menu se referme sans
+sélectionner. Idem `pick_option` : les items ne sont pas dans l'arbre AX de la
+cible, et un AXPress sur item latent/étranger échoue (cf. #4).
+
+**Fix** : primitive `click_at_point_cursor` (warp + hover + LeftDown/Up **globaux
+HID** + restore, miroir de `right_click_at_point_impl`) dans
+`pointer_events.rs`, exposée en opt-in `borrow_cursor=true` sur `click_at` et
+`click_near_text` (même recette que `scroll_at borrow_cursor`). Contournement
+utilisé avant le fix : ouvrir le select puis `press_key Down` + `Return` (le
+clavier atteint le menu-tracking), ou AppleScript System Events.

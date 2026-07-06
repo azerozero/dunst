@@ -325,9 +325,17 @@ impl Engine {
                 click_point,
                 (offset_x, offset_y),
                 options.reasoning,
+                options.borrow_cursor,
             )?
         } else {
-            self.click_ocr_text_hit(&hit, "click", options.reasoning)?
+            self.click_ocr_text_hit_at(
+                &hit,
+                "click",
+                click_point,
+                (0.0, 0.0),
+                options.reasoning,
+                options.borrow_cursor,
+            )?
         };
         let (expected_text_found, verification_hint) = if audit.result == ActionResult::Success {
             match options.expected_text.map(str::trim).filter(|s| !s.is_empty()) {

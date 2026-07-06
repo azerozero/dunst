@@ -71,6 +71,23 @@ pub fn click_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
     macos::click_at_point(pid, x, y)
 }
 
+/// Post a real-cursor left click at a screen point. Native popups (a
+/// `<select>` menu, an open/save panel) live in separate windows — often
+/// separate processes — that the PID-targeted click paths never reach; this
+/// path briefly warps the cursor, posts a global HID click so it lands on
+/// whatever window is under the point, then restores the cursor.
+///
+/// # Errors
+///
+/// Returns an error if the user-active guard blocks the click, the CoreGraphics
+/// event source cannot be created, the current cursor position cannot be read,
+/// warping the cursor to the target point fails, a left mouse-down/up event
+/// cannot be created, or the cursor cannot be restored afterwards.
+#[cfg(target_os = "macos")]
+pub fn click_at_point_cursor(x: f64, y: f64) -> Result<()> {
+    macos::click_at_point_cursor(x, y)
+}
+
 /// Post a real-cursor right-click at a screen point. Context menus on macOS
 /// position from the real cursor, so this path briefly warps and restores it.
 ///

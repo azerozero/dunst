@@ -174,6 +174,75 @@ pub(super) fn right_click_at_point_impl(x: f64, y: f64) -> std::result::Result<(
 
 /// # Errors
 ///
+/// Returns an error if the user-active guard is blocking, the CoreGraphics
+/// event source cannot be created, the current cursor position cannot be read,
+/// the cursor cannot be warped to the target point, a left mouse-down or
+/// mouse-up CGEvent cannot be created, or the cursor cannot be restored.
+pub fn click_at_point_cursor(x: f64, y: f64) -> Result<()> {
+    click_at_point_cursor_impl(x, y).map_err(ActionFailure::into)
+}
+
+/// Real-cursor left click: warp, hover, global (HID) down/up, restore.
+///
+/// The PID-targeted click paths ([`click_at_point_impl`],
+/// `click_web_background`) never reach a native popup — a `<select>` menu, an
+/// open/save panel — because the popup is a different window, often hosted by
+/// a different process, from the attached target; posting to the attached
+/// pid/window just closes the popup without selecting. Posting at HID level
+/// after a real warp hits whatever window is under the cursor, exactly like a
+/// user click, and the pre-click MouseMoved lets native menu tracking
+/// highlight the item before the click lands.
+pub(super) fn click_at_point_cursor_impl(x: f64, y: f64) -> std::result::Result<(), ActionFailure> {
+    ensure_user_idle_action("real cursor click")?;
+    let point = clamp_point_to_bounds(CGPoint::new(x, y), all_displays_bounds());
+    let source = event_source("create cursor click CGEventSource")?;
+    let saved_cursor = current_cursor_position(&source)?;
+    let mut mouse_down_posted = false;
+
+    let result = (|| {
+        CGDisplay::warp_mouse_cursor_position(point)
+            .map_err(|err| ActionFailure::Execution(format!("warp for cursor click: {err:?}")))?;
+        let moved = CGEvent::new_mouse_event(
+            source.clone(),
+            CGEventType::MouseMoved,
+            point,
+            CGMouseButton::Left,
+        )
+        .map_err(|err| {
+            ActionFailure::Execution(format!("create pre-click hover CGEvent: {err:?}"))
+        })?;
+        moved.post(CGEventTapLocation::HID);
+        thread::sleep(Duration::from_millis(40));
+        let down = CGEvent::new_mouse_event(
+            source.clone(),
+            CGEventType::LeftMouseDown,
+            point,
+            CGMouseButton::Left,
+        )
+        .map_err(|err| ActionFailure::Execution(format!("create cursor click down: {err:?}")))?;
+        down.post(CGEventTapLocation::HID);
+        mouse_down_posted = true;
+        thread::sleep(Duration::from_millis(20));
+        let up = CGEvent::new_mouse_event(
+            source.clone(),
+            CGEventType::LeftMouseUp,
+            point,
+            CGMouseButton::Left,
+        )
+        .map_err(|err| ActionFailure::Execution(format!("create cursor click up: {err:?}")))?;
+        up.post(CGEventTapLocation::HID);
+        mouse_down_posted = false;
+        Ok(())
+    })();
+    if result.is_err() && mouse_down_posted {
+        let _ = release_mouse_buttons(point);
+    }
+    let restore = restore_cursor_position(saved_cursor);
+    result.and(restore)
+}
+
+/// # Errors
+///
 /// Returns an error if the user-active guard is blocking, the cursor cannot be
 /// warped to the target point, the CoreGraphics event source cannot be created,
 /// or the MouseMoved CGEvent cannot be created.

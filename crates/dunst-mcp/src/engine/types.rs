@@ -181,6 +181,11 @@ pub struct OcrClickOptions<'a> {
     pub expected_text: Option<&'a str>,
     pub reasoning: Option<&'a str>,
     pub offset: (f64, f64),
+    /// Deliver the click with the real cursor (warp + global HID click +
+    /// restore) instead of the PID-targeted background path — needed for
+    /// native popups (a `<select>` menu) that never receive window-targeted
+    /// events.
+    pub borrow_cursor: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
