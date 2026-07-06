@@ -219,11 +219,15 @@ fn luma_grid(image: &CGImage, target_w: usize) -> Option<(usize, usize, Vec<u8>)
     let dst_w = target_w.min(src_w).max(1);
     let dst_h = ((src_h as f64 * dst_w as f64 / src_w as f64).round() as usize).max(1);
     let mut data = vec![0u8; dst_w * dst_h];
+    // Source-x depends only on the column; precompute the edge-clamped column map
+    // once rather than recomputing the same mul/floor for every row.
+    let sx_lut: Vec<usize> = (0..dst_w)
+        .map(|x| (((x as f64 + 0.5) * src_w as f64 / dst_w as f64).floor() as usize).min(src_w - 1))
+        .collect();
     for y in 0..dst_h {
         let sy = (((y as f64 + 0.5) * src_h as f64 / dst_h as f64).floor() as usize).min(src_h - 1);
         for x in 0..dst_w {
-            let sx =
-                (((x as f64 + 0.5) * src_w as f64 / dst_w as f64).floor() as usize).min(src_w - 1);
+            let sx = sx_lut[x];
             let off = sy
                 .saturating_mul(bpr)
                 .saturating_add(sx.saturating_mul(bpp));

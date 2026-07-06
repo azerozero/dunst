@@ -573,6 +573,20 @@ impl Engine {
         None
     }
 
+    /// Make the target window AppKit-active **without raising it** (SkyLight
+    /// focus-without-raise) so a backgrounded web canvas paints. Best-effort.
+    #[cfg(target_os = "macos")]
+    pub fn focus_window(&self) -> bool {
+        dunst_platform::focus_without_raise(self.target.window_id)
+    }
+
+    /// Unstick the OS cursor via a menu-bar focus cycle (macOS stuck-cursor
+    /// workaround). Returns true if the cycle ran.
+    #[cfg(target_os = "macos")]
+    pub fn unstick_cursor(&self) -> bool {
+        dunst_platform::unstick_cursor().is_ok()
+    }
+
     /// Non-macOS stub.
     #[cfg(not(target_os = "macos"))]
     pub fn focus_window(&self) -> bool {

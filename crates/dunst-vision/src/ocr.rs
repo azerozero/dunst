@@ -93,20 +93,7 @@ pub fn ocr_region_with_mode(
         )
     };
 
-    let request_ref: &VNRecognizeTextRequest = &request;
-    let request_base: &VNRequest = request_ref.as_super().as_super();
-    let requests: Retained<NSArray<VNRequest>> = NSArray::from_slice(&[request_base]);
-    handler
-        .performRequests_error(&requests)
-        .map_err(|err| OcrError::Vision(err.localizedDescription().to_string()))?;
-
-    let mut out = Vec::new();
-    if let Some(results) = request.results() {
-        for observation in results.iter() {
-            out.extend(observation_to_boxes(&observation));
-        }
-    }
-    Ok(out)
+    run_text_request(&request, &handler)
 }
 
 /// OCR an image **file** by URL (e.g. a `screencapture` PNG). The composited
@@ -138,8 +125,23 @@ pub fn ocr_image_file(path: &str, mode: RecognitionMode) -> Result<Vec<OcrBox>, 
         VNImageRequestHandler::initWithURL_options(VNImageRequestHandler::alloc(), &url, &options)
     };
 
-    let request_ref: &VNRecognizeTextRequest = &request;
-    let request_base: &VNRequest = request_ref.as_super().as_super();
+    run_text_request(&request, &handler)
+}
+
+/// Performs a configured text-recognition `request` through `handler` and
+/// flattens the resulting observations into [`OcrBox`]es. Shared by the region
+/// ([`ocr_region_with_mode`]) and image-file ([`ocr_image_file`]) entry points so
+/// the NSArray → `performRequests` → results-loop boilerplate lives once.
+///
+/// # Errors
+///
+/// Returns [`OcrError::Vision`] if the Vision request cannot be performed,
+/// carrying Vision's localised description.
+fn run_text_request(
+    request: &VNRecognizeTextRequest,
+    handler: &VNImageRequestHandler,
+) -> Result<Vec<OcrBox>, OcrError> {
+    let request_base: &VNRequest = request.as_super().as_super();
     let requests: Retained<NSArray<VNRequest>> = NSArray::from_slice(&[request_base]);
     handler
         .performRequests_error(&requests)
@@ -187,6 +189,14 @@ fn observation_to_boxes(observation: &VNRecognizedTextObservation) -> Vec<OcrBox
         },
         confidence,
     };
+
+    // A line can only split at a LARGE gap *between* two runs, which needs at
+    // least two whitespace-separated tokens. Single-token lines (icon labels,
+    // short button text — the common UI case) can never split, so skip the
+    // per-word `boundingBoxForRange` Vision FFI entirely and keep the whole line.
+    if text.split_whitespace().nth(1).is_none() {
+        return vec![line_box];
+    }
 
     let words = word_boxes(&candidate, &text);
     let split = split_line_by_gaps(&words, confidence);

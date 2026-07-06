@@ -26,6 +26,44 @@ const PANEL_FOREGROUND_DELTA: u16 = 14;
 /// brightness, different hue) that no luma threshold can see.
 const CHROMA_DELTA: i16 = 40;
 
+// --- Edge-shape detector thresholds (hollow rects / circles / lines) ---------
+
+/// Minimum connected-component size (pixels) an edge blob needs to be considered.
+const EDGE_MIN_COMPONENT_PIXELS: usize = 12;
+/// Minimum width/height (px) and area for an edge component to classify.
+const EDGE_MIN_SIDE: usize = 8;
+const EDGE_MIN_AREA: usize = 80;
+/// Aspect ratios **outside** this band read as a line segment, not a box/circle.
+const LINE_ASPECT_RANGE: std::ops::RangeInclusive<f32> = 0.125..=8.0;
+/// A hollow `Rect` needs border coverage above this and interior fill below it.
+const RECT_MIN_BORDER: f32 = 0.44;
+const RECT_MAX_FILL: f32 = 0.45;
+/// Near-square aspect band an edge component must fall in to be circle-tested.
+const EDGE_CIRCLE_ASPECT_RANGE: std::ops::RangeInclusive<f32> = 0.75..=1.35;
+/// Minimum ring score for an edge component to be accepted as a `Circle`.
+const EDGE_CIRCLE_MIN_SCORE: f32 = 0.45;
+
+// --- Filled-shape detector thresholds (bars / filled circles / panels) -------
+
+/// Minimum connected-component size (pixels) in the filled-foreground mask. The
+/// single min-20 flood-fill is reused for bars, circles, and panels.
+const FILLED_MIN_COMPONENT_PIXELS: usize = 20;
+/// A filled circle needs at least this many pixels (stricter than the shared 20).
+const FILLED_CIRCLE_MIN_PIXELS: usize = 28;
+/// Bar candidate gates: min width/height, min area, min fill ratio, and the
+/// height/width ratio above which a solid blob reads as a vertical bar.
+const BAR_MIN_W: usize = 5;
+const BAR_MIN_H: usize = 14;
+const BAR_MIN_AREA: usize = 90;
+const BAR_MIN_FILL: f32 = 0.55;
+const BAR_MIN_HW_RATIO: f32 = 1.15;
+/// Baseline-alignment tolerance (px) grouping bars that share a chart baseline.
+const BAR_BASELINE_TOLERANCE: usize = 5;
+/// Filled-circle gates: min side (px), near-square aspect band, and fill band.
+const FILLED_CIRCLE_MIN_SIDE: usize = 14;
+const FILLED_CIRCLE_ASPECT_RANGE: std::ops::RangeInclusive<f32> = 0.72..=1.38;
+const FILLED_CIRCLE_FILL_RANGE: std::ops::RangeInclusive<f32> = 0.55..=0.88;
+
 /// Classified kind of a detected shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShapeKind {
@@ -103,17 +141,19 @@ impl LumaImage {
         let mut rg = vec![0i16; dst_w * dst_h];
         let mut yb = vec![0i16; dst_w * dst_h];
 
+        // Source-x depends only on the column, so precompute it once (already
+        // edge-clamped) instead of recomputing the same mul/floor for every row —
+        // a loop-invariant hoist over the whole downsample grid.
+        let sx_lut: Vec<usize> = (0..dst_w)
+            .map(|x| {
+                (((x as f64 + 0.5) * src_w as f64 / dst_w as f64).floor() as usize).min(src_w - 1)
+            })
+            .collect();
         for y in 0..dst_h {
-            let sy = ((y as f64 + 0.5) * src_h as f64 / dst_h as f64).floor() as usize;
-            for x in 0..dst_w {
-                let sx = ((x as f64 + 0.5) * src_w as f64 / dst_w as f64).floor() as usize;
-                let (c0, c1, c2) = sample_channels(
-                    raw,
-                    bytes_per_row,
-                    bytes_per_pixel,
-                    sx.min(src_w - 1),
-                    sy.min(src_h - 1),
-                );
+            let sy =
+                (((y as f64 + 0.5) * src_h as f64 / dst_h as f64).floor() as usize).min(src_h - 1);
+            for (x, &sx) in sx_lut.iter().enumerate() {
+                let (c0, c1, c2) = sample_channels(raw, bytes_per_row, bytes_per_pixel, sx, sy);
                 let idx = y * dst_w + x;
                 data[idx] = ((c0 as u16 + c1 as u16 + c2 as u16) / 3) as u8;
                 let (p, q) = opponent(c0, c1, c2);
@@ -244,16 +284,16 @@ fn edge_map(luma: &LumaImage) -> BoolImage {
 }
 
 fn detect_edge_shapes(edges: &BoolImage, geometry: &CaptureGeometry, out: &mut Vec<Shape>) {
-    for component in components(edges, 12) {
+    for component in components(edges, EDGE_MIN_COMPONENT_PIXELS) {
         if out.len() >= MAX_SHAPES {
             return;
         }
         let b = component.bbox;
-        if b.w < 8 || b.h < 8 || b.area() < 80 {
+        if b.w < EDGE_MIN_SIDE || b.h < EDGE_MIN_SIDE || b.area() < EDGE_MIN_AREA {
             continue;
         }
         let aspect = b.w as f32 / b.h.max(1) as f32;
-        if !(0.125..=8.0).contains(&aspect) {
+        if !LINE_ASPECT_RANGE.contains(&aspect) {
             let confidence =
                 (0.45 + (component.pixels as f32 / b.area() as f32).min(0.35)).min(0.8);
             out.push(shape(
@@ -269,7 +309,7 @@ fn detect_edge_shapes(edges: &BoolImage, geometry: &CaptureGeometry, out: &mut V
 
         let border = border_score(edges, b);
         let fill = component.pixels as f32 / b.area() as f32;
-        if border > 0.44 && fill < 0.45 {
+        if border > RECT_MIN_BORDER && fill < RECT_MAX_FILL {
             let confidence = (0.35 + border * 0.75 - fill * 0.25).clamp(0.35, 0.95);
             out.push(shape(
                 ShapeKind::Rect,
@@ -279,9 +319,9 @@ fn detect_edge_shapes(edges: &BoolImage, geometry: &CaptureGeometry, out: &mut V
                 geometry,
                 confidence,
             ));
-        } else if (0.75..=1.35).contains(&aspect) {
+        } else if EDGE_CIRCLE_ASPECT_RANGE.contains(&aspect) {
             let confidence = circle_edge_score(edges, b);
-            if confidence > 0.45 {
+            if confidence > EDGE_CIRCLE_MIN_SCORE {
                 out.push(shape(
                     ShapeKind::Circle,
                     b,
@@ -366,25 +406,39 @@ fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut 
     // One flood-fill for the whole mask. `components(mask, k)` runs the same
     // connected-components pass regardless of `k` — `k` is only the final size
     // gate — so `components(mask, 28)` is exactly `components(mask, 20)` filtered
-    // to `pixels >= 28`. Compute the min-20 set once and reuse it for circles
-    // below instead of flooding the mask a second time (O(W*H) saved per call).
-    let comps = components(&mask, 20);
+    // to `pixels >= 28`. Compute the min-20 set once and reuse it for bars and
+    // circles instead of flooding the mask a second time (O(W*H) saved per call).
+    let comps = components(&mask, FILLED_MIN_COMPONENT_PIXELS);
+    // Bars claim their components first; the panel pass skips those bboxes so a
+    // chart column is not re-emitted as a card.
+    let bar_bboxes = detect_bars(&comps, luma, geometry, out);
+    detect_circles(&comps, luma, geometry, out);
+    detect_panels(luma, median, &bar_bboxes, geometry, out);
+}
+
+/// Filled vertical bars (chart columns): solid, taller-than-wide components that
+/// share a baseline (grouped by [`baseline_groups`], only groups of ≥ 2 emit).
+/// Returns the bboxes it claimed so [`detect_panels`] can skip them.
+fn detect_bars(
+    comps: &[Component],
+    luma: &LumaImage,
+    geometry: &CaptureGeometry,
+    out: &mut Vec<Shape>,
+) -> Vec<BoxI> {
     let mut bar_candidates: Vec<Component> = comps
         .iter()
         .copied()
         .filter(|c| {
             let b = c.bbox;
-            b.w >= 5
-                && b.h >= 14
-                && b.area() >= 90
-                && c.pixels as f32 / b.area() as f32 > 0.55
-                && b.h as f32 / b.w.max(1) as f32 > 1.15
+            b.w >= BAR_MIN_W
+                && b.h >= BAR_MIN_H
+                && b.area() >= BAR_MIN_AREA
+                && c.pixels as f32 / b.area() as f32 > BAR_MIN_FILL
+                && b.h as f32 / b.w.max(1) as f32 > BAR_MIN_HW_RATIO
         })
         .collect();
 
     bar_candidates.sort_by_key(|c| c.bbox.y + c.bbox.h);
-    // Bars own their components; the panel pass below skips these bboxes so a
-    // chart column is not re-emitted as a card.
     let mut bar_bboxes: Vec<BoxI> = Vec::new();
     for group in baseline_groups(&bar_candidates) {
         if group.len() < 2 {
@@ -392,7 +446,7 @@ fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut 
         }
         for c in group {
             if out.len() >= MAX_SHAPES {
-                return;
+                return bar_bboxes;
             }
             let fill = c.pixels as f32 / c.bbox.area() as f32;
             bar_bboxes.push(c.bbox);
@@ -406,18 +460,31 @@ fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut 
             ));
         }
     }
+    bar_bboxes
+}
 
-    for component in comps.iter().filter(|c| c.pixels >= 28) {
+/// Filled near-square discs read as circles — the solid blobs the hollow-ring
+/// edge test misses. Reuses the shared min-20 [`Component`]s.
+fn detect_circles(
+    comps: &[Component],
+    luma: &LumaImage,
+    geometry: &CaptureGeometry,
+    out: &mut Vec<Shape>,
+) {
+    for component in comps
+        .iter()
+        .filter(|c| c.pixels >= FILLED_CIRCLE_MIN_PIXELS)
+    {
         if out.len() >= MAX_SHAPES {
             return;
         }
         let b = component.bbox;
         let aspect = b.w as f32 / b.h.max(1) as f32;
         let fill = component.pixels as f32 / b.area() as f32;
-        if b.w >= 14
-            && b.h >= 14
-            && (0.72..=1.38).contains(&aspect)
-            && (0.55..=0.88).contains(&fill)
+        if b.w >= FILLED_CIRCLE_MIN_SIDE
+            && b.h >= FILLED_CIRCLE_MIN_SIDE
+            && FILLED_CIRCLE_ASPECT_RANGE.contains(&aspect)
+            && FILLED_CIRCLE_FILL_RANGE.contains(&fill)
         {
             let confidence = (0.35 + (1.0 - (aspect - 1.0).abs()).max(0.0) * 0.25 + fill * 0.35)
                 .clamp(0.35, 0.85);
@@ -431,23 +498,32 @@ fn detect_filled_shapes(luma: &LumaImage, geometry: &CaptureGeometry, out: &mut 
             ));
         }
     }
+}
 
-    // Filled rectangular regions = cards / sections / panels: the solid
-    // containers modern UIs draw *without* a visible border, which neither the
-    // hollow `Rect` detector (needs an outline) nor the tall-`Bar` filter emits.
-    // Surfacing them lets the zone tree nest a card's text and controls under
-    // the card instead of leaving three flat lists.
-    //
-    // Panels get their OWN, more sensitive mask. Cards are often low-contrast
-    // fills (light gray on white) whose luma sits *inside* the ±FOREGROUND_DELTA
-    // band, so the bar/circle mask never sees them — the exact "even in grayscale
-    // the diff exists, but the threshold eats it" gap. `PANEL_FOREGROUND_DELTA`
-    // is lower; the strict `filled_panel_qualifies` gate (size/fill/aspect/area)
-    // rejects the extra text/antialias noise a looser threshold surfaces. Bars
-    // and circles keep the original mask, so their output is byte-for-byte
-    // unchanged.
+/// Filled rectangular regions = cards / sections / panels: the solid containers
+/// modern UIs draw *without* a visible border, which neither the hollow `Rect`
+/// detector (needs an outline) nor the tall-`Bar` filter emits. Surfacing them
+/// lets the zone tree nest a card's text and controls under the card instead of
+/// leaving three flat lists.
+///
+/// Panels get their OWN, more sensitive mask ([`panel_foreground_mask`]). Cards
+/// are often low-contrast fills (light gray on white) whose luma sits *inside*
+/// the ±[`FOREGROUND_DELTA`] band, so the bar/circle mask never sees them — the
+/// exact "even in grayscale the diff exists, but the threshold eats it" gap.
+/// [`PANEL_FOREGROUND_DELTA`] is lower; the strict [`filled_panel_qualifies`]
+/// gate (size/fill/aspect/area) rejects the extra text/antialias noise a looser
+/// threshold surfaces. Bars and circles keep the original mask, so their output
+/// is byte-for-byte unchanged. `bar_bboxes` are skipped so a chart column is not
+/// re-emitted as a card.
+fn detect_panels(
+    luma: &LumaImage,
+    median: u8,
+    bar_bboxes: &[BoxI],
+    geometry: &CaptureGeometry,
+    out: &mut Vec<Shape>,
+) {
     let panel_mask = panel_foreground_mask(luma, median);
-    for component in &components(&panel_mask, 20) {
+    for component in &components(&panel_mask, FILLED_MIN_COMPONENT_PIXELS) {
         if out.len() >= MAX_SHAPES {
             return;
         }
@@ -653,7 +729,7 @@ fn baseline_groups(comps: &[Component]) -> Vec<Vec<&Component>> {
         if let Some(group) = groups.iter_mut().find(|group| {
             group
                 .first()
-                .map(|first| bottom.abs_diff(first.bbox.y + first.bbox.h) <= 5)
+                .map(|first| bottom.abs_diff(first.bbox.y + first.bbox.h) <= BAR_BASELINE_TOLERANCE)
                 .unwrap_or(false)
         }) {
             group.push(comp);
