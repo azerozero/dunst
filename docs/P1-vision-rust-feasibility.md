@@ -8,7 +8,7 @@
 > recommendation in §B was deferred. Apple Vision `.fast` OCR measured ~16.5 ms
 > full-window (`docs/P1-vision-surfaces.md` §11). Read the sections below as the
 > original pre-build analysis.
-
+>
 > Companion to `docs/P1-vision-surfaces.md`. Scope: **research + design only** —
 > no crates touched, no prod code, no git. Deliverable answers the two delegated
 > open questions (§9.2: Rust feasibility + design) and challenges the plan.
