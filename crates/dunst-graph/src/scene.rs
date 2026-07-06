@@ -63,17 +63,40 @@ pub fn synth_id(
     path: &[usize],
     used: &std::collections::BTreeSet<String>,
 ) -> String {
-    synth_id_with_policy(role, label, ax_identifier, path, used, false)
+    synth_id_with_policy(
+        IdInputs {
+            role,
+            label,
+            ax_identifier,
+            path,
+        },
+        used,
+        false,
+    )
+}
+
+/// The per-node inputs to id synthesis: everything about *one node* that feeds
+/// [`synth_id`]. Bundling them keeps [`synth_id_with_policy`] to three arguments
+/// (the node inputs, the already-emitted `used` set, the volatile-label policy)
+/// instead of a six-parameter list.
+struct IdInputs<'a> {
+    role: Role,
+    label: Option<&'a str>,
+    ax_identifier: Option<&'a str>,
+    path: &'a [usize],
 }
 
 fn synth_id_with_policy(
-    role: Role,
-    label: Option<&str>,
-    ax_identifier: Option<&str>,
-    path: &[usize],
+    inputs: IdInputs<'_>,
     used: &std::collections::BTreeSet<String>,
     prefer_path_for_volatile_label: bool,
 ) -> String {
+    let IdInputs {
+        role,
+        label,
+        ax_identifier,
+        path,
+    } = inputs;
     let prefix = role.id_prefix();
 
     // Prefer a developer-assigned AXIdentifier when it slugs to something
@@ -140,8 +163,13 @@ fn is_appkit_auto(s: &str) -> bool {
     )
 }
 
+/// Maximum slug length in characters: keeps synthesised ids glanceable and
+/// bounds the id key size on pathological labels.
+const MAX_SLUG_LEN: usize = 40;
+
 /// Turn a human label into a slug: lowercase ASCII, accents folded, runs of
-/// non-alphanumerics collapsed to a single `_`, trimmed, capped at ~40 chars.
+/// non-alphanumerics collapsed to a single `_`, trimmed, capped at
+/// [`MAX_SLUG_LEN`] chars.
 fn slug(label: &str) -> String {
     let mut out = String::new();
     let mut pending_sep = false;
@@ -159,7 +187,7 @@ fn slug(label: &str) -> String {
         }
     }
     out.chars()
-        .take(40)
+        .take(MAX_SLUG_LEN)
         .collect::<String>()
         .trim_matches('_')
         .to_string()
@@ -180,6 +208,18 @@ fn path_hash(path: &[usize]) -> String {
     format!("{hash:016x}")
 }
 
+/// Traversal state threaded through [`flatten`]: the invariant configuration
+/// (`now_ms`, `prefer_path_for_volatile_label`) plus the two accumulators shared
+/// across the whole DFS (`used` ids for collision checks, `nodes` being filled).
+/// Bundling them collapses `flatten`'s parameter list from seven to three
+/// (the node, its path cursor, its parent id).
+struct FlattenCtx<'a> {
+    now_ms: u64,
+    prefer_path_for_volatile_label: bool,
+    used: &'a mut BTreeSet<String>,
+    nodes: &'a mut BTreeMap<String, SceneNode>,
+}
+
 /// Build the full scene graph from perceived roots.
 pub fn build_scene_graph(roots: Vec<RawAxNode>, window: WindowRef, now_ms: u64) -> SceneGraph {
     let mut used: BTreeSet<String> = BTreeSet::new();
@@ -187,17 +227,15 @@ pub fn build_scene_graph(roots: Vec<RawAxNode>, window: WindowRef, now_ms: u64) 
     let mut root_ids = Vec::with_capacity(roots.len());
     let prefer_path_for_volatile_label = terminal_like_window(&window);
 
+    let mut ctx = FlattenCtx {
+        now_ms,
+        prefer_path_for_volatile_label,
+        used: &mut used,
+        nodes: &mut nodes,
+    };
     for (i, root) in roots.iter().enumerate() {
         let mut path = vec![i];
-        let id = flatten(
-            root,
-            &mut path,
-            None,
-            now_ms,
-            &mut used,
-            &mut nodes,
-            prefer_path_for_volatile_label,
-        );
+        let id = flatten(root, &mut path, None, &mut ctx);
         root_ids.push(id);
     }
 
@@ -224,40 +262,31 @@ fn flatten(
     node: &RawAxNode,
     path: &mut Vec<usize>,
     parent: Option<String>,
-    now_ms: u64,
-    used: &mut BTreeSet<String>,
-    nodes: &mut BTreeMap<String, SceneNode>,
-    prefer_path_for_volatile_label: bool,
+    ctx: &mut FlattenCtx<'_>,
 ) -> String {
     let role = map_role(&node.ax_role);
     let id = synth_id_with_policy(
-        role,
-        node.label.as_deref(),
-        node.ax_identifier.as_deref(),
-        path,
-        used,
-        prefer_path_for_volatile_label,
+        IdInputs {
+            role,
+            label: node.label.as_deref(),
+            ax_identifier: node.ax_identifier.as_deref(),
+            path,
+        },
+        ctx.used,
+        ctx.prefer_path_for_volatile_label,
     );
     // Reserve the ID before recursing so children see it for collision checks.
-    used.insert(id.clone());
+    ctx.used.insert(id.clone());
 
     let mut child_ids = Vec::with_capacity(node.children.len());
     for (i, child) in node.children.iter().enumerate() {
         path.push(i);
-        let child_id = flatten(
-            child,
-            path,
-            Some(id.clone()),
-            now_ms,
-            used,
-            nodes,
-            prefer_path_for_volatile_label,
-        );
+        let child_id = flatten(child, path, Some(id.clone()), ctx);
         path.pop();
         child_ids.push(child_id);
     }
 
-    nodes.insert(
+    ctx.nodes.insert(
         id.clone(),
         SceneNode {
             id: id.clone(),
@@ -276,7 +305,7 @@ fn flatten(
             cmd_char: node.cmd_char.clone(),
             cmd_modifiers: node.cmd_modifiers,
             cmd_virtual_key: node.cmd_virtual_key,
-            last_seen_ms: now_ms,
+            last_seen_ms: ctx.now_ms,
             path: path.clone(),
             parent,
             children: child_ids,

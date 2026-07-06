@@ -5,25 +5,17 @@
 
 use std::collections::BTreeSet;
 
-use dunst_core::mock::MockPerceptor;
-use dunst_core::{
-    NodeChange, Perceptor, RiskLevel, Role, SceneGraph, SceneNode, SemanticAction, Target,
-};
-use dunst_graph::{build_scene_graph, derive_affordances, diff, RiskEngine};
+use dunst_core::{NodeChange, RiskLevel, Role, SceneGraph, SceneNode, SemanticAction};
+use dunst_graph::{derive_affordances, diff, RiskEngine};
+
+mod common;
 
 /// Number of `RawAxNode`s in `fixtures/notes.json` (window subtree: 11,
 /// menu-bar subtree: 11).
 const FIXTURE_NODE_COUNT: usize = 22;
 
 fn build(now_ms: u64) -> SceneGraph {
-    let perceptor = MockPerceptor::notes_fixture().expect("fixture loads");
-    let target = Target {
-        pid: 1363,
-        window_id: 105,
-    };
-    let roots = perceptor.capture(&target).expect("capture");
-    let window = perceptor.window_ref(&target).expect("window_ref");
-    build_scene_graph(roots, window, now_ms)
+    common::notes_graph(now_ms)
 }
 
 fn node_by_label<'a>(graph: &'a SceneGraph, label: &str) -> &'a SceneNode {

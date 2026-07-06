@@ -34,6 +34,8 @@ const CLI_LONG_VERSION: &str = concat!(
     "built_unix ",
     env!("DUNST_BUILD_TIME_UNIX")
 );
+/// Committed project-local stdio entry point, also the `--dev-wrapper` command.
+const DEV_WRAPPER: &str = "scripts/mcp-dunst.sh";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -55,7 +57,7 @@ enum Command {
     /// Start the MCP stdio server.
     Serve(ServeArgs),
     /// Print local environment diagnostics.
-    Doctor,
+    Doctor(DoctorArgs),
     /// Manage MCP client configuration snippets/files.
     Setup(SetupArgs),
 }
@@ -76,6 +78,13 @@ struct ServeArgs {
     live: bool,
 }
 
+#[derive(Args, Debug, Default)]
+struct DoctorArgs {
+    /// Emit machine-readable JSON instead of human-readable text.
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Args, Debug)]
 struct SetupArgs {
     /// Client config format to print.
@@ -93,12 +102,20 @@ struct SetupArgs {
     /// Show the current file and the merged desired config without writing.
     #[arg(long, conflicts_with_all = ["dry_run", "apply", "migrate"])]
     edit: bool,
-    /// Rewrite an existing dunst entry to the current serve command.
+    /// Rewrite an existing dunst entry's command to the current launch command.
+    ///
+    /// Not a schema migration: it re-renders the `dunst` server entry to the
+    /// command `setup` would write now (the `scripts/mcp-dunst.sh` wrapper inside
+    /// a checkout, otherwise `dunst-mcp serve`) while preserving other sections.
+    /// Pass `--dev-wrapper` to force the wrapper form.
     #[arg(long, conflicts_with_all = ["dry_run", "apply", "edit"])]
     migrate: bool,
     /// Override the config path; defaults to .codex/config.toml or .mcp.json.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
+    /// Emit machine-readable JSON instead of human-readable text.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -112,7 +129,7 @@ fn main() {
     let code = match cli.command.unwrap_or(Command::Demo) {
         Command::Demo => run_demo(),
         Command::Serve(args) => run_serve(args),
-        Command::Doctor => run_doctor(),
+        Command::Doctor(args) => run_doctor(args),
         Command::Setup(args) => run_setup(args),
     };
     std::process::exit(code);
@@ -301,12 +318,239 @@ fn run_serve(args: ServeArgs) -> i32 {
     serve::serve(engine)
 }
 
-fn run_doctor() -> i32 {
-    println!("dunst-mcp doctor");
-    match std::env::current_exe() {
-        Ok(path) => println!("binary: {}", path.display()),
-        Err(err) => println!("binary: unknown ({err})"),
+fn run_doctor(args: DoctorArgs) -> i32 {
+    let binary = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|err| format!("unknown ({err})"));
+    let approve_tool = std::env::var("DUNST_MCP_ENABLE_APPROVE_TOOL")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let checks = collect_doctor_checks();
+    // Reduce the per-check severities to one exit code: worst wins, so a single
+    // FAIL yields 2 (blocking) even amid passes, while WARN alone yields 1.
+    let worst = checks
+        .iter()
+        .map(|check| check.status)
+        .max()
+        .unwrap_or(Health::Pass);
+    let code = match worst {
+        Health::Fail => 2,
+        Health::Warn => 1,
+        Health::Pass | Health::Info => 0,
+    };
+    if args.json {
+        print_doctor_json(&binary, approve_tool, &checks, code);
+    } else {
+        print_doctor_text(&binary, approve_tool, &checks);
     }
+    code
+}
+
+/// Severity of a single [`run_doctor`] check.
+///
+/// Declared worst-last so `Ord` makes the maximum severity the one that decides
+/// the process exit code (`Fail` -> 2, `Warn` -> 1, `Pass`/`Info` -> 0).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum Health {
+    /// Context line that never affects the exit code.
+    Info,
+    /// Check succeeded.
+    Pass,
+    /// Non-blocking issue; degrades an optional capability.
+    Warn,
+    /// Blocking issue for live automation.
+    Fail,
+}
+
+impl Health {
+    fn as_str(self) -> &'static str {
+        match self {
+            Health::Info => "info",
+            Health::Pass => "pass",
+            Health::Warn => "warn",
+            Health::Fail => "fail",
+        }
+    }
+}
+
+/// One line of doctor output plus the machine-readable status behind it.
+struct DoctorCheck {
+    label: String,
+    status: Health,
+    message: String,
+    hint: Option<String>,
+}
+
+impl DoctorCheck {
+    fn new(label: impl Into<String>, status: Health, message: impl Into<String>) -> Self {
+        DoctorCheck {
+            label: label.into(),
+            status,
+            message: message.into(),
+            hint: None,
+        }
+    }
+
+    fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+}
+
+fn collect_doctor_checks() -> Vec<DoctorCheck> {
+    let mut checks = Vec::new();
+    checks.push(path_check(".mcp.json", "Claude-style project config"));
+    if let Some(check) = config_check(".mcp.json", SetupClient::Claude) {
+        checks.push(check);
+    }
+    checks.push(path_check(".codex/config.toml", "Codex project config"));
+    if let Some(check) = config_check(".codex/config.toml", SetupClient::Codex) {
+        checks.push(check);
+    }
+    checks.push(executable_check(
+        "scripts/mcp-dunst.sh",
+        "development wrapper",
+    ));
+    checks.push(executable_check(
+        "target/debug/dunst-mcp",
+        "development binary",
+    ));
+    checks.push(cargo_check());
+    checks.extend(platform_checks());
+    checks
+}
+
+fn path_check(path: &str, label: &str) -> DoctorCheck {
+    let present = Path::new(path).exists();
+    DoctorCheck::new(
+        format!("{path}:present"),
+        Health::Info,
+        format!(
+            "{label}: {} ({path})",
+            if present { "present" } else { "missing" }
+        ),
+    )
+}
+
+fn executable_check(path: &str, label: &str) -> DoctorCheck {
+    let status = if is_executable(Path::new(path)) {
+        "executable"
+    } else if Path::new(path).is_file() {
+        "not executable"
+    } else {
+        "missing"
+    };
+    DoctorCheck::new(
+        format!("{path}:exec"),
+        Health::Info,
+        format!("{label}: {status} ({path})"),
+    )
+}
+
+fn cargo_check() -> DoctorCheck {
+    // The dev wrapper builds `target/debug/dunst-mcp` on launch, so a missing
+    // toolchain would only surface at the MCP handshake. Report it now, but keep
+    // it informational: installed configs calling `dunst-mcp serve` never need it.
+    if resolve_command_path("cargo").is_some() {
+        DoctorCheck::new("cargo", Health::Info, "cargo: present")
+    } else {
+        DoctorCheck::new("cargo", Health::Info, "cargo: not found").with_hint(
+            "only needed to build target/debug via scripts/mcp-dunst.sh; installed configs using `dunst-mcp serve` do not need it",
+        )
+    }
+}
+
+/// Validates the `dunst` entry in a client config: the command must both start
+/// the server (not the demo) and resolve to a real executable.
+fn config_check(path: &str, client: SetupClient) -> Option<DoctorCheck> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let parsed = match client {
+        SetupClient::Claude => parse_claude_dunst_config(&text),
+        SetupClient::Codex => parse_codex_dunst_config(&text),
+    };
+    let label = format!("{path}:command");
+    Some(match parsed {
+        Ok(Some((command, args))) => {
+            if !mcp_command_starts_server(&command, &args) {
+                DoctorCheck::new(
+                    label,
+                    Health::Fail,
+                    format!(
+                        "{path}: warning: dunst command may start the demo instead of MCP serve ({command} {args:?})"
+                    ),
+                )
+                .with_hint("point the command at `dunst-mcp serve` or scripts/mcp-dunst.sh")
+            } else if resolve_command_path(&command).is_none() {
+                DoctorCheck::new(
+                    label,
+                    Health::Warn,
+                    format!("{path}: dunst command ok ({command} {args:?})"),
+                )
+                .with_hint(format!(
+                    "{command} not found on PATH or relative to the current directory; run `cargo install --path crates/dunst-mcp` or launch from the project root"
+                ))
+            } else {
+                DoctorCheck::new(
+                    label,
+                    Health::Pass,
+                    format!("{path}: dunst command ok ({command} {args:?})"),
+                )
+            }
+        }
+        Ok(None) => DoctorCheck::new(label, Health::Fail, format!("{path}: dunst server missing")),
+        Err(err) => DoctorCheck::new(label, Health::Fail, format!("{path}: invalid ({err})")),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn platform_checks() -> Vec<DoctorCheck> {
+    let mut checks = vec![DoctorCheck::new("os", Health::Info, "os: macOS")];
+    if dunst_platform::accessibility_trusted() {
+        checks.push(DoctorCheck::new(
+            "accessibility",
+            Health::Pass,
+            "accessibility: granted",
+        ));
+    } else {
+        // Accessibility gates every AX action: without it live automation cannot
+        // work, so this is a hard failure.
+        checks.push(
+            DoctorCheck::new("accessibility", Health::Fail, "accessibility: not granted").with_hint(
+                "enable Accessibility for your terminal/agent host in System Settings > Privacy & Security > Accessibility",
+            ),
+        );
+    }
+    if dunst_platform::screen_capture_trusted() {
+        checks.push(DoctorCheck::new(
+            "screen-recording",
+            Health::Pass,
+            "screen recording: granted",
+        ));
+    } else {
+        // Only screenshot/OCR tools need Screen Recording; core AX automation runs
+        // without it, so this degrades a capability rather than blocking.
+        checks.push(
+            DoctorCheck::new("screen-recording", Health::Warn, "screen recording: not granted").with_hint(
+                "enable Screen Recording for your terminal/agent host in System Settings > Privacy & Security > Screen Recording (only screenshot/OCR tools need it)",
+            ),
+        );
+    }
+    checks
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_checks() -> Vec<DoctorCheck> {
+    vec![DoctorCheck::new(
+        "os",
+        Health::Warn,
+        "os: unsupported (dunst-mcp live automation is macOS-only)",
+    )
+    .with_hint("fixture mode is still available with: dunst-mcp serve")]
+}
+
+fn print_doctor_text(binary: &str, approve_tool: bool, checks: &[DoctorCheck]) {
+    println!("dunst-mcp doctor");
+    println!("binary: {binary}");
     println!("recommended MCP command: dunst-mcp serve");
     println!("setup dry-run: dunst-mcp setup --client codex --dry-run");
     println!("setup apply: dunst-mcp setup --client codex --apply");
@@ -314,145 +558,80 @@ fn run_doctor() -> i32 {
     println!("setup migrate: dunst-mcp setup --client codex --migrate");
     println!(
         "approval tool: {}",
-        if std::env::var("DUNST_MCP_ENABLE_APPROVE_TOOL")
-            .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
-            .unwrap_or(false)
-        {
+        if approve_tool {
             "enabled by environment"
         } else {
             "disabled by default"
         }
     );
-    doctor_path(".mcp.json", "Claude-style project config");
-    let claude_config_ok = doctor_claude_config(".mcp.json").unwrap_or(true);
-    doctor_path(".codex/config.toml", "Codex project config");
-    let codex_config_ok = doctor_codex_config(".codex/config.toml").unwrap_or(true);
-    let config_ok = claude_config_ok && codex_config_ok;
-    doctor_executable("scripts/mcp-dunst.sh", "development wrapper");
-    doctor_executable("target/debug/dunst-mcp", "development binary");
-
-    #[cfg(target_os = "macos")]
-    {
-        println!("os: macOS");
-        if dunst_platform::accessibility_trusted() {
-            println!("accessibility: granted");
-            let screen_capture_ok = doctor_screen_capture();
-            if config_ok && screen_capture_ok {
-                0
-            } else {
-                1
-            }
-        } else {
-            println!("accessibility: not granted");
-            println!(
-                "hint: enable Accessibility for your terminal/agent host in System Settings > Privacy & Security > Accessibility"
-            );
-            let _ = doctor_screen_capture();
-            1
+    for check in checks {
+        println!("{}", check.message);
+        if let Some(hint) = &check.hint {
+            println!("hint: {hint}");
         }
     }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        println!("os: unsupported (dunst-mcp live automation is macOS-only)");
-        println!("fixture mode is still available with: dunst-mcp serve");
-        1
-    }
 }
 
-fn doctor_path(path: &str, label: &str) {
-    let status = if std::path::Path::new(path).exists() {
-        "present"
-    } else {
-        "missing"
+fn print_doctor_json(binary: &str, approve_tool: bool, checks: &[DoctorCheck], code: i32) {
+    let status = match code {
+        2 => "fail",
+        1 => "warn",
+        _ => "pass",
     };
-    println!("{label}: {status} ({path})");
+    let rendered: Vec<serde_json::Value> = checks
+        .iter()
+        .map(|check| {
+            json!({
+                "check": check.label,
+                "status": check.status.as_str(),
+                "message": check.message,
+                "hint": check.hint,
+            })
+        })
+        .collect();
+    let out = json!({
+        "tool": "doctor",
+        "binary": binary,
+        "approve_tool_enabled": approve_tool,
+        "status": status,
+        "exit_code": code,
+        "checks": rendered,
+    });
+    println!("{}", serde_json::to_string_pretty(&out).unwrap());
 }
 
-fn doctor_executable(path: &str, label: &str) {
-    let status = std::fs::metadata(path)
-        .map(|m| {
+/// Reports whether `path` is a regular file with an executable bit set.
+fn is_executable(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|meta| {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                if m.permissions().mode() & 0o111 != 0 {
-                    "executable"
-                } else {
-                    "not executable"
-                }
+                meta.is_file() && meta.permissions().mode() & 0o111 != 0
             }
             #[cfg(not(unix))]
             {
-                if m.is_file() {
-                    "present"
-                } else {
-                    "missing"
-                }
+                meta.is_file()
             }
         })
-        .unwrap_or("missing");
-    println!("{label}: {status} ({path})");
+        .unwrap_or(false)
 }
 
-#[cfg(target_os = "macos")]
-fn doctor_screen_capture() -> bool {
-    if dunst_platform::screen_capture_trusted() {
-        println!("screen recording: granted");
-        true
-    } else {
-        println!("screen recording: not granted");
-        println!(
-            "hint: enable Screen Recording for your terminal/agent host in System Settings > Privacy & Security > Screen Recording"
-        );
-        false
+/// Resolves `command` to an existing executable, honoring `PATH` for bare names.
+///
+/// A command containing a path separator is treated as a filesystem path
+/// (absolute, or relative to the current directory); a bare name is looked up in
+/// each `PATH` entry. Returns [`None`] when nothing executable matches.
+fn resolve_command_path(command: &str) -> Option<PathBuf> {
+    let candidate = Path::new(command);
+    if candidate.components().count() > 1 {
+        return is_executable(candidate).then(|| candidate.to_path_buf());
     }
-}
-
-fn doctor_claude_config(path: &str) -> Option<bool> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return None;
-    };
-    Some(match parse_claude_dunst_config(&text) {
-        Ok(Some((command, args))) => doctor_mcp_command(path, &command, &args),
-        Ok(None) => {
-            println!("{path}: dunst server missing");
-            false
-        }
-        Err(err) => {
-            println!("{path}: invalid ({err})");
-            false
-        }
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths).find_map(|dir| {
+        let candidate = dir.join(command);
+        is_executable(&candidate).then_some(candidate)
     })
-}
-
-fn doctor_codex_config(path: &str) -> Option<bool> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return None;
-    };
-    Some(match parse_codex_dunst_config(&text) {
-        Ok(Some((command, args))) => doctor_mcp_command(path, &command, &args),
-        Ok(None) => {
-            println!("{path}: dunst server missing");
-            false
-        }
-        Err(err) => {
-            println!("{path}: invalid ({err})");
-            false
-        }
-    })
-}
-
-fn doctor_mcp_command(path: &str, command: &str, args: &[String]) -> bool {
-    if mcp_command_starts_server(command, args) {
-        println!("{path}: dunst command ok ({command} {:?})", args);
-        true
-    } else {
-        println!(
-            "{path}: warning: dunst command may start the demo instead of MCP serve ({command} {:?})",
-            args
-        );
-        false
-    }
 }
 
 fn mcp_command_starts_server(command: &str, args: &[String]) -> bool {
@@ -545,25 +724,49 @@ fn json_string_array(value: &serde_json::Value) -> Result<Vec<String>, String> {
         .collect()
 }
 
+/// Chooses the MCP launch command written into a client config.
+///
+/// The project ships `scripts/mcp-dunst.sh` as the committed stdio entry point,
+/// so inside a checkout (or with `--dev-wrapper`) the wrapper is written to match
+/// that convention; elsewhere the installed `dunst-mcp serve` is used. This keeps
+/// `setup --apply` from silently rewriting the project's own committed config to a
+/// binary that may be absent from `PATH`.
+fn desired_command(dev_wrapper: bool, wrapper_present: bool) -> (String, Vec<String>) {
+    if dev_wrapper || wrapper_present {
+        (DEV_WRAPPER.to_string(), Vec::new())
+    } else {
+        ("dunst-mcp".to_string(), vec!["serve".to_string()])
+    }
+}
+
+/// Everything `setup` computed for one run, rendered as text or JSON.
+struct SetupReport<'a> {
+    mode: SetupMode,
+    client: SetupClient,
+    path: &'a Path,
+    command: &'a str,
+    args: &'a [String],
+    existing: Option<&'a str>,
+    desired: &'a str,
+    merged: &'a str,
+    changed: bool,
+    wrote: bool,
+    backup: Option<&'a Path>,
+}
+
 fn run_setup(args: SetupArgs) -> i32 {
     let mode = setup_mode(&args);
-    let command = if args.dev_wrapper {
-        "scripts/mcp-dunst.sh"
-    } else {
-        "dunst-mcp"
-    };
-    let command_args: Vec<String> = if args.dev_wrapper {
-        Vec::new()
-    } else {
-        vec!["serve".into()]
-    };
+    // Match the committed project convention (the wrapper) when operating inside a
+    // checkout, falling back to the installed binary elsewhere.
+    let wrapper_present = Path::new(DEV_WRAPPER).exists();
+    let (command, command_args) = desired_command(args.dev_wrapper, wrapper_present);
     let path = args
         .config
         .clone()
         .unwrap_or_else(|| default_setup_path(args.client));
-    let desired = render_setup_config(args.client, command, &command_args);
+    let desired = render_setup_config(args.client, &command, &command_args);
     let existing = std::fs::read_to_string(&path).ok();
-    let merged = match merge_setup_config(args.client, existing.as_deref(), command, &command_args)
+    let merged = match merge_setup_config(args.client, existing.as_deref(), &command, &command_args)
     {
         Ok(merged) => merged,
         Err(err) => {
@@ -573,71 +776,130 @@ fn run_setup(args: SetupArgs) -> i32 {
     };
     let changed = existing.as_deref() != Some(merged.as_str());
 
+    // Migrate is a rewrite, never a first write: the entry must already exist
+    // (that is what `--apply` is for).
+    if mode == SetupMode::Migrate {
+        if existing.is_none() {
+            eprintln!(
+                "setup: cannot migrate missing config {}; run setup --apply to create it",
+                path.display()
+            );
+            return 1;
+        }
+        if !existing_config_has_dunst(args.client, existing.as_deref().unwrap_or("")) {
+            eprintln!(
+                "setup: cannot migrate {}; no existing dunst server entry was found",
+                path.display()
+            );
+            return 1;
+        }
+    }
+
+    let mut wrote = false;
+    let mut backup = None;
+    if matches!(mode, SetupMode::Apply | SetupMode::Migrate) {
+        match perform_write(&path, &merged, changed) {
+            Ok(created_backup) => {
+                wrote = true;
+                backup = created_backup;
+            }
+            Err(err) => {
+                eprintln!("setup: {err}");
+                return 1;
+            }
+        }
+    }
+
+    let report = SetupReport {
+        mode,
+        client: args.client,
+        path: &path,
+        command: &command,
+        args: &command_args,
+        existing: existing.as_deref(),
+        desired: &desired,
+        merged: &merged,
+        changed,
+        wrote,
+        backup: backup.as_deref(),
+    };
+    if args.json {
+        print_setup_json(&report);
+    } else {
+        print_setup_text(&report);
+    }
+    0
+}
+
+fn print_setup_text(report: &SetupReport) {
     println!("dunst-mcp setup");
-    println!("mode: {}", mode.as_str());
-    println!("client: {}", args.client.as_str());
-    println!("path: {}", path.display());
-    println!("command: {command} {:?}", command_args);
+    println!("mode: {}", report.mode.as_str());
+    println!("client: {}", report.client.as_str());
+    println!("path: {}", report.path.display());
+    println!("command: {} {:?}", report.command, report.args);
     println!(
         "status: {}",
-        if changed {
+        if report.changed {
             "changes pending"
         } else {
             "already up to date"
         }
     );
 
-    match mode {
+    match report.mode {
         SetupMode::DryRun => {
             println!("\n# Desired config");
-            print!("{desired}");
-            if !desired.ends_with('\n') {
-                println!();
-            }
+            print_block(report.desired);
             println!("\n# Merged result");
-            print!("{merged}");
-            if !merged.ends_with('\n') {
-                println!();
-            }
-            0
+            print_block(report.merged);
         }
         SetupMode::Edit => {
             println!("\n# Current config");
-            match existing.as_deref() {
-                Some(text) => print!("{text}"),
+            match report.existing {
+                Some(text) => print_block(text),
                 None => println!("(missing)"),
             }
-            if existing
-                .as_deref()
-                .is_some_and(|text| !text.ends_with('\n'))
-            {
-                println!();
-            }
             println!("\n# Merged result");
-            print!("{merged}");
-            if !merged.ends_with('\n') {
-                println!();
-            }
-            0
+            print_block(report.merged);
         }
-        SetupMode::Apply => write_setup_config(&path, &merged),
-        SetupMode::Migrate => {
-            if existing.is_none() {
-                eprintln!(
-                    "setup: cannot migrate missing config {}; run setup --apply to create it",
-                    path.display()
-                );
-                return 1;
+        SetupMode::Apply | SetupMode::Migrate => {
+            if report.wrote {
+                println!("written: {}", report.path.display());
             }
-            if !existing_config_has_dunst(args.client, existing.as_deref().unwrap_or("")) {
-                eprintln!(
-                    "setup: cannot migrate {}; no existing dunst server entry was found",
-                    path.display()
-                );
-                return 1;
+            if let Some(backup) = report.backup {
+                println!("backup: {}", backup.display());
             }
-            write_setup_config(&path, &merged)
+            // Setup writes config but does not validate it; point the operator at
+            // doctor so a fresh registration is immediately checkable.
+            println!("next: run `dunst-mcp doctor` to validate the environment");
         }
+    }
+}
+
+fn print_setup_json(report: &SetupReport) {
+    let out = json!({
+        "tool": "setup",
+        "mode": report.mode.as_str(),
+        "client": report.client.as_str(),
+        "path": report.path.display().to_string(),
+        "command": report.command,
+        "args": report.args,
+        "changed": report.changed,
+        "status": if report.changed { "changes pending" } else { "already up to date" },
+        "wrote": report.wrote,
+        "backup": report.backup.map(|backup| backup.display().to_string()),
+        "current": report.existing,
+        "desired": report.desired,
+        "merged": report.merged,
+    });
+    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+}
+
+/// Prints `text`, guaranteeing a trailing newline so the next heading is clean.
+fn print_block(text: &str) {
+    print!("{text}");
+    if !text.ends_with('\n') {
+        println!();
     }
 }
 
@@ -792,22 +1054,45 @@ fn existing_config_has_dunst(client: SetupClient, existing: &str) -> bool {
     }
 }
 
-fn write_setup_config(path: &Path, merged: &str) -> i32 {
+/// Writes `merged` to `path`, backing up an existing file first when it changes.
+///
+/// Creates the parent directory as needed. When the file already exists and the
+/// content differs, the previous contents are copied to `<path>.bak` before the
+/// overwrite so an `apply`/`migrate` never loses hand-edited config irrecoverably.
+///
+/// # Errors
+///
+/// Returns the failing filesystem operation (directory creation, backup copy, or
+/// write) rendered as a message string.
+fn perform_write(path: &Path, merged: &str, changed: bool) -> Result<Option<PathBuf>, String> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        if let Err(err) = std::fs::create_dir_all(parent) {
-            eprintln!("setup: create {} failed: {err}", parent.display());
-            return 1;
-        }
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("create {} failed: {err}", parent.display()))?;
     }
-    if let Err(err) = std::fs::write(path, merged) {
-        eprintln!("setup: write {} failed: {err}", path.display());
-        return 1;
-    }
-    println!("written: {}", path.display());
-    0
+    // Only snapshot when we are about to change existing content: a fresh write
+    // has nothing to preserve and an idempotent no-op should not churn a `.bak`.
+    let backup = if changed && path.exists() {
+        let backup = backup_path(path);
+        std::fs::copy(path, &backup)
+            .map_err(|err| format!("backup {} failed: {err}", backup.display()))?;
+        Some(backup)
+    } else {
+        None
+    };
+    std::fs::write(path, merged)
+        .map_err(|err| format!("write {} failed: {err}", path.display()))?;
+    Ok(backup)
+}
+
+/// Appends `.bak` to `path`, preserving the original extension (`config.toml` ->
+/// `config.toml.bak`, `.mcp.json` -> `.mcp.json.bak`).
+fn backup_path(path: &Path) -> PathBuf {
+    let mut raw = path.as_os_str().to_owned();
+    raw.push(".bak");
+    PathBuf::from(raw)
 }
 
 fn json_string_list(args: &[String]) -> String {
@@ -903,5 +1188,54 @@ mod tests {
         assert_eq!(command, "dunst-mcp");
         assert!(args.is_empty());
         assert!(!mcp_command_starts_server(&command, &args));
+    }
+
+    #[test]
+    fn desired_command_prefers_wrapper_inside_a_checkout() {
+        // Inside a checkout (wrapper present) or with --dev-wrapper: write the
+        // committed wrapper, matching the project's own .mcp.json convention.
+        assert_eq!(
+            desired_command(false, true),
+            ("scripts/mcp-dunst.sh".to_string(), Vec::new())
+        );
+        assert_eq!(
+            desired_command(true, false),
+            ("scripts/mcp-dunst.sh".to_string(), Vec::new())
+        );
+        // Installed context (no wrapper on disk, not forced): use the binary.
+        assert_eq!(
+            desired_command(false, false),
+            ("dunst-mcp".to_string(), vec!["serve".to_string()])
+        );
+    }
+
+    #[test]
+    fn backup_path_appends_bak_preserving_extension() {
+        assert_eq!(
+            backup_path(Path::new(".codex/config.toml")),
+            PathBuf::from(".codex/config.toml.bak")
+        );
+        assert_eq!(
+            backup_path(Path::new(".mcp.json")),
+            PathBuf::from(".mcp.json.bak")
+        );
+    }
+
+    #[test]
+    fn health_orders_worst_last() {
+        assert!(Health::Fail > Health::Warn);
+        assert!(Health::Warn > Health::Pass);
+        assert!(Health::Pass > Health::Info);
+        let statuses = [Health::Info, Health::Fail, Health::Pass, Health::Warn];
+        assert_eq!(statuses.into_iter().max(), Some(Health::Fail));
+    }
+
+    #[test]
+    fn resolve_command_path_handles_paths_and_bare_names() {
+        // A concrete executable path resolves to itself.
+        let exe = std::env::current_exe().unwrap();
+        assert!(resolve_command_path(exe.to_str().unwrap()).is_some());
+        // A bare name with no PATH match does not resolve.
+        assert!(resolve_command_path("dunst-definitely-not-installed-xyz").is_none());
     }
 }

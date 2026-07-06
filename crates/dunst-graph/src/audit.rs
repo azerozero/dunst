@@ -47,9 +47,35 @@ pub fn diff(before: &SceneGraph, after: &SceneGraph) -> GraphDiff {
         .map(|(_, node)| node)
         .collect();
 
-    // Pass 2 (G3): reconcile removed<->added that are the same element renamed.
+    // Pass 2 (G3): reconcile removed<->added that are the same element renamed,
+    // then emit the genuinely-new nodes.
+    reconcile_renames(&removed, &added, &mut changes);
+
+    // Root ordering / membership (G2).
+    if before.roots != after.roots {
+        changes.push(changed(
+            "<graph>",
+            "roots",
+            before.roots.join(","),
+            after.roots.join(","),
+        ));
+    }
+
+    GraphDiff { changes }
+}
+
+/// Pass 2 (G3): rewrite `Removed`/`Added` pairs that are the same element renamed
+/// into a single `Changed { field: "label" }`, then append the genuinely-new
+/// nodes as `Added`.
+///
+/// A `removed` node reconciles with the first not-yet-consumed `added` node that
+/// shares `(parent, role, ax_identifier)` and a close bbox ([`reconcilable`]);
+/// the pair collapses to one `Changed` carrying the **new** id. Unmatched removed
+/// nodes stay `Removed`; unconsumed added nodes become `Added`. Emission order is
+/// preserved: reconciled/removed first (in `removed` order), then leftover added.
+fn reconcile_renames(removed: &[&SceneNode], added: &[&SceneNode], changes: &mut Vec<NodeChange>) {
     let mut added_consumed = vec![false; added.len()];
-    for &b in &removed {
+    for &b in removed {
         let mut matched = None;
         for (i, &a) in added.iter().enumerate() {
             if !added_consumed[i] && reconcilable(b, a) {
@@ -91,18 +117,6 @@ pub fn diff(before: &SceneGraph, after: &SceneGraph) -> GraphDiff {
             });
         }
     }
-
-    // Root ordering / membership (G2).
-    if before.roots != after.roots {
-        changes.push(changed(
-            "<graph>",
-            "roots",
-            before.roots.join(","),
-            after.roots.join(","),
-        ));
-    }
-
-    GraphDiff { changes }
 }
 
 /// Emit one [`NodeChange::Changed`] per differing field, including the structural
@@ -155,16 +169,20 @@ fn reconcilable(b: &SceneNode, a: &SceneNode) -> bool {
         && bbox_close(b.bbox, a.bbox)
 }
 
+/// Maximum per-edge delta (in points) for two bboxes to count as the same during
+/// reconciliation: absorbs sub-pixel layout jitter without matching genuine moves.
+const BBOX_EPSILON_PT: f64 = 1.0;
+
 /// Bbox proximity for reconciliation: both absent matches, both present must be
-/// within 1pt on every edge, mixed presence does not match.
+/// within [`BBOX_EPSILON_PT`] on every edge, mixed presence does not match.
 fn bbox_close(a: Option<Bbox>, b: Option<Bbox>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(x), Some(y)) => {
-            (x.x - y.x).abs() < 1.0
-                && (x.y - y.y).abs() < 1.0
-                && (x.w - y.w).abs() < 1.0
-                && (x.h - y.h).abs() < 1.0
+            (x.x - y.x).abs() < BBOX_EPSILON_PT
+                && (x.y - y.y).abs() < BBOX_EPSILON_PT
+                && (x.w - y.w).abs() < BBOX_EPSILON_PT
+                && (x.h - y.h).abs() < BBOX_EPSILON_PT
         }
         _ => false,
     }

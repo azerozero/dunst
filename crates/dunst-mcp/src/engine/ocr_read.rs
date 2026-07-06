@@ -597,8 +597,11 @@ impl Engine {
         // Read the chart by GEOMETRY — no hover, occlusion-proof: derive the plot
         // from the OCR'd axis labels, calibrate the Y axis from its price labels,
         // then map the curve's pixel height at each sampled x to a value. A chart
-        // is "present" only if a curve actually covers most columns.
-        let hits = self.read_text(None, false).unwrap_or_default();
+        // is "present" only if a curve actually covers most columns. Reuse the
+        // capture above for the axis OCR instead of grabbing the screen again.
+        let hits = self
+            .ocr_hits_from_captured(&captured, None, false)
+            .unwrap_or_default();
         let Some(region) = region_from_axis(&hits) else {
             return Ok(ScanResult {
                 present: false,
@@ -658,20 +661,6 @@ impl Engine {
         Err(DunstError::Execution(
             "scan_chart requires a macOS backend".into(),
         ))
-    }
-
-    /// Make the target window AppKit-active **without raising it** (SkyLight
-    /// focus-without-raise) so a backgrounded web canvas paints. Best-effort.
-    #[cfg(target_os = "macos")]
-    pub fn focus_window(&self) -> bool {
-        dunst_platform::focus_without_raise(self.target.window_id)
-    }
-
-    /// Unstick the OS cursor via a menu-bar focus cycle (macOS stuck-cursor
-    /// workaround). Returns true if the cycle ran.
-    #[cfg(target_os = "macos")]
-    pub fn unstick_cursor(&self) -> bool {
-        dunst_platform::unstick_cursor().is_ok()
     }
 }
 

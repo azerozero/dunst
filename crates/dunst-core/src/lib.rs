@@ -25,6 +25,10 @@ pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
+        // NOTE: A clock set before the Unix epoch yields `0` here, which would
+        // inflate every downstream `freshness_ms`. That only happens with a
+        // grossly-misconfigured system clock; a saturating `0` is a safe, inert
+        // floor rather than a panic.
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }

@@ -146,10 +146,9 @@ fn text_response(
 ) -> Value {
     match outcome {
         Ok(value) => {
-            let text = if value.is_string() {
-                value.as_str().unwrap().to_owned()
-            } else {
-                serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
+            let text = match &value {
+                Value::String(s) => s.clone(),
+                _ => serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
             };
             result_obj(
                 id,

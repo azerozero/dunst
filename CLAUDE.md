@@ -28,7 +28,7 @@ The engine (`crates/dunst-mcp/src/engine/`) is split by concern: `action*` (disp
 ## Local Setup
 
 ```bash
-# Toolchain: stable Rust (see rust-toolchain if pinned).
+# Toolchain: stable Rust; the MSRV is the workspace rust-version (1.85 in Cargo.toml).
 cargo build
 
 # Install the git hooks (prek). Required before your first commit.
@@ -71,6 +71,9 @@ feat/* or fix/* ──► PR ──► main ──► release-plz PR ──► t
 | `docs-lint.yml`, `shellcheck.yml` | push / PR | markdown link + shape checks, shell lint |
 | `audit-cron.yml`, `nightly.yml` | schedule | advisory audit + nightly build |
 | `release-plz.yml` | push to `main` | Release PR (version bump + changelog), then `v*` tag |
+| `auto-merge-pr.yml`, `auto-merge-release.yml` | PR opened / updated | enable auto-merge for eligible PRs and release-plz PRs |
+| `auto-update-branch.yml` | push to `main` | keep open PR branches current with `main` |
+| `cleanup-branches.yml` | PR closed / weekly | delete merged and stale branches |
 
 ## Documentation Standards
 
@@ -95,7 +98,7 @@ Enforced by the `cargo-doc-coverage` pre-push hook: **every public item must hav
 
 ### External Documentation
 
-`docs/` is flat; `docs/README.md` is the routing map that separates **Current** references from **Historical** work-package / audit notes. Add a new doc under `docs/` and link it from `docs/README.md`; prefer updating an existing reference over adding a near-duplicate. Behavioural invariants that a test locks live in `docs/CONTRACTS.md`.
+`docs/` is mostly flat, with a few subdirectories: `design/` (LLDs), `reviews/` (dated cycle reports), and `fixtures/` (device-free MCP/AX fixtures). `docs/README.md` is the routing map that separates **Current** references, **Design & plans**, and **Historical** work-package / audit notes. Add a new doc under `docs/` (or the matching subdirectory) and link it from `docs/README.md`; prefer updating an existing reference over adding a near-duplicate. Behavioural invariants that a test locks live in `docs/CONTRACTS.md`.
 
 ### What Goes Where
 

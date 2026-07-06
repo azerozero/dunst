@@ -19,9 +19,11 @@ impl Engine {
         region_screen_pt: Option<Bbox>,
         accurate: bool,
     ) -> dunst_core::Result<Vec<TextHit>> {
-        Ok(self
-            .read_text_detailed(region_screen_pt, accurate, false)?
-            .hits)
+        // `read_text_detailed(.., content_only=false).hits` is exactly the raw OCR
+        // hits — no content-region filter is applied when content_only is false —
+        // so go straight to the raw pass instead of building, then discarding, the
+        // full diagnostic result (visibility, warnings, and its all_hits clone).
+        self.read_text_raw(region_screen_pt, accurate)
     }
 
     /// Detailed OCR path used by the safer MCP tools. It keeps the old
@@ -89,7 +91,6 @@ impl Engine {
         region_screen_pt: Option<Bbox>,
         accurate: bool,
     ) -> dunst_core::Result<Vec<TextHit>> {
-        use dunst_vision::ocr::RecognitionMode;
         if let Some(region) = region_screen_pt {
             if region.w <= 0.0 || region.h <= 0.0 {
                 return Err(DunstError::Perception(
@@ -113,12 +114,49 @@ impl Engine {
         // raw screen-rect capture here can OCR whichever window happens to cover
         // that rectangle, which is exactly the wrong failure mode when several
         // Firefox windows are open.
-        let captured = dunst_vision::capture::capture_window_composited(self.target.window_id)
-            .map_err(|err| {
-                DunstError::Perception(format!(
-                    "OCR requires a live macOS window (capture failed: {err})"
-                ))
-            })?;
+        let captured = self.capture_target_composited("OCR")?;
+        self.ocr_hits_from_captured(&captured, region_screen_pt, accurate)
+    }
+
+    /// Composited capture of the target window, shared by the OCR, shape, and
+    /// zone read paths so a single tool call grabs the screen once. `what` names
+    /// the caller in the error message if the grab fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DunstError::Perception`] if the composited window grab fails —
+    /// there is no live macOS window to read.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn capture_target_composited(
+        &self,
+        what: &str,
+    ) -> dunst_core::Result<dunst_vision::capture::CapturedWindow> {
+        dunst_vision::capture::capture_window_composited(self.target.window_id).map_err(|err| {
+            DunstError::Perception(format!(
+                "{what} requires a live macOS window (capture failed: {err})"
+            ))
+        })
+    }
+
+    /// OCRs an **already-captured** target frame and maps the boxes to
+    /// screen-point [`TextHit`]s, applying the same AX-terminal fallback and
+    /// OCR-cache write as [`read_text_raw`](Self::read_text_raw). Lets a caller
+    /// that already grabbed the window (vision zones or chart scan) reuse that one
+    /// capture instead of grabbing the screen a second time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DunstError::Perception`] if Vision OCR fails and no AX
+    /// terminal-text fallback is available.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn ocr_hits_from_captured(
+        &self,
+        captured: &dunst_vision::capture::CapturedWindow,
+        region_screen_pt: Option<Bbox>,
+        accurate: bool,
+    ) -> dunst_core::Result<Vec<TextHit>> {
+        use dunst_vision::ocr::RecognitionMode;
+        let key = ocr_cache_key(self.target.window_id, region_screen_pt, accurate);
         let mode = if accurate {
             RecognitionMode::Accurate
         } else {
@@ -220,12 +258,7 @@ impl Engine {
     pub fn read_shapes(&self) -> dunst_core::Result<Vec<ShapeHit>> {
         // Composited capture (see read_text): CGWindowListCreateImage is blank for
         // GPU/WebGL-rendered windows, so grab what is actually on screen instead.
-        let captured = dunst_vision::capture::capture_window_composited(self.target.window_id)
-            .map_err(|err| {
-                DunstError::Perception(format!(
-                    "shape detection requires a live macOS window (capture failed: {err})"
-                ))
-            })?;
+        let captured = self.capture_target_composited("shape detection")?;
         Ok(
             dunst_vision::shapes::detect_shapes(&captured.image, &captured.geometry)
                 .into_iter()
@@ -265,16 +298,25 @@ impl Engine {
     /// pass fails.
     #[cfg(target_os = "macos")]
     pub fn read_zones(&self) -> dunst_core::Result<Value> {
+        use dunst_vision::shapes::ShapeKind;
         use dunst_vision::zones::{build_zone_tree, ZoneItem, ZoneKind};
 
         let mut items: Vec<ZoneItem> = Vec::new();
 
+        // ONE composited capture feeds BOTH shape detection and OCR. Previously
+        // read_shapes and read_text_raw each grabbed the screen, so a single
+        // read_zones ran two `screencapture` subprocesses on the same window.
+        let captured = self.capture_target_composited("vision zones")?;
+
         // Detected primitives: rectangles are candidate containers, the rest
         // (bars/circles/lines) stay leaves.
-        for (idx, shape) in self.read_shapes()?.into_iter().enumerate() {
+        for (idx, shape) in dunst_vision::shapes::detect_shapes(&captured.image, &captured.geometry)
+            .into_iter()
+            .enumerate()
+        {
             // `Rect` = hollow bordered box, `Panel` = filled card/section — both
             // are containers content nests inside; the rest stay leaves.
-            let kind = if shape.kind == "Rect" || shape.kind == "Panel" {
+            let kind = if matches!(shape.kind, ShapeKind::Rect | ShapeKind::Panel) {
                 ZoneKind::Region
             } else {
                 ZoneKind::Shape
@@ -288,8 +330,12 @@ impl Engine {
             });
         }
 
-        // OCR text runs across the whole window.
-        for (idx, hit) in self.read_text_raw(None, true)?.into_iter().enumerate() {
+        // OCR text runs across the whole window, reusing the capture above.
+        for (idx, hit) in self
+            .ocr_hits_from_captured(&captured, None, true)?
+            .into_iter()
+            .enumerate()
+        {
             items.push(ZoneItem {
                 id: format!("text_{idx}"),
                 bbox: hit.bbox,

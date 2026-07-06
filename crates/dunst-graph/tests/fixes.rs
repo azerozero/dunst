@@ -4,42 +4,20 @@
 
 use std::collections::BTreeSet;
 
-use dunst_core::mock::MockPerceptor;
-use dunst_core::{
-    NodeChange, Perceptor, RawAxNode, RiskLevel, Role, SceneGraph, SemanticAction, Target,
-    WindowRef,
-};
+use dunst_core::{NodeChange, RawAxNode, RiskLevel, Role, SceneGraph, SemanticAction, WindowRef};
 use dunst_graph::scene::synth_id;
 use dunst_graph::{build_scene_graph, derive_affordances, diff, RiskEngine};
 
-/// Minimal `RawAxNode` builder for synthetic trees.
+mod common;
+
+/// Minimal `RawAxNode` builder for synthetic trees (delegates to the shared
+/// [`common::raw_node`] with no `ax_identifier`).
 fn raw(role: &str, label: Option<&str>, children: Vec<RawAxNode>) -> RawAxNode {
-    RawAxNode {
-        ax_role: role.to_string(),
-        label: label.map(str::to_string),
-        help: None,
-        value: None,
-        ax_identifier: None,
-        cmd_char: None,
-        cmd_modifiers: None,
-        cmd_virtual_key: None,
-        ax_actions: Vec::new(),
-        frame: None,
-        enabled: true,
-        focused: false,
-        children,
-    }
+    common::raw_node(role, label, None, children)
 }
 
 fn fixture_graph() -> SceneGraph {
-    let perceptor = MockPerceptor::notes_fixture().expect("fixture loads");
-    let target = Target {
-        pid: 1363,
-        window_id: 105,
-    };
-    let roots = perceptor.capture(&target).expect("capture");
-    let window = perceptor.window_ref(&target).expect("window_ref");
-    build_scene_graph(roots, window, 1_000)
+    common::notes_graph(1_000)
 }
 
 fn terminal_window_ref() -> WindowRef {

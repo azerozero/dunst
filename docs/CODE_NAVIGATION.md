@@ -60,7 +60,7 @@ sequenceDiagram
     Serve->>Catalog: tools_list()
     Catalog-->>Serve: grouped tool descriptors
     Client->>Serve: tools/call(name, args)
-    Serve->>Dispatch: dispatch_tool_call(name, args)
+    Serve->>Dispatch: handle_tool_call(name, args)
     Dispatch->>Engine: typed command method
     Engine->>Backend: AX, event, OCR, or app operation
     Backend-->>Engine: graph, action, or read result
@@ -106,14 +106,13 @@ audit writes. They are behavioral semantics, not incidental overhead.
 ```text
 dunst-mcp/
 ├── crates/                 # Rust workspace crates
-│   ├── dunst-core/         # Shared contracts and mocks
+│   ├── dunst-core/         # Shared contracts, mocks, and AX fixtures (fixtures/notes.json)
 │   ├── dunst-graph/        # Pure scene, affordance, risk, diff logic
 │   ├── dunst-platform/     # macOS Accessibility and event backend
-│   ├── dunst-vision/       # Capture, OCR, shapes, coordinate helpers
+│   ├── dunst-vision/       # Capture, OCR, shapes, zones, coordinate helpers
 │   └── dunst-mcp/          # MCP server, engine facade, CLI
-├── docs/                   # Architecture, contracts, reviews, plans
+├── docs/                   # Architecture, contracts, reviews, plans (+ fixtures/, design/)
 ├── scripts/                # MCP wrapper and smoke scripts
-├── fixtures/               # Device-free AX fixture data
 └── .github/                # CI workflows
 ```
 

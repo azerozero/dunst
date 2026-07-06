@@ -12,13 +12,14 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   a per-action `approve`, a batch approval, or a bounded raw pre-authorization.
   — `engine::tests::high_risk_click_is_gated_then_approved`,
   `find_element_and_gating_still_reach_latent_nodes`,
-  `engine::tests::raw_input_gate_requires_pending_synthetic_approval`.
+  `engine::tests::raw_input_gate_accepts_valid_synthetic_raw_approval`.
 - **Approvals are validated, not blindly stored.** `approve(id)` errors unless `id`
   is genuinely gated: either it exists in the scene and its own risk requires
   approval, or it is the subject of a pending contextual/raw gate. A phantom id or
   a plain low-risk id is rejected.
   — `engine::tests::approve_rejects_unknown_and_non_gated_ids`,
-  `engine::tests::raw_input_gate_requires_pending_synthetic_approval`.
+  `engine::tests::synthetic_raw_preapproval_rejects_off_target_points`,
+  `engine::tests::synthetic_raw_preapproval_rejects_unsupported_hotkeys`.
 - **Element/contextual approvals are one-shot.** A grant authorises exactly one
   successful element-bound action; a second high-risk action on the same id
   re-gates.
@@ -49,12 +50,17 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   and text-entry targets (`type_keys` and `paste_text`) stay one-shot, repeated
   `press_key` approvals cover a short same-key burst, same-direction scroll
   approvals tolerate page-count changes, and hotkeys are limited to a short retry
-  window. Raw grants survive ordinary `refresh()` calls but are cleared by
-  `attach`, expiry, or grant exhaustion.
-  — `engine::tests::raw_input_gate_requires_pending_synthetic_approval`,
+  window. A single operator-only `keyboard@*` wildcard grant covers a short,
+  event-limited burst of *any* keyboard raw action (`press_key`, `type_keys`,
+  `paste_text`, `set_field_text`, hotkey, keyboard scroll) on the attached window,
+  but never screen/pointer raw input. Raw grants survive ordinary `refresh()`
+  calls but are cleared by `attach`, expiry, or grant exhaustion.
+  — `engine::tests::raw_input_gate_accepts_valid_synthetic_raw_approval`,
   `engine::tests::raw_paste_text_approval_is_one_shot`,
   `engine::tests::raw_key_approval_allows_short_repeated_same_key_burst`,
   `engine::tests::raw_scroll_approval_covers_same_direction_count_change`,
+  `engine::tests::keyboard_wildcard_approval_covers_short_keyboard_batch_only`,
+  `engine::tests::keyboard_wildcard_approval_is_event_limited`,
   `engine::tests::attach_clears_raw_approval_grants`.
 - **Raw pre-authorization is bounded on three axes.** `preauthorize` installs an
   operator grant that lets subsequent gated *raw* actions run without a per-action
@@ -113,8 +119,7 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   — `serve::tests::mutating_tool_adds_window_lease_and_fencing_meta`,
   `serve::tests::active_window_lease_blocks_other_session`,
   `serve::tests::stale_fencing_token_is_rejected_for_same_session`,
-  `serve::tests::mutating_tool_rejects_stale_expected_epoch`,
-  `serve::tests::tools_list_exposes_read_text_with_object_schema`.
+  `serve::tests::mutating_tool_rejects_stale_expected_epoch`.
 - **The two mutation policies stay in lockstep.** A tool that acquires the
   mutation lock + window lease for some arguments
   (`tool_requires_mutation_coordination`) also advertises the
@@ -131,8 +136,7 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   live-GUI features are present.
   — `dunst_platform::capabilities::tests::current_capabilities_match_current_platform`,
   `dunst_platform::capabilities::tests::macos_groups_related_capabilities_by_call_type`,
-  `serve::tests::platform_capabilities_tool_reports_grouped_backend_surface`,
-  `serve::tests::tools_list_exposes_read_text_with_object_schema`.
+  `serve::tests::platform_capabilities_tool_reports_grouped_backend_surface`.
 - **Native OS side effects stay behind platform adapters.** Clipboard paste,
   native file chooser driving, app launch/close, and real-cursor pointer paths
   are exposed through `dunst-platform` facades. MCP code gates, audits, and
@@ -146,7 +150,11 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   positions context menus from the hardware cursor; borrowed-cursor reads move
   within a single borrow without re-running the user-active guard on their own
   synthetic moves; hover-reveal does not raise the target window.
-  — `serve::tests::tools_list_exposes_read_text_with_object_schema`.
+  — (lock to be created) no test currently pins these behaviours: `right_click_at`'s
+  real-cursor context-click, the intra-borrow skip of the user-active guard, and
+  hover-reveal not raising the window are all unverified. `dunst-platform`
+  `pointer_events` has no test module, and the `tools/list` schema test that was
+  cited here proves none of them.
 
 ## Scene-graph projection (WP-J)
 

@@ -73,9 +73,7 @@ pub(super) fn dispatch(
                     args.get("settle_ms").and_then(Value::as_u64).unwrap_or(250),
                     arg(args, "reasoning").as_deref(),
                 )
-                .map(|entry| {
-                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
-                })
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             _ => Err(
                 "reveal_hover_click requires numeric 'x', numeric 'y', and string 'query'".into(),
@@ -93,27 +91,21 @@ pub(super) fn dispatch(
         "right_click_at" => match point(args) {
             Some((x, y)) => engine
                 .right_click_at(x, y)
-                .map(|entry| {
-                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
-                })
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("right_click_at requires numeric 'x' and 'y'".into()),
         },
         "double_click_at" => match point(args) {
             Some((x, y)) => engine
                 .double_click_at(x, y)
-                .map(|entry| {
-                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
-                })
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("double_click_at requires numeric 'x' and 'y'".into()),
         },
         "open_menu" => match arg(args, "name") {
             Some(name) => engine
                 .open_menu(&name)
-                .map(|entry| {
-                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
-                })
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("open_menu requires 'name'".into()),
         },
@@ -123,36 +115,28 @@ pub(super) fn dispatch(
                     &key,
                     args.get("repeat").and_then(Value::as_u64).unwrap_or(1) as usize,
                 )
-                .map(|entry| {
-                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
-                })
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'key'".into()),
         },
         "type_keys" => match arg(args, "text") {
             Some(text) => engine
                 .type_keys(&text)
-                .map(|entry| {
-                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
-                })
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'text'".into()),
         },
         "set_field_text" => match arg(args, "text") {
             Some(text) => engine
                 .set_field_text(&text)
-                .map(|entry| {
-                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
-                })
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'text'".into()),
         },
         "paste_text" => match arg(args, "text") {
             Some(text) => engine
                 .paste_text(&text, arg_bool(args, "restore_clipboard").unwrap_or(true))
-                .map(|entry| {
-                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
-                })
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'text'".into()),
         },
@@ -162,7 +146,7 @@ pub(super) fn dispatch(
                 args.get("pages").and_then(Value::as_u64).unwrap_or(3) as usize,
                 arg(args, "id").as_deref(),
             )
-            .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
+            .map(|entry| audit_entry_with_args(entry, args))
             .map_err(|e| e.to_string()),
         "scroll_at" => match point(args) {
             Some((x, y)) => engine
@@ -173,22 +157,18 @@ pub(super) fn dispatch(
                     args.get("pages").and_then(Value::as_u64).unwrap_or(3) as usize,
                     arg_bool(args, "borrow_cursor").unwrap_or(false),
                 )
-                .map(|entry| {
-                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
-                })
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("scroll_at requires numeric 'x' and 'y'".into()),
         },
         "zoom" => engine
             .zoom(arg(args, "direction").as_deref().unwrap_or("in"))
-            .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
+            .map(|entry| audit_entry_with_args(entry, args))
             .map_err(|e| e.to_string()),
         "hotkey" => match arg(args, "combo") {
             Some(combo) => engine
                 .hotkey(&combo)
-                .map(|entry| {
-                    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
-                })
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'combo'".into()),
         },

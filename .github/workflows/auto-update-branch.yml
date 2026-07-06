@@ -11,6 +11,7 @@ permissions:
 jobs:
   update-prs:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Update BEHIND PRs with auto-merge
         run: |

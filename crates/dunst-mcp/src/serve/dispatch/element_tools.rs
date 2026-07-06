@@ -9,14 +9,14 @@ pub(super) fn dispatch(
         "click_element" => match arg(args, "id") {
             Some(id) => engine
                 .click_element(&id, arg(args, "reasoning").as_deref())
-                .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'id'".into()),
         },
         "raise_element" => match arg(args, "id") {
             Some(id) => engine
                 .raise_element(&id, arg(args, "reasoning").as_deref())
-                .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'id'".into()),
         },
@@ -34,21 +34,21 @@ pub(super) fn dispatch(
         "type_into" => match (arg(args, "id"), arg(args, "text")) {
             (Some(id), Some(text)) => engine
                 .type_into(&id, &text, arg(args, "reasoning").as_deref())
-                .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             _ => Err("missing 'id' or 'text'".into()),
         },
         "hover_probe" => match arg(args, "id") {
             Some(id) => engine
                 .hover_probe(&id)
-                .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             None => Err("missing 'id'".into()),
         },
         "drag_element" => match (arg(args, "source_id"), arg(args, "target_id")) {
             (Some(source_id), Some(target_id)) => engine
                 .drag_element(&source_id, &target_id, arg(args, "reasoning").as_deref())
-                .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
+                .map(|entry| audit_entry_with_args(entry, args))
                 .map_err(|e| e.to_string()),
             _ => Err("missing 'source_id' or 'target_id'".into()),
         },
@@ -75,7 +75,7 @@ pub(super) fn dispatch(
                 };
                 engine
                     .select_file(&path, trigger, arg(args, "reasoning").as_deref())
-                    .map(|entry| audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false)))
+                    .map(|entry| audit_entry_with_args(entry, args))
                     .map_err(|e| e.to_string())
             }
             None => Err("missing 'path'".into()),

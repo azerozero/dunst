@@ -42,7 +42,7 @@ Observed command roles:
 | `demo` | Device-free fixture run | Good first confidence check; does not need a live app. |
 | `serve` | MCP stdio server | Main runtime path for Codex/Claude-style clients. |
 | `doctor` | Local environment diagnostics | Good preflight; exits non-zero when macOS Accessibility is missing. |
-| `setup` | Print client config snippets | Dry-run only; it does not write user config files. |
+| `setup` | Manage client MCP config | `--dry-run`/`--edit` only print; `--apply` writes the config file and `--migrate` rewrites an existing dunst entry. |
 
 For development, the practical startup path is:
 

@@ -94,13 +94,17 @@ pub fn build_zone_tree(items: Vec<ZoneItem>) -> Vec<Zone> {
     if n == 0 {
         return Vec::new();
     }
+    // Each item's area is invariant but read O(n^2) times by the parent search
+    // below (sort key, containment test, tighter-parent comparison). Compute it
+    // once up front instead of recomputing it on every comparison.
+    let areas: Vec<f64> = items.iter().map(|item| area(item.bbox)).collect();
     // Process largest-first so every candidate parent is seen before its
     // children: any box that contains item `i` is strictly larger than it, so
     // it has already been placed by the time `i` is processed.
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| {
-        area(items[b].bbox)
-            .partial_cmp(&area(items[a].bbox))
+        areas[b]
+            .partial_cmp(&areas[a])
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut parent_of: Vec<Option<usize>> = vec![None; n];
@@ -108,12 +112,12 @@ pub fn build_zone_tree(items: Vec<ZoneItem>) -> Vec<Zone> {
     for &i in &order {
         let mut best: Option<usize> = None;
         for &p in &seen {
-            if !contains(items[p].bbox, items[i].bbox) {
+            if !contains(items[p].bbox, areas[p], items[i].bbox, areas[i]) {
                 continue;
             }
             // Keep the smaller-area container: it is the tighter parent.
             match best {
-                Some(b) if area(items[b].bbox) <= area(items[p].bbox) => {}
+                Some(b) if areas[b] <= areas[p] => {}
                 _ => best = Some(p),
             }
         }
@@ -171,9 +175,10 @@ fn area(b: Bbox) -> f64 {
 
 /// Whether `parent` geometrically contains `child`: `child` sits inside
 /// `parent` within [`CONTAINMENT_SLACK`], and `parent` is strictly larger — so
-/// equal boxes never nest into each other.
-fn contains(parent: Bbox, child: Bbox) -> bool {
-    if area(parent) <= area(child) {
+/// equal boxes never nest into each other. Areas are passed in precomputed (they
+/// are invariant across the O(n^2) parent search in [`build_zone_tree`]).
+fn contains(parent: Bbox, parent_area: f64, child: Bbox, child_area: f64) -> bool {
+    if parent_area <= child_area {
         return false;
     }
     parent.x <= child.x + CONTAINMENT_SLACK

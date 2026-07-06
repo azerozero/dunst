@@ -6,7 +6,9 @@
 > component (DB schema, caching, migration) are omitted by design, not left as
 > "N/A".
 
-**Status:** proposed — implementable directly from this document.
+**Status:** implemented (PR #4). This document is the as-built design; the
+`enumerate_choices` / `apply_selections` tools, engine modules, and CONTRACTS
+invariants below all ship in `dunst-mcp`.
 **Crate:** `dunst-mcp` (engine + serve), with one read-only reuse of
 `dunst-platform` actuators already wrapped by the engine.
 
@@ -70,12 +72,12 @@ graph TB
         Cat[tools.rs<br/>JSON-Schema catalog]
         Disp[dispatch.rs<br/>epoch check + lock/lease]
         RD[dispatch/read_tools.rs<br/>enumerate_choices arg parse]
-        BD[dispatch/batch_tools.rs<br/>NEW: apply_selections arg parse]
+        BD[dispatch/batch_tools.rs<br/>apply_selections arg parse]
     end
 
     subgraph engine["engine (semantics / gate / audit)"]
-        Enum[choices.rs NEW<br/>ChoiceModel builder]
-        Apply[selections.rs NEW<br/>batch executor + re-scan loop]
+        Enum[choices.rs<br/>ChoiceModel builder]
+        Apply[selections.rs<br/>batch executor + re-scan loop]
         Hit[read.rs<br/>hit_targets / ui_epoch / fingerprint]
         Gate[raw_input_gate.rs<br/>batch approval grant]
         Act[action.rs / element_actions.rs<br/>click_element / pick_option]
@@ -104,9 +106,9 @@ graph TB
 | `registry.rs` | Map the two new tool names to a route | — | `TOOL_REGISTRY` table |
 | `tools.rs` | Advertise JSON Schemas for the two tools | `tool()`/`schema()` helpers | `tools_list()` |
 | `dispatch.rs` | Pre-flight `expected_epoch` check + lock/lease for the mutating tool; survey-scroll coordination for the read tool | `CoordinationGuard`, `validate_expected_epoch` | `handle_tool_call` |
-| `dispatch/batch_tools.rs` (new) | Parse `apply_selections` args → call engine | `args` helpers | `dispatch(engine, name, args)` |
-| `engine/choices.rs` (new) | Build the `ChoiceModel` from `hit_targets` (classification + grouping) | `Engine::hit_targets` | `Engine::enumerate_choices(...)` |
-| `engine/selections.rs` (new) | Batch executor: gate once, epoch-guarded re-scan loop, consolidated verify | choices.rs, gate, actuators | `Engine::apply_selections(...)` |
+| `dispatch/batch_tools.rs` | Parse `apply_selections` args → call engine | `args` helpers | `dispatch(engine, name, args)` |
+| `engine/choices.rs` | Build the `ChoiceModel` from `hit_targets` (classification + grouping) | `Engine::hit_targets` | `Engine::enumerate_choices(...)` |
+| `engine/selections.rs` | Batch executor: gate once, epoch-guarded re-scan loop, consolidated verify | choices.rs, gate, actuators | `Engine::apply_selections(...)` |
 | `engine/raw_input_gate.rs` | Add a `batch@selections:*` synthetic approval target + grant | existing grant model | `approve_raw_input` / `consume_raw_approval` |
 
 **Dependency direction rule.** Same as today: `serve → engine → platform`. The new
@@ -195,6 +197,7 @@ classDiagram
         +groups: Vec~ChoiceGroup~
         +warnings: Vec~String~
         +scroll_plan: Vec~ScrollHint~
+        +recommended_next_steps: Vec~String~
     }
     class ChoiceGroup {
         +id: String
@@ -758,9 +761,10 @@ classification still runs on a mock scene graph).
 - `serve::tests::stale_expected_epoch_refuses_apply_selections` (mirror existing
   `mutating_tool_rejects_stale_expected_epoch`)
 - `serve::tests::tools_list_exposes_enumerate_choices_and_apply_selections`
-- Update `serve::tests::catalog::tools_list_exposes_read_text_with_object_schema`:
-  bump `assert_eq!(tools.len(), 70)` → `72`, and
-  `tool_registry_matches_advertised_catalog` accordingly.
+- `serve::tests::catalog` asserts the advertised catalog count
+  (`assert_eq!(tools.len(), 73)`, the 76 registered tools minus the 3
+  operator-gated `approve`/`preauthorize`/`revoke_preauthorization`) and
+  `tool_registry_matches_advertised_catalog` keeps registry and catalog in step.
 
 **Testability score:** new external dependencies = 0 (100% reuse of injected seams).
 
@@ -836,7 +840,7 @@ both keeps one source of truth and zero new perception code.
 | `crates/dunst-mcp/src/serve/dispatch/batch_tools.rs` | **new** — parse + call `apply_selections` (or fold into `element_tools.rs`) |
 | `crates/dunst-mcp/src/serve.rs` | add `apply_selections` to `tool_accepts_mutation_preconditions` (for `fencing_token`); add `mod batch_tools;` wiring if a new route is used |
 | `crates/dunst-mcp/src/serve/tools.rs` | add the two `tool(...)` catalog entries (§5) |
-| `crates/dunst-mcp/src/serve/tests/catalog.rs` | bump tool count `70 → 72`; add presence assertions |
+| `crates/dunst-mcp/src/serve/tests/catalog.rs` | advertised tool count `73`; add presence assertions |
 | `docs/CONTRACTS.md` | add the three invariants in §15 |
 | `docs/AGENT_GUIDE.md` | add a "Batch a multi-field choice page" recipe |
 

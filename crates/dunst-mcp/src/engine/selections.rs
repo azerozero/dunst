@@ -159,6 +159,55 @@ pub(super) struct BatchApprovalContext {
     pub(super) expected_epoch: String,
 }
 
+/// RAII scope for the internal batch approval context (DRIFT-001).
+///
+/// Installs the context on construction and clears it on [`Drop`], so an
+/// unwinding panic inside the batch body cannot leave a stale `active_batch`
+/// behind — a leak that would let a *later*, unrelated action inherit the batch
+/// grant and slip past the risk gate. Drive the batch through
+/// [`engine`](BatchContextGuard::engine); teardown is guaranteed on every exit
+/// path (normal return, `?`, or panic).
+pub(super) struct BatchContextGuard<'e> {
+    engine: &'e mut Engine,
+}
+
+impl<'e> BatchContextGuard<'e> {
+    pub(super) fn new(
+        engine: &'e mut Engine,
+        batch_id: String,
+        remaining_budget: usize,
+        expected_epoch: String,
+    ) -> Self {
+        engine.begin_internal_batch_context(batch_id, remaining_budget, expected_epoch);
+        Self { engine }
+    }
+
+    /// The guarded engine, for driving the batch body.
+    pub(super) fn engine(&mut self) -> &mut Engine {
+        self.engine
+    }
+}
+
+impl Drop for BatchContextGuard<'_> {
+    fn drop(&mut self) {
+        self.engine.clear_internal_batch_context();
+    }
+}
+
+/// Halt the batch here: stash the still-pending `tail` steps into
+/// `remaining_steps` and flip `stopped` so the outer loop drains the rest without
+/// executing them. Factors out the identical stop epilogue shared by the
+/// budget-exhausted, reflow-storm, actuator-failure and error branches of
+/// [`Engine::execute_selection_batch`].
+fn stop_batch(
+    remaining_steps: &mut Vec<SelectionStep>,
+    stopped: &mut bool,
+    tail: &[SelectionStep],
+) {
+    remaining_steps.extend(tail.iter().cloned());
+    *stopped = true;
+}
+
 #[derive(Clone)]
 struct ResolvedChoice {
     choice: Choice,
@@ -260,14 +309,22 @@ impl Engine {
             });
         }
 
-        self.begin_internal_batch_context(
+        // RAII guard: `active_batch` is cleared on scope exit even if
+        // `execute_selection_batch` panics, so the batch grant never leaks into a
+        // later action (DRIFT-001).
+        let mut guard = BatchContextGuard::new(
+            self,
             batch_id.clone(),
             plan.steps.len().min(MAX_BATCH_PICKS),
             expected_epoch.to_string(),
         );
-        let outcome =
-            self.execute_selection_batch(plan, batch_id.clone(), expected_epoch, initial_model);
-        self.clear_internal_batch_context();
+        let outcome = guard.engine().execute_selection_batch(
+            plan,
+            batch_id.clone(),
+            expected_epoch,
+            initial_model,
+        );
+        drop(guard);
         self.clear_raw_approval(&batch_id);
         outcome
     }
@@ -355,8 +412,7 @@ impl Engine {
                     Some(resolved.choice.label.clone()),
                     Some("batch budget exhausted".to_string()),
                 ));
-                remaining_steps.extend(plan.steps[idx..].iter().cloned());
-                stopped = true;
+                stop_batch(&mut remaining_steps, &mut stopped, &plan.steps[idx..]);
                 continue;
             }
 
@@ -380,8 +436,7 @@ impl Engine {
                             &mut rescans,
                         )?
                     {
-                        remaining_steps.extend(plan.steps[idx + 1..].iter().cloned());
-                        stopped = true;
+                        stop_batch(&mut remaining_steps, &mut stopped, &plan.steps[idx + 1..]);
                     }
                 }
                 Ok(Some(entry)) => {
@@ -392,8 +447,7 @@ impl Engine {
                         Some(label),
                         Some(format!("actuator returned {:?}", entry.result)),
                     ));
-                    remaining_steps.extend(plan.steps[idx + 1..].iter().cloned());
-                    stopped = true;
+                    stop_batch(&mut remaining_steps, &mut stopped, &plan.steps[idx + 1..]);
                 }
                 Ok(None) => {
                     results.push(StepResult::for_step(
@@ -412,8 +466,7 @@ impl Engine {
                         Some(label),
                         Some(err.to_string()),
                     ));
-                    remaining_steps.extend(plan.steps[idx + 1..].iter().cloned());
-                    stopped = true;
+                    stop_batch(&mut remaining_steps, &mut stopped, &plan.steps[idx + 1..]);
                 }
             }
         }

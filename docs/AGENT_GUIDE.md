@@ -210,3 +210,111 @@ Run full workspace tests and clippy before pushing when time permits:
 rtk cargo test
 rtk cargo clippy --all-targets -- -D warnings
 ```
+
+## MCP Tool Reference (all 76 tools)
+
+The catalog is authoritative in `crates/dunst-mcp/src/serve/tools.rs`; a live
+client sees it via `tools/list`. **76 tools are registered; 73 are advertised by
+default** — the 3 operator-approval tools are gated behind
+`DUNST_MCP_ENABLE_APPROVE_TOOL=1`. Grouped by family (family = `*_tools()` in
+`tools.rs`).
+
+### Orientation & state (`state_tools`, 13)
+
+- `version` — running build identity (package version, git commit, dirty flag, timestamp, protocol).
+- `platform_capabilities` — grouped OS backend capabilities (input, clipboard, perception/OCR/CV, windows, apps).
+- `refresh` — re-perceive the target window and rebuild the scene + affordance graphs.
+- `get_scene_graph` — the current scene graph (`compact` | `full` | `summary`; `actionable_only`).
+- `page_state` — lightweight orientation snapshot: app/window, title, likely URL, visible text, key elements.
+- `text_snapshot` — AX text snippets without the full scene graph or OCR.
+- `wait_for_text_stable` — wait until AX text snippets stop changing for a stable interval.
+- `list_browser_tabs` — browser tabs exposed by the target window tab strip.
+- `list_displays` — active displays: 1-based index, `display_id`, global bounds, scale, main flag.
+- `window_view` — compact scoped view of the target window (owning display, bounds, text, key elements).
+- `desktop_view` — desktop/window topology: displays, windows, `z_order`, frontmost, overlaps (`degraded:true` when CG topology is missing).
+- `target_visibility` — whether the target is frontmost, covered, fully covered, or missing.
+- `visual_change_probe` — spaced luminance pixel grid vs the previous probe; refreshes AX only when pixels changed.
+
+### Query & perception (`query_tools`, 14)
+
+- `analyze_region_ax` — AX hit-tests on a spaced grid over one screen region.
+- `get_affordances` — affordance graph (actions + risk per element); `include_latent`, `scope`.
+- `get_hit_targets` — semantic UI targets: labels, roles, safe click zones, action modes, risk, `ui_epoch` fingerprint.
+- `find_element` — elements whose id/label/role contains a query (case-insensitive).
+- `wait_for_element` — poll the AX graph until an element matching a query appears or disappears.
+- `read_text` — OCR the target window (or a region) via Apple Vision; `content_only` filters chrome/noise.
+- `read_text_detailed` — OCR plus target-visibility diagnostics, warnings, and recommended next steps.
+- `read_shapes` — CV geometric primitives (rect/bar/circle/line) in the target window.
+- `read_zones` — nest flat vision output (shapes + OCR + controls) into a containment tree.
+- `find_ocr_text` — ranked target-window OCR hits with bbox, center point, confidence.
+- `detect_modal` — likely modal/overlay state and safe OCR close/dismiss candidates.
+- `extract_ocr_cards` — group OCR lines into card candidates (title/rating/reviews/eta/fee/promo).
+- `query_affordances` — element ids exposing a given semantic action (`click|type|hover|open_menu|pick|drag`).
+- `enumerate_choices` — structured choice model (groups, required/optional, per-choice state) for batch fills.
+
+### Element actions (`element_tools`, 11)
+
+- `click_element` — click an element by id.
+- `raise_element` — raise an element by id (typically a window root).
+- `pick_option` — pick a popover/list/radio option by visible text.
+- `type_into` — replace text in a text element by id (risk-gated).
+- `hover_probe` — hover an element by id to reveal tooltips on a live target.
+- `drag_element` — drag a source element onto a target element by id (risk-gated).
+- `click_at` — click a raw screen point inside the target window.
+- `click_near_text` — OCR, pick a ranked text hit, click its center or a bounded offset; verify `expected_text`.
+- `dismiss_modal` — dismiss a modal only via an OCR-detected close/dismiss candidate.
+- `reveal_hover_click` — briefly borrow the real cursor on a visible point to reveal hover-only controls.
+- `select_file` — pick a local file in the native file chooser for browser upload controls.
+
+### Batch (`batch_tools`, 1)
+
+- `apply_selections` — apply a whole choice plan as one batch behind a single operator approval.
+
+### Pointer & charts (`pointer_and_chart_tools`, 6)
+
+- `hover_at` — background mouse-move (no cursor movement) at a raw screen point.
+- `read_at` — read the value at a screen point inside the target window.
+- `read_series` — read values at several screen points.
+- `scan_chart` — detect → confirm rendered → traverse → series.
+- `focus_window` — make the target AppKit-active without raising it (SkyLight focus-without-raise).
+- `unstick_cursor` — recover a stuck OS cursor (e.g. a frozen I-beam) after driving a background window.
+
+### Windows & apps (`window_app_tools`, 14)
+
+- `list_windows` — enumerate real, drivable windows (sizeable + titled).
+- `move_window_to_display` — move the target window to a display from `list_displays`.
+- `move_app_to_display` — move all sizeable top-level windows for an app to a display.
+- `arrange_windows` — reorganize selected windows on one display (grid/columns/rows/cascade/maximize).
+- `expose_target_window` — try to make the target actually visible, then verify with `desktop_view`.
+- `list_apps` — running GUI apps that own a window (app, pid, window count, on_screen).
+- `list_launchable_apps` — installed `.app` bundles without launching them.
+- `app_info` — one installed app's `Info.plist` metadata before launching.
+- `attach` — re-target the daemon to a `window_id` at runtime.
+- `launch_app` — launch an app in the background, optionally opening a URL/args.
+- `open_url_and_attach_tab` — open a URL, attach to the best browser window, report the selected tab.
+- `navigate` — load a URL in the attached browser window and re-verify.
+- `close_app` — quit an app gracefully by name (no foreground).
+- `screenshot` — composited PNG of the target window (multimodal: see the pixels directly).
+
+### Keyboard, menus & audit (`keyboard_menu_tools`, 14)
+
+- `right_click_at` — real-cursor context-click at a raw screen point.
+- `double_click_at` — double-click at a raw screen point.
+- `open_menu` — open an app menu-bar menu by name via AX.
+- `press_key` — press a named key on the target; optional `repeat` for simple repeated edits.
+- `type_keys` — type into the focused element via the SkyLight auth-signed keyboard path.
+- `set_field_text` — clear the focused field and set it to text in one step.
+- `paste_text` — paste text into the focused element by temporarily replacing the clipboard (Cmd+V).
+- `scroll` — scroll the focused page/container (AX scrollbar, or background keys / learned fallback).
+- `scroll_at` — wheel-scroll at a concrete screen point.
+- `zoom` — zoom the focused page in the background (Cmd =/-/0, auth-signed).
+- `hotkey` — send a background keyboard shortcut (modifiers + key, auth-signed).
+- `verify_state` — assert an element field (`label|value|enabled|focused`) equals an expected value.
+- `diff_since` — structural diff between the previous and current scene graph.
+- `export_trace` — export the audit trail.
+
+### Operator approvals (`approval_tools`, 3 — gated behind `DUNST_MCP_ENABLE_APPROVE_TOOL`)
+
+- `approve` — approve a gated element or raw target so the next action on it proceeds.
+- `preauthorize` — pre-authorize raw input in the attached window for a bounded flow.
+- `revoke_preauthorization` — drop any active raw-input pre-authorization immediately.
