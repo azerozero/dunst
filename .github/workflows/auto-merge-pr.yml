@@ -21,6 +21,7 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && !startsWith(github.event.pull_request.head.ref, 'release-plz-')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Enable auto-merge
         env:
