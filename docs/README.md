@@ -21,7 +21,7 @@ Design docs live under `design/`; plans carry a dated status banner.
 - `design/LLD-batch-choice-enumeration-selection.md` - as-built low-level design
   for the `enumerate_choices` / `apply_selections` batch tools (implemented, PR #4).
 - `DISTRIBUTION_READINESS_PLAN.md` - distribution and release hardening plan
-  (French, internal; partially delivered — see its status banner).
+  (partially delivered — see its status banner).
 - `DUNST-UI-REMEDIATION-PLAN.md` - raw-input ergonomics remediation tracker
   (largely delivered — see its status banner).
 - `P1-vision-rust-feasibility.md` - superseded pre-build feasibility study; the
@@ -29,10 +29,9 @@ Design docs live under `design/`; plans carry a dated status banner.
 
 ## Language
 
-User-facing documentation is English. Internal planning and design notes may be
-written in French and say so in their status banner (e.g.
-`DISTRIBUTION_READINESS_PLAN.md`). Historical notes remain in the language they
-were originally written in, including French, to preserve review context.
+Project documentation is English. Status banners identify historical or
+partially delivered notes so readers can separate current guidance from
+preserved review context.
 
 ## Historical
 
