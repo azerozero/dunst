@@ -75,6 +75,22 @@ fn resolve() -> &'static Option<Spi> {
 }
 
 pub fn focus_without_raise(window_id: u32) -> bool {
+    post_focus_records(window_id, true)
+}
+
+/// Give `window_id` key status WITHOUT defocusing the frontmost process.
+///
+/// The full defocus+focus recipe ([`focus_without_raise`]) activates the
+/// target app at the window-server level, and AppKit reacts by ordering every
+/// one of that app's windows to the front — a background key delivery must
+/// not disturb the user's foreground like that. Skipping the defocus record
+/// keeps the user's frontmost app active while the target window still
+/// accepts the auth-signed key events posted to its process.
+pub fn focus_key_only(window_id: u32) -> bool {
+    post_focus_records(window_id, false)
+}
+
+fn post_focus_records(window_id: u32, defocus_previous: bool) -> bool {
     let Some(spi) = resolve() else {
         return false;
     };
@@ -82,10 +98,6 @@ pub fn focus_without_raise(window_id: u32) -> bool {
     // correctly sized PSN out-parameters and `buf` is the 248-byte event
     // record the SLPSPostEventRecordTo recipe expects.
     unsafe {
-        let mut prev = Psn { high: 0, low: 0 };
-        if (spi.get_front)(&mut prev) != 0 {
-            return false;
-        }
         let cid = (spi.main_cid)();
         let mut owner: u32 = 0;
         if (spi.window_owner)(cid, window_id, &mut owner) != 0 {
@@ -102,8 +114,16 @@ pub fn focus_without_raise(window_id: u32) -> bool {
         buf[0x3D] = ((window_id >> 8) & 0xFF) as u8;
         buf[0x3E] = ((window_id >> 16) & 0xFF) as u8;
         buf[0x3F] = ((window_id >> 24) & 0xFF) as u8;
-        buf[0x8A] = 0x02; // defocus the previous front
-        let defocus = (spi.post)(&prev, buf.as_ptr());
+        let defocus = if defocus_previous {
+            let mut prev = Psn { high: 0, low: 0 };
+            if (spi.get_front)(&mut prev) != 0 {
+                return false;
+            }
+            buf[0x8A] = 0x02; // defocus the previous front
+            (spi.post)(&prev, buf.as_ptr())
+        } else {
+            0
+        };
         buf[0x8A] = 0x01; // focus the target window
         let focus = (spi.post)(&target, buf.as_ptr());
         defocus == 0 && focus == 0

@@ -443,18 +443,22 @@ pub(crate) fn raise_window_by_id(pid: i32, window_id: u32) -> Result<()> {
 /// fallback). This avoids the erratic cursor results of clearing a field with raw
 /// End/Backspace/double-click keystrokes (which produced garbled values like
 /// "copullntents" when driving a backgrounded browser form).
-pub(crate) fn set_focused_field_text(pid: i32, _window_id: u32, text: &str) -> Result<()> {
+pub(crate) fn set_focused_field_text(pid: i32, window_id: u32, text: &str) -> Result<()> {
     let app = app_element(pid)?;
     // Confirm a text field is focused so we don't select-all + paste into nothing.
-    attr_ax_element(&app, "AXFocusedUIElement").ok_or_else(|| {
+    let element = attr_ax_element(&app, "AXFocusedUIElement").ok_or_else(|| {
         DunstError::Execution(
             "no focused field to set text on; click or focus a text field first".into(),
         )
     })?;
-    // Layout-safe replace: foreground + native Cmd+A + Cmd+V (AppleScript translates
-    // the keys to the current keyboard layout — no hardcoded keycode, which on AZERTY
-    // turns Cmd+A into Cmd+Q; native select-all also avoids the AX char-count tail bug).
-    crate::paste_replace_field_foreground(pid, text)
+    // Layout-safe replace WITHOUT foregrounding: the selection is made through
+    // AX (kAXSelectedTextRange over the full value — no Cmd+A keystroke, so no
+    // AZERTY keycode trap) and the text lands via the auth-signed background
+    // path. The previous osascript variant ran `set frontmost … to true`, which
+    // activated the target app and raised every one of its windows over the
+    // user's foreground on each call.
+    let target = Target { pid, window_id };
+    type_text(&element, &target, text).map_err(DunstError::from)
 }
 
 pub(super) fn resolve_window(app: &AxElement, requested_window_id: u32) -> Result<AxElement> {
