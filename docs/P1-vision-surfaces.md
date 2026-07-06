@@ -198,7 +198,8 @@ GO/NO-GO.
 4. **Video/spinner/caret = no-OCR zones (A2).** Per-tile dirty-rate counter;
    permanently-dirty tiles get excluded (confidence≈0), not endlessly debounced.
 5. **Fovea must NOT follow the OS cursor (A3).** Vision actions are CGEvent and
-   **move the real cursor** (`platform/lib.rs:748`) → cursor-anchored fovea is a
+   **move the real cursor** (`dunst-platform/src/macos/pointer_events.rs`
+   real-cursor paths) → cursor-anchored fovea is a
    feedback loop + a no-foreground violation. Anchor the fovea to **last-action
    bbox + last dirty centroid** (internal state), never `CGEventGetLocation`.
 6. **Stable-ids: bipartite matching, not a fuzzy hash (§5).** Match this frame's

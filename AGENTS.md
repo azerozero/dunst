@@ -33,7 +33,7 @@ The executor prefers the least-intrusive rung that works: **AX** (press/set-valu
 - **dunst-core**: shared types (`Target`, `WindowRef`, `SceneGraph`/`SceneNode`, `Affordance`/`AffordanceGraph`, `SemanticAction`, `RiskAssessment`, `AuditEntry`, `Bbox`), the `Perceptor` / `ActionExecutor` traits, and error types. No macOS deps.
 - **dunst-graph**: the pure pipeline `build_scene_graph → derive_affordances → risk`. Deterministic, unit-benchable (`--features bench`).
 - **dunst-platform**: the macOS backend — AX (`ax_backend`, `ax_tree`, `ax_actions`), SkyLight (`skylight`: focus-without-raise, cursor fingerprint, event posting), `pointer_events` (click/scroll/`borrow_cursor`/unstick), `web_events` (background click/scroll/type/key), `text_input`, `file_chooser`. Non-macOS builds get stubs.
-- **dunst-vision**: `capture` (screenshots, window bounds) and OCR.
+- **dunst-vision**: `capture` (screenshots, window bounds), `ocr`, CV `shapes`/`detect`, nested `zones`, and `coords`.
 - **dunst-mcp**: the `Engine` (perception + affordances + risk gating + audit + execution, under `src/engine/`) and the MCP `serve` loop + tool schemas (`src/serve/`).
 
 ## Domain Concepts

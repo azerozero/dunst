@@ -1,7 +1,9 @@
 # Dunst MCP — POC Architecture
 
 > AX-first slice. From a macOS window's accessibility tree to a verifiable
-> affordance graph exposed over MCP. Vision/OCR/Tile/Foveal are deferred (P1).
+> affordance graph exposed over MCP. OCR/shapes/zones ship as vision fallbacks
+> for non-AX surfaces; deeper fusion of vision output into the scene graph (a
+> `VisionPerceptor`; Tile/Foveal capture) is the remaining deferred step.
 
 ## Thesis (validated)
 
@@ -9,7 +11,8 @@ A pulled AX tree of a native macOS app (Notes, 22 elements) already carries
 everything the Scene/Affordance graph needs — role, native actions, label/help,
 a stable-ish identifier, and risk signals in the labels (`Supprimer`,
 `Éteindre`, …). So the affordance graph is ~free from AX; pixels/OCR are only
-needed for non-AX surfaces (later phase).
+needed for non-AX surfaces, and now ship as MCP vision fallbacks (`read_text`,
+`read_shapes`, `read_zones`, `scan_chart`).
 
 ## Pipeline
 
@@ -21,11 +24,12 @@ flowchart TD
     Affordance[dunst-graph::affordance<br/>AffordanceGraph]
     Risk[dunst-graph::risk<br/>RiskAssessment]
     MCP[dunst-mcp<br/>MCP tools + audit]
-    Vision[dunst-vision<br/>capture, OCR, coords]
+    Vision[dunst-vision<br/>capture, OCR, shapes, zones, coords]
 
     Platform --> Raw --> Scene --> Affordance --> Risk --> MCP
     Platform --> MCP
-    Vision -. P1 non-AX surfaces .-> Scene
+    Vision --> MCP
+    Vision -. VisionPerceptor: not yet wired .-> Scene
 ```
 
 ## Crates & ownership
@@ -35,7 +39,7 @@ flowchart TD
 | `dunst-core`       | shared contract | serde             | no             |
 | `dunst-graph`      | pure graph logic| core              | no             |
 | `dunst-platform`   | macOS backend   | core              | yes (FFI)      |
-| `dunst-vision`     | vision/OCR P1   | core              | yes, except coords |
+| `dunst-vision`     | vision fallback | core              | yes, except coords |
 | `dunst-mcp`        | server/runtime  | core+graph+platform+vision | wiring |
 
 `graph` and `platform` depend **only** on `core` — never on each other. This is

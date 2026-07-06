@@ -64,7 +64,10 @@ cargo run -p dunst-mcp -- setup --client claude --migrate
 ```
 
 Use `--edit` to inspect the current file and the merged result without writing,
-and `--config PATH` for tests or non-standard client paths.
+and `--config PATH` for tests or non-standard client paths. `--apply` writes the
+`scripts/mcp-dunst.sh` wrapper when run inside a checkout (or with `--dev-wrapper`)
+and `dunst-mcp serve` otherwise. Both `setup` and `doctor` take `--json` for
+machine-readable output; `doctor` exits `0` (pass), `1` (warn), or `2` (fail).
 
 ## MCP Fixture Transcript
 

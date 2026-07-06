@@ -1,5 +1,14 @@
 # P1 — Vision Surfaces: Rust Feasibility + Critical Review
 
+> **Status (2026-07-06): superseded — feasibility study, now built.** The GO
+> verdict below was acted on: `dunst-vision` ships (`capture`, `ocr`, `shapes`,
+> `zones`, `detect`, `coords`), with OCR/shapes/zones exposed as MCP tools. **As
+> built, window capture uses Core Graphics** (`CGWindowListCreateImage` in-process
+> plus a `screencapture` CLI fallback), **not ScreenCaptureKit** — the SCK
+> recommendation in §B was deferred. Apple Vision `.fast` OCR measured ~16.5 ms
+> full-window (`docs/P1-vision-surfaces.md` §11). Read the sections below as the
+> original pre-build analysis.
+
 > Companion to `docs/P1-vision-surfaces.md`. Scope: **research + design only** —
 > no crates touched, no prod code, no git. Deliverable answers the two delegated
 > open questions (§9.2: Rust feasibility + design) and challenges the plan.
@@ -80,8 +89,9 @@ strings is the lower-touch choice and keeps `dunst-graph` untouched.
 
 §6 puts the fovea "around the cursor / last action". But §1's vision action path
 is **CGEvent**, and the platform code is explicit that CGEvent mouse input
-**moves the real cursor** (`crates/dunst-platform/src/lib.rs:748`: *"Synthetic
-drag moves the real cursor; this is inherent to CGEvent mouse input."*). So:
+**moves the real cursor** (`dunst-platform/src/macos/pointer_events.rs` warps the
+real cursor for `drag` and real-cursor clicks; `dunst-platform/src/lib.rs` notes
+the real-cursor path *"briefly warps and restores it"*). So:
 
 - Acting on a vision surface **warps the user's cursor**, which then **defines the
   fovea**, which biases the next perception toward where *we* just clicked — a
@@ -214,6 +224,11 @@ the table's numbers should not be quoted as if measured.
 ## PART B — Feasibility findings (the delegated §9.2)
 
 ### B1. CAPTURE — ScreenCaptureKit, window-scoped, from Rust → **feasible, mature**
+
+> **As built:** P1a shipped on **Core Graphics** (`CGWindowListCreateImage`
+> in-process, with a `screencapture` CLI fallback), not SCK. SCK stays the
+> recommended upgrade for a steady zero-copy hot loop, but the current latency
+> budget did not require it.
 
 - **`screencapturekit`** (doom-fish/svtlabs) — safe high-level bindings, builder
   API, **v6** line, actively maintained (crates.io updated 2026), macOS 12.3+,
@@ -466,5 +481,3 @@ evaluate a CoreML mobile OCR (RapidOCR/PP-OCRv4) with its own benchmark.
 - [SCScreenshotManager — Apple](https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager) · [SCWindow.windowID](https://developer.apple.com/documentation/screencapturekit/scwindow/windowid)
 - [ScreenCaptureKit capture→callback latency thread — Apple Forums](https://developer.apple.com/forums/thread/785046)
 - [A look at ScreenCaptureKit on Sonoma — Nonstrict](https://nonstrict.eu/blog/2023/a-look-at-screencapturekit-on-macos-sonoma/)
-</content>
-</invoke>

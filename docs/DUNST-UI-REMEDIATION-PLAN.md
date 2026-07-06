@@ -1,5 +1,10 @@
 # Dunst UI Remediation Plan
 
+> **Status (2026-07-06): tracker — largely delivered.** The P0 raw-input ergonomics
+> below shipped (scoped raw approvals for a same-key burst, `press_key.repeat`, and
+> pointer-tracked raw clicks). Read the remaining sections as the open backlog, not
+> as pending work.
+
 Date: 2026-06-21
 
 Scope: failures observed while driving the Collective Work profile editor through

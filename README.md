@@ -1,10 +1,13 @@
-# Dunst — POC
+# Dunst
 
 [![CI](https://github.com/azerozero/dunst/actions/workflows/ci.yml/badge.svg)](https://github.com/azerozero/dunst/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/azerozero/dunst?sort=semver)](https://github.com/azerozero/dunst/releases)
+[![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#prerequisites)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
 
-> MCP-first macOS UI automation: choose the fastest trustworthy read path,
-> then execute only verified, risk-gated actions.
+> Drive a macOS app from an AI agent by *meaning*, not pixel coordinates — Dunst
+> reads the UI as a risk-annotated affordance graph and runs only verified,
+> approved actions.
 
 A macOS daemon that turns a window into a **verifiable affordance graph** for AI
 agents. Instead of `Click(x=842, y=661)`, an agent resolves a target by meaning —
@@ -26,6 +29,22 @@ risk), two distinct objects keyed by the same stable id:
 
 (The node carries `confidence`/`source` in the `full` view; the compact projection
 drops them. `risk` is the structured `RiskAssessment`, not a bare string.)
+
+## Quickstart
+
+```bash
+# 1. Device-free demo — no macOS permissions needed: scene → affordance → risk gate → audit
+cargo run -p dunst-mcp -- demo
+
+# 2. Check the machine is ready for live automation (Accessibility / Screen Recording)
+cargo run -p dunst-mcp -- doctor
+
+# 3. Preview an MCP client registration (Codex/Claude), then serve a live window
+cargo run -p dunst-mcp -- setup --client codex --dry-run
+```
+
+New here? Read [How Dunst Reads And Acts](#how-dunst-reads-and-acts) for the model,
+or jump to [MCP client setup](#mcp-client-setup) to connect an agent.
 
 ## How Dunst Reads And Acts
 
@@ -87,7 +106,7 @@ are now fallbacks for non-AX surfaces, not the entrypoint.
 | `dunst-core`     | Frozen contract: types, traits, `MockPerceptor`, fixtures|
 | `dunst-graph`    | Pure logic: scene graph, affordances, risk, diff         |
 | `dunst-platform` | macOS AX backend: `Perceptor` + `ActionExecutor`         |
-| `dunst-vision`   | P1a spike: window capture + Apple Vision OCR + coord math |
+| `dunst-vision`   | macOS capture + Apple Vision OCR + CV shapes/zones + coord math |
 | `dunst-mcp`      | Engine (risk gating + audit) + demo + MCP server         |
 
 `graph` and `platform` depend only on `core`. See `docs/README.md` for the
@@ -129,8 +148,11 @@ cargo run -p dunst-platform --example dump -- <pid> <window_id>
 ```
 
 Ensure `~/.cargo/bin` is on your `PATH` (it is by default with a rustup install)
-so the MCP host can find `dunst-mcp`. Until a Homebrew formula ships, `cargo
-install` is the supported way to put the binary on `PATH`.
+so the MCP host can find `dunst-mcp`. Alternatively, download a prebuilt
+`dunst-mcp` binary from a tagged [GitHub Release](https://github.com/azerozero/dunst/releases),
+`chmod +x` it, and move it onto your `PATH` — no Rust toolchain required. Until a
+Homebrew formula ships, `cargo install` and the Release binary are the supported
+ways to put `dunst-mcp` on `PATH`.
 
 The fixture demo prints a scene summary, resolves `Nouvelle note`, executes the
 low-risk click, gates a destructive `Supprimer` action as `PendingApproval`, then
@@ -151,7 +173,7 @@ Exit-code expectations:
 |---------|---------|---------|
 | `dunst-mcp demo` | `0` when the fixture loads and the scripted path completes | `1` on fixture or engine initialisation failure |
 | `dunst-mcp serve` | `0` when the stdio loop exits normally | `1` when an explicitly requested live target cannot be resolved |
-| `dunst-mcp doctor` | `0` when the local environment is usable for live automation | `1` when Accessibility, Screen Recording, config, or platform checks fail |
+| `dunst-mcp doctor` | `0` when all checks pass (or info-only) | `1` on warnings (degraded but usable), `2` when a check fails (Accessibility, Screen Recording, config, or platform) |
 | `dunst-mcp setup` | `0` after dry-run/edit output or successful apply/migrate | `1` on invalid config merge/write or clap exits non-zero for invalid arguments |
 
 ## MCP client setup
@@ -181,114 +203,52 @@ Installed configs that call a prebuilt `dunst-mcp` binary can use a shorter
 timeout.
 
 Use `setup --edit` to print the current file and merged result without writing,
-and `setup --config PATH` for tests or non-standard client paths. A compact
+and `setup --config PATH` for tests or non-standard client paths. `setup --apply`
+chooses the command it writes by context: inside a repo checkout (where
+`scripts/mcp-dunst.sh` exists), or with `--dev-wrapper`, it writes the wrapper;
+otherwise it writes `dunst-mcp serve` from `PATH` — so it never rewrites the
+project's committed config to a binary that may be absent from `PATH`. Both
+`setup` and `doctor` accept `--json` for machine-readable output. A compact
 device-free MCP transcript lives at `docs/fixtures/mcp-transcript.jsonl`; keep it
 updated when tool names or core response shapes change.
 
-To pin startup to an app:
+### Tool surface
 
-```bash
-DUNST_MCP_APP="Google Chrome" scripts/mcp-dunst.sh
-```
+Dunst advertises **73 tools** by default (76 registered; the 3 operator-approval
+tools are gated behind `DUNST_MCP_ENABLE_APPROVE_TOOL`). An MCP client discovers
+the live set via `tools/list`. By capability:
 
-App lifecycle tools:
+| Capability | What it covers | Representative tools |
+|-----------|----------------|----------------------|
+| Orientation & state | build id, backend capabilities, re-perceive, scene/graph views, page/text snapshots, window/desktop topology, visibility | `version`, `platform_capabilities`, `refresh`, `get_scene_graph`, `page_state`, `window_view`, `target_visibility` |
+| Query & perception | affordances, semantic hit targets, element/text search, OCR, shapes, zones, cards, choice model | `get_hit_targets`, `find_element`, `read_text`, `read_shapes`, `read_zones`, `extract_ocr_cards`, `enumerate_choices` |
+| Element actions | click/type/pick/hover/drag/raise on AX elements, OCR-bound clicks, native file chooser | `click_element`, `type_into`, `pick_option`, `drag_element`, `click_near_text`, `select_file` |
+| Batch | apply a whole choice plan behind one operator approval | `apply_selections` |
+| Pointer & charts | raw / borrowed-cursor point reads, chart scan, focus-without-raise, cursor recovery | `read_at`, `read_series`, `scan_chart`, `focus_window`, `unstick_cursor` |
+| Windows & apps | list/move/arrange windows, displays, attach, launch/close, open URL, navigate, screenshot | `list_windows`, `arrange_windows`, `list_displays`, `attach`, `launch_app`, `navigate`, `screenshot` |
+| Keyboard, menus & audit | keys/hotkeys/scroll/zoom, menu-bar menus, state verify, scene diff, trace export | `press_key`, `type_keys`, `scroll`, `open_menu`, `verify_state`, `diff_since`, `export_trace` |
+| Operator approvals (gated) | approve / pre-authorize / revoke — off by default | `approve`, `preauthorize`, `revoke_preauthorization` |
 
-- `list_apps` lists GUI apps that are already running.
-- `list_launchable_apps` scans installed `.app` bundles without launching them.
-- `app_info` reads one app's `Info.plist` metadata by name, bundle id, or path.
-- `launch_app` starts an app in the background, optionally with a URL and args.
-- `close_app` asks an app to quit cleanly by name.
+The full per-tool reference (all 76, one line each) lives in
+[`docs/AGENT_GUIDE.md`](docs/AGENT_GUIDE.md#mcp-tool-reference-all-76-tools).
 
-Display/window view tools:
+### Environment & tuning
 
-- `list_displays` lists active screens with Dunst's 1-based index, global bounds,
-  pixel resolution, scale, and main-display flag.
-- `window_view` returns a compact scoped view of the target window: owning
-  display, window bounds, position relative to that display, visible text, and
-  key elements without dumping the full AX graph.
-- `desktop_view` returns the display/window topology with front/back `z_order`,
-  frontmost window, owning display, and geometric overlap lists. If CoreGraphics
-  cannot provide a real display topology, it returns `degraded:true` with a
-  `reason` instead of fabricating a `0x0` display.
-- `visual_change_probe` captures a screen region, samples a spaced luminance grid,
-  compares it with the previous probe, and can run a full AX refresh when pixels
-  changed. AX cannot refresh only one rectangle; the pixel probe is the cheap
-  invalidation signal.
-- `analyze_region_ax` samples a screen region with AX hit-tests and returns the
-  unique shallow AX elements under that grid. macOS does not expose a direct
-  subtree-by-rectangle refresh, but this is targeted AX analysis for one zone.
-- `move_window_to_display` moves the target window to a display index from
-  `list_displays`, centering it and preserving size by default.
-- `move_app_to_display` moves all sizeable top-level windows for a running app
-  to a display index from `list_displays`.
-- `arrange_windows` tiles selected windows on a display as `grid`, `columns`,
-  `rows`, `cascade`, or `maximize`; selection must be explicit through
-  `window_ids`, `app`, or `all:true`.
-- `target_visibility` reports whether the attached target is frontmost,
-  visible, covered, fully covered, or missing from the desktop stack.
-- `get_hit_targets` returns semantic click/type/drag targets with safe inset
-  click zones, action modes, risk, selected browser tab, target visibility, and
-  a `ui_epoch` fingerprint. Pass `previous_epoch` to detect that a cached plan is
-  stale before clicking or dragging.
-- `expose_target_window` raises the attached target and verifies whether it is
-  still covered before OCR, screenshots, or raw pointer input.
+| Variable | Effect |
+|----------|--------|
+| `DUNST_MCP_MODE=fixture` | serve the deterministic Notes fixture instead of a live window |
+| `DUNST_MCP_APP="<name>"` | pin startup to a named app (e.g. `"Google Chrome"`) |
+| `DUNST_MCP_ENABLE_APPROVE_TOOL=1` | advertise the operator-side `approve` / `preauthorize` / `revoke_preauthorization` tools (off by default) |
+| `DUNST_AX_MAX_NODES`, `DUNST_AX_MAX_DEPTH` | lower AX traversal caps for very large or noisy apps |
+| `DUNST_MCP_AGENT_ID` | stable, human-readable agent label recorded in audit provenance |
 
-Display bounds use macOS global screen points; external displays can have
-negative `x`/`y` coordinates depending on Arrangement. Window moves require
-Accessibility permission and can fail if an app or Space refuses AX position/size
-changes.
+Every `tools/call` result carries `_meta.dunst.timing_ms` and `_meta.dunst.tool`
+for per-tool latency profiling. Read-orientation tools reuse a short AX-refresh
+TTL (pass `force_refresh:true` to bypass); mutating actions always re-perceive.
 
-OCR and custom-surface tools:
-
-- `read_text` returns OCR lines; `content_only:true` filters browser chrome and
-  low-confidence noise.
-- `read_text_detailed` adds target-visibility diagnostics, warnings, and
-  recommended next steps to the OCR result.
-- `find_ocr_text` returns ranked OCR hits with bbox and center point.
-- `click_near_text` clicks a selected OCR hit and can verify an `expected_text`
-  postcondition afterward.
-- `extract_ocr_cards` groups OCR lines into card-like candidates with title,
-  rating, reviews, ETA, fee, promo, and bbox when visible.
-- `detect_modal` and `dismiss_modal` handle blocking popups conservatively:
-  dismissal only clicks recognized close/dismiss candidates.
-- `read_shapes` and `scan_chart` cover geometric primitives and charts that AX
-  and OCR do not model well.
-
-Performance controls:
-
-- Every MCP `tools/call` result includes `_meta.dunst.timing_ms` and
-  `_meta.dunst.tool` for per-tool latency profiling.
-- Read-orientation tools such as `find_element`, `page_state`, and `window_view`
-  use a short AX refresh TTL by default. Pass `force_refresh:true` to bypass it.
-- Mutating action paths still force a full AX refresh after execution.
-- `read_text` captures only the requested screen `region` when one is provided,
-  instead of capturing the whole target window and cropping later.
-- `visual_change_probe` samples grayscale/luminance cells instead of keeping all
-  colour channels. The main speed win is still the smaller captured region; luma
-  sampling reduces comparison work and memory.
-- Display and desktop topology are cached briefly; window move/arrange tools
-  invalidate the desktop cache after changing geometry.
-- `DUNST_AX_MAX_NODES` and `DUNST_AX_MAX_DEPTH` can lower AX traversal caps for
-  very large/noisy apps.
-
-To serve the deterministic fixture instead of a live window:
-
-```bash
-DUNST_MCP_MODE=fixture scripts/mcp-dunst.sh
-```
-
-`DUNST_MCP_ENABLE_APPROVE_TOOL=1` opt-ins to the operator-side `approve` tool for
-controlled local sessions. It is not advertised by default.
-
-Homebrew is a good later packaging target for a stable CLI, but the repo-local
-wrapper is better during development: it always runs the current checkout, builds
-when the debug binary is missing, and keeps Codex/Claude config pointed at the
-code under test. A future formula should install the compiled `dunst-mcp` binary
-and use the same `serve` entrypoint.
-
-The `demo` narrates: resolve "Nouvelle note" by **label** → click → a destructive
-`Supprimer`/`Éteindre` is **denied pending approval** → approve → proceed →
-audit trail exported as JSON.
+Homebrew is a good later packaging target; until a formula ships, the repo-local
+`scripts/mcp-dunst.sh` wrapper (development) and a prebuilt binary from GitHub
+Releases (stable) are the supported entrypoints — both use `dunst-mcp serve`.
 
 ## Development
 
@@ -311,10 +271,12 @@ brew install j178/tap/prek
 prek install
 ```
 
-The hooks run `cargo fmt`, `clippy`, `shellcheck`, `gitleaks`, and
-offline `lychee` before commits. Heavier checks (`cargo test`,
-`cargo audit`, `cargo machete`) run before pushes. CI runs the online
-Markdown and link checks.
+The hooks run `cargo fmt`, `clippy`, `shellcheck`, `gitleaks`, and offline
+`lychee` before commits. Heavier checks (`cargo deny`, `cargo audit`,
+`cargo machete`, doc-coverage, artifact sweep) run before pushes. Tests are **not**
+in the push gate — CI runs them on macOS + Linux, along with the online Markdown
+and link checks. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and `CLAUDE.md` for the
+authoritative gate description.
 
 Live smoke is macOS-only and requires Accessibility permission; screenshot/OCR
 paths also require Screen Recording:
@@ -331,9 +293,13 @@ required merge gate.
 
 ## Status
 
-POC / work in progress. Differentiator vs raw computer-use drivers: the semantic
-layer — stable IDs, affordance normalisation, **risk-based approval gating**,
-verify-loop and audit trail — not pixel OCR.
+POC / work in progress. What sets Dunst apart from raw computer-use drivers is the
+semantic layer, not pixel OCR:
+
+- **Stable IDs** — targets resolve by meaning and survive re-perception.
+- **Affordance normalisation** — one semantic action model across AX, OCR, and CV.
+- **Risk-based approval gating** — destructive / financial actions block until an operator approves.
+- **Verify-loop + audit trail** — every action re-perceives and records a before/after diff.
 
 ## License
 

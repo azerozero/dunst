@@ -3,6 +3,13 @@
 Date : 2026-06-14
 Projet : `dunst-mcp` / `dunst-mcp`
 
+> **Statut (2026-07-06) : note de planification interne (français) — partiellement livrée.**
+> Plusieurs priorités ci-dessous ont été livrées depuis le 2026-06-14 : CLI `clap`
+> avec les sous-commandes `doctor`/`setup`, `release-plz`, alignement `objc2` entre
+> `dunst-platform` et `dunst-vision`, et le README transformé en landing page
+> utilisateur. Traiter les points restants comme le backlog ouvert, pas comme un
+> état complet du produit.
+
 ## Contexte
 
 Une revue large du projet a été menée avec plusieurs axes d'audit : code, documentation, packaging, shell, tangle, tests et comparaison avec `grob`.
