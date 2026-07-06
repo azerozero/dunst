@@ -285,3 +285,27 @@ HID** + restore, miroir de `right_click_at_point_impl`) dans
 `click_near_text` (même recette que `scroll_at borrow_cursor`). Contournement
 utilisé avant le fix : ouvrir le select puis `press_key Down` + `Return` (le
 clavier atteint le menu-tracking), ou AppleScript System Events.
+
+## 7. Scroll clavier de fond = activation Firefox (toutes fenêtres remontées) — CORRIGÉ (2026-07-06)
+
+`scroll` (pseudo-cible `page@scroll:*`, chemin `keyboard@scroll:...`) →
+`key_web_background()` appelait `focus_without_raise()` avant CHAQUE frappe : la
+recette SLPS défocus(0x02)+focus(0x01) active l'app cible au niveau window server,
+et AppKit remonte alors TOUTES ses fenêtres au-dessus du premier plan de
+l'utilisateur (observé : toutes les fenêtres Firefox raised pendant un simple
+scroll top).
+
+**Fix** : `skylight::focus_key_only()` (poste uniquement le record focus 0x01,
+sans défocaliser le front process) utilisé par `key_web_background` à la place de
+`focus_without_raise`.
+
+**Complément (même jour)** : le symptôme persistait via les chemins souris/frappe
+de fond — `click_web_background`, `hover_web_background_impl`,
+`scroll_web_background_impl`, `type_text_background_impl` appelaient encore
+`focus_without_raise` (observé pendant une session Collective : activation à
+chaque clic/set_field_text). Les 4 sites sont passés à `focus_key_only` aussi.
+`focus_without_raise` ne reste utilisé que par le chemin volontaire de raise/focus
+(`dunst_platform::focus_without_raise`, outil focus_window).
+À VALIDER en live : la livraison (clics Chromium gate, Page/Home/End, frappe)
+doit toujours atteindre la fenêtre cible avec le focus key-only (si non, fallback
+= restaurer l'ancien comportement derrière un flag).

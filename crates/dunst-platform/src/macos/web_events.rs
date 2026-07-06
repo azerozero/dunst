@@ -76,7 +76,10 @@ pub fn click_web_background(
     if user_idle_block_message("background click").is_some() {
         return false;
     }
-    focus_without_raise(window_id);
+    // Key-only focus (no defocus of the user's front process): the full
+    // focus_without_raise recipe activates the app and AppKit raises ALL its
+    // windows — a background path must never disturb the foreground.
+    skylight::focus_key_only(window_id);
     thread::sleep(Duration::from_millis(50));
 
     let screen = CGPoint::new(sx, sy);
@@ -184,7 +187,10 @@ pub(super) fn hover_web_background_impl(
         ));
     }
     ensure_user_idle_action("background hover")?;
-    focus_without_raise(window_id);
+    // Key-only focus (no defocus of the user's front process): the full
+    // focus_without_raise recipe activates the app and AppKit raises ALL its
+    // windows — a background path must never disturb the foreground.
+    skylight::focus_key_only(window_id);
     thread::sleep(Duration::from_millis(40));
 
     let screen = CGPoint::new(sx, sy);
@@ -250,7 +256,10 @@ pub(super) fn scroll_web_background_impl(
         ));
     }
     ensure_user_idle_action("background wheel scroll")?;
-    focus_without_raise(window_id);
+    // Key-only focus (no defocus of the user's front process): the full
+    // focus_without_raise recipe activates the app and AppKit raises ALL its
+    // windows — a background path must never disturb the foreground.
+    skylight::focus_key_only(window_id);
     thread::sleep(Duration::from_millis(40));
 
     let screen = CGPoint::new(sx, sy);
@@ -352,7 +361,10 @@ pub(super) fn type_text_background_impl(
         ));
     }
     ensure_user_idle_action("background type")?;
-    focus_without_raise(window_id);
+    // Key-only focus (no defocus of the user's front process): the full
+    // focus_without_raise recipe activates the app and AppKit raises ALL its
+    // windows — a background path must never disturb the foreground.
+    skylight::focus_key_only(window_id);
     thread::sleep(Duration::from_millis(50));
     for_text_input_atoms(text, |atom| {
         match atom {
@@ -422,6 +434,9 @@ pub(super) fn post_background_key_event(
 /// (Page Down/Up, Home, End) and other non-character keys. Fails if SkyLight
 /// is absent or if either key event cannot be created and posted.
 ///
+/// Focus is granted with the key-only SkyLight record, so the target app is
+/// NOT activated and its windows are NOT raised over the user's foreground.
+///
 /// # Errors
 ///
 /// Returns an error if the SkyLight backend is unavailable, if the user-active
@@ -436,7 +451,12 @@ pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) ->
     }
     ensure_user_idle("background key")?;
     if window_id != 0 {
-        focus_without_raise(window_id);
+        // Key-only focus: the defocus+focus recipe (focus_without_raise)
+        // activates the target app, and AppKit then raises ALL of its windows
+        // over whatever the user is doing. Background key delivery must stay
+        // background — give the window key status without defocusing the
+        // user's frontmost process.
+        skylight::focus_key_only(window_id);
         thread::sleep(Duration::from_millis(40));
     }
     let mods = CGEventFlags::from_bits_truncate(flags);
