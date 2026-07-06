@@ -1,8 +1,10 @@
 name: Auto-merge PRs
 
 # Queues regular PRs for auto-merge so they merge themselves once the required
-# checks (branch protection on `main`) go green — no manual babysitting. `main`
-# uses a merge queue, so no merge strategy is passed (the queue sets it).
+# checks (branch protection on `main`) go green — no manual babysitting. The
+# strategy must be explicit: without a merge queue on `main`, a bare
+# `gh pr merge --auto` fails non-interactively ("--merge, --rebase, or
+# --squash required"). The repo convention is one squashed commit per PR.
 # Release-plz PRs are handled separately by auto-merge-release.yml.
 
 on:
@@ -27,6 +29,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >-
-          gh pr merge --auto
+          gh pr merge --auto --squash
           "${{ github.event.pull_request.number }}"
           --repo "${{ github.repository }}"
