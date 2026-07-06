@@ -236,8 +236,8 @@ The full per-tool reference (all 76, one line each) lives in
 
 | Variable | Effect |
 |----------|--------|
-| `DUNST_MCP_MODE=fixture` | serve the deterministic Notes fixture instead of a live window |
-| `DUNST_MCP_APP="<name>"` | pin startup to a named app (e.g. `"Google Chrome"`) |
+| `DUNST_MCP_MODE=fixture` | serve the deterministic Notes fixture instead of a live window (read by `scripts/mcp-dunst.sh` only, not by the bare binary) |
+| `DUNST_MCP_APP="<name>"` | pin startup to a named app (e.g. `"Google Chrome"`) (read by `scripts/mcp-dunst.sh` only, not by the bare binary) |
 | `DUNST_MCP_ENABLE_APPROVE_TOOL=1` | advertise the operator-side `approve` / `preauthorize` / `revoke_preauthorization` tools (off by default) |
 | `DUNST_AX_MAX_NODES`, `DUNST_AX_MAX_DEPTH` | lower AX traversal caps for very large or noisy apps |
 | `DUNST_MCP_AGENT_ID` | stable, human-readable agent label recorded in audit provenance |
