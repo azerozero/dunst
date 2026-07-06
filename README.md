@@ -133,6 +133,9 @@ cargo run -p dunst-mcp -- doctor
 ## Run
 
 ```bash
+# Install the released binary (arm64 + x86_64 bottles from GitHub Releases)
+brew install azerozero/tap/dunst-mcp
+
 # Device-free demo on the Notes fixture: scene -> affordance -> risk gating -> audit
 cargo run -p dunst-mcp -- demo
 
@@ -148,11 +151,10 @@ cargo run -p dunst-platform --example dump -- <pid> <window_id>
 ```
 
 Ensure `~/.cargo/bin` is on your `PATH` (it is by default with a rustup install)
-so the MCP host can find `dunst-mcp`. Alternatively, download a prebuilt
-`dunst-mcp` binary from a tagged [GitHub Release](https://github.com/azerozero/dunst/releases),
-`chmod +x` it, and move it onto your `PATH` — no Rust toolchain required. Until a
-Homebrew formula ships, `cargo install` and the Release binary are the supported
-ways to put `dunst-mcp` on `PATH`.
+so the MCP host can find `dunst-mcp`. No Rust toolchain? Two options:
+`brew install azerozero/tap/dunst-mcp`, or download a prebuilt `dunst-mcp`
+binary from a tagged [GitHub Release](https://github.com/azerozero/dunst/releases),
+`chmod +x` it, and move it onto your `PATH`.
 
 The fixture demo prints a scene summary, resolves `Nouvelle note`, executes the
 low-risk click, gates a destructive `Supprimer` action as `PendingApproval`, then
@@ -246,9 +248,10 @@ Every `tools/call` result carries `_meta.dunst.timing_ms` and `_meta.dunst.tool`
 for per-tool latency profiling. Read-orientation tools reuse a short AX-refresh
 TTL (pass `force_refresh:true` to bypass); mutating actions always re-perceive.
 
-Homebrew is a good later packaging target; until a formula ships, the repo-local
-`scripts/mcp-dunst.sh` wrapper (development) and a prebuilt binary from GitHub
-Releases (stable) are the supported entrypoints — both use `dunst-mcp serve`.
+The supported entrypoints — all of which run `dunst-mcp serve` — are the
+Homebrew formula (`brew install azerozero/tap/dunst-mcp`, stable), a prebuilt
+binary from GitHub Releases (stable), and the repo-local `scripts/mcp-dunst.sh`
+wrapper (development).
 
 ## Development
 
