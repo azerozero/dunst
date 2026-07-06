@@ -202,3 +202,25 @@ pub(super) fn is_terminal_app_name(value: &str) -> bool {
     .iter()
     .any(|needle| app.contains(needle))
 }
+
+/// Reading-order comparison of two positioned items: top-to-bottom by `bbox.y`,
+/// then left-to-right by `bbox.x` (a missing bbox sorts last), with the stable
+/// `id` as the final tiebreak so equal positions stay deterministic. Shared by
+/// the browser-tab and text-snippet sorts.
+pub(super) fn bbox_reading_order(
+    a_bbox: Option<Bbox>,
+    a_id: &str,
+    b_bbox: Option<Bbox>,
+    b_id: &str,
+) -> std::cmp::Ordering {
+    let ay = a_bbox.map(|b| b.y).unwrap_or(f64::MAX);
+    let by = b_bbox.map(|b| b.y).unwrap_or(f64::MAX);
+    ay.partial_cmp(&by)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| {
+            let ax = a_bbox.map(|b| b.x).unwrap_or(f64::MAX);
+            let bx = b_bbox.map(|b| b.x).unwrap_or(f64::MAX);
+            ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| a_id.cmp(b_id))
+}

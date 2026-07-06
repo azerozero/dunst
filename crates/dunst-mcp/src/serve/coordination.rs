@@ -16,6 +16,45 @@ use serde_json::{json, Value};
 const DEFAULT_LEASE_TTL_MS: u64 = 30_000;
 const DEFAULT_LOCK_WAIT_MS: u64 = 2_500;
 
+/// The invariant lock/lease context for one [`CoordinationGuard::acquire`] call:
+/// the paths and env-derived timings that every outcome summary repeats. Held by
+/// reference so the outcome helpers ([`resolve_lease`] and friends) can rebuild a
+/// [`CoordinationSummary`] scaffold via [`CoordinationSummary::base`].
+struct LeaseContext<'a> {
+    session: &'a SessionIdentity,
+    window_id: u32,
+    tool_name: &'a str,
+    lock_path: PathBuf,
+    lease_path: PathBuf,
+    lease_ttl_ms: u64,
+    lock_wait_ms: u64,
+}
+
+impl<'a> LeaseContext<'a> {
+    /// Resolve the coordination directory (creating it), derive the lock/lease
+    /// paths for `window_id`, and read the clamped lease-TTL / lock-wait from the
+    /// environment.
+    fn new(
+        session: &'a SessionIdentity,
+        window_id: u32,
+        tool_name: &'a str,
+    ) -> Result<Self, CoordinationFailure> {
+        let root = coordination_dir();
+        ensure_dir(&root)?;
+        Ok(Self {
+            session,
+            window_id,
+            tool_name,
+            lock_path: root.join("raw-input.lock"),
+            lease_path: root.join(format!("window-{window_id}.json")),
+            lease_ttl_ms: env_u64("DUNST_MCP_WINDOW_LEASE_TTL_MS", DEFAULT_LEASE_TTL_MS)
+                .clamp(1_000, 300_000),
+            lock_wait_ms: env_u64("DUNST_MCP_MUTATION_LOCK_WAIT_MS", DEFAULT_LOCK_WAIT_MS)
+                .clamp(0, 30_000),
+        })
+    }
+}
+
 pub(super) struct CoordinationGuard {
     lock: GlobalMutationLock,
     summary: CoordinationSummary,
@@ -28,165 +67,23 @@ impl CoordinationGuard {
         tool_name: &str,
         args: &Value,
     ) -> Result<Self, CoordinationFailure> {
-        let root = coordination_dir();
-        ensure_dir(&root)?;
-        let lock_path = root.join("raw-input.lock");
-        let lease_path = root.join(format!("window-{window_id}.json"));
-        let lease_ttl_ms =
-            env_u64("DUNST_MCP_WINDOW_LEASE_TTL_MS", DEFAULT_LEASE_TTL_MS).clamp(1_000, 300_000);
-        let lock_wait_ms =
-            env_u64("DUNST_MCP_MUTATION_LOCK_WAIT_MS", DEFAULT_LOCK_WAIT_MS).clamp(0, 30_000);
+        let ctx = LeaseContext::new(session, window_id, tool_name)?;
         let requested_token = arg_string(args, "fencing_token");
 
-        let lock = GlobalMutationLock::acquire(&lock_path, lock_wait_ms).map_err(|err| {
-            CoordinationFailure::new(CoordinationSummary {
-                mode: "single_writer".into(),
-                tool: tool_name.into(),
-                target_window_id: window_id,
-                lock_path: path_string(&lock_path),
-                lease_path: path_string(&lease_path),
-                lease_ttl_ms,
-                lock_wait_ms,
-                waited_ms: err.waited_ms,
-                owner: session.clone(),
-                fencing_token: requested_token.clone(),
-                lease_expires_at_ms: None,
-                blocked_by: None,
-                status: "lock_unavailable".into(),
-                reason: Some(err.message),
-            })
-        })?;
-
-        let waited_ms = lock.waited_ms;
-        let now = dunst_core::now_ms();
-        let existing = read_lease(&lease_path);
-        if let Some(record) = existing.filter(|record| record.expires_at_ms > now) {
-            if record.owner.session_id != session.session_id {
-                return Err(CoordinationFailure::new(CoordinationSummary {
-                    mode: "single_writer".into(),
-                    tool: tool_name.into(),
-                    target_window_id: window_id,
-                    lock_path: path_string(&lock_path),
-                    lease_path: path_string(&lease_path),
-                    lease_ttl_ms,
-                    lock_wait_ms,
-                    waited_ms,
-                    owner: session.clone(),
+        let lock =
+            GlobalMutationLock::acquire(&ctx.lock_path, ctx.lock_wait_ms).map_err(|err| {
+                CoordinationFailure::new(CoordinationSummary {
                     fencing_token: requested_token.clone(),
-                    lease_expires_at_ms: Some(record.expires_at_ms),
-                    blocked_by: Some(LeaseOwnerSummary::from_record(&record)),
-                    status: "window_lease_blocked".into(),
-                    reason: Some(format!(
-                        "target window {window_id} is leased by session {} until {}",
-                        record.owner.session_id, record.expires_at_ms
-                    )),
-                }));
-            }
-            if let Some(token) = requested_token.as_deref() {
-                if token != record.fencing_token {
-                    return Err(CoordinationFailure::new(CoordinationSummary {
-                        mode: "single_writer".into(),
-                        tool: tool_name.into(),
-                        target_window_id: window_id,
-                        lock_path: path_string(&lock_path),
-                        lease_path: path_string(&lease_path),
-                        lease_ttl_ms,
-                        lock_wait_ms,
-                        waited_ms,
-                        owner: session.clone(),
-                        fencing_token: requested_token.clone(),
-                        lease_expires_at_ms: Some(record.expires_at_ms),
-                        blocked_by: Some(LeaseOwnerSummary::from_record(&record)),
-                        status: "fencing_token_mismatch".into(),
-                        reason: Some(
-                            "fencing_token does not match the active window lease; discard the stale plan and re-read get_hit_targets".into(),
-                        ),
-                    }));
-                }
-            }
-            let renewed = LeaseRecord {
-                expires_at_ms: now.saturating_add(lease_ttl_ms),
-                updated_at_ms: now,
-                tool: tool_name.into(),
-                ..record
-            };
-            write_lease(&lease_path, &renewed)?;
-            return Ok(Self {
-                lock,
-                summary: CoordinationSummary {
-                    mode: "single_writer".into(),
-                    tool: tool_name.into(),
-                    target_window_id: window_id,
-                    lock_path: path_string(&lock_path),
-                    lease_path: path_string(&lease_path),
-                    lease_ttl_ms,
-                    lock_wait_ms,
-                    waited_ms,
-                    owner: session.clone(),
-                    fencing_token: Some(renewed.fencing_token),
-                    lease_expires_at_ms: Some(renewed.expires_at_ms),
-                    blocked_by: None,
-                    status: "lease_renewed".into(),
-                    reason: None,
-                },
-            });
-        }
+                    status: "lock_unavailable".into(),
+                    reason: Some(err.message),
+                    ..CoordinationSummary::base(&ctx, err.waited_ms)
+                })
+            })?;
 
-        if requested_token.is_some() {
-            return Err(CoordinationFailure::new(CoordinationSummary {
-                mode: "single_writer".into(),
-                tool: tool_name.into(),
-                target_window_id: window_id,
-                lock_path: path_string(&lock_path),
-                lease_path: path_string(&lease_path),
-                lease_ttl_ms,
-                lock_wait_ms,
-                waited_ms,
-                owner: session.clone(),
-                fencing_token: requested_token,
-                lease_expires_at_ms: None,
-                blocked_by: None,
-                status: "fencing_token_expired".into(),
-                reason: Some(
-                    "fencing_token was supplied but no active matching window lease exists; re-read and retry without stale state".into(),
-                ),
-            }));
-        }
-
-        let fencing_token = format!(
-            "lease-{}-{window_id}-{now}",
-            token_safe_session_id(&session.session_id)
-        );
-        let record = LeaseRecord {
-            window_id,
-            owner: session.clone(),
-            fencing_token: fencing_token.clone(),
-            acquired_at_ms: now,
-            updated_at_ms: now,
-            expires_at_ms: now.saturating_add(lease_ttl_ms),
-            tool: tool_name.into(),
-        };
-        write_lease(&lease_path, &record)?;
-
-        Ok(Self {
-            lock,
-            summary: CoordinationSummary {
-                mode: "single_writer".into(),
-                tool: tool_name.into(),
-                target_window_id: window_id,
-                lock_path: path_string(&lock_path),
-                lease_path: path_string(&lease_path),
-                lease_ttl_ms,
-                lock_wait_ms,
-                waited_ms,
-                owner: session.clone(),
-                fencing_token: Some(fencing_token),
-                lease_expires_at_ms: Some(record.expires_at_ms),
-                blocked_by: None,
-                status: "lease_acquired".into(),
-                reason: None,
-            },
-        })
+        // The global lock is now held; pick the lease outcome and pair it with
+        // the guard so `Drop` releases the lock either way.
+        let summary = resolve_lease(&ctx, lock.waited_ms, requested_token)?;
+        Ok(Self { lock, summary })
     }
 
     pub(super) fn summary_value(&self) -> Value {
@@ -242,9 +139,140 @@ struct CoordinationSummary {
 }
 
 impl CoordinationSummary {
+    /// Common scaffold for every outcome of [`CoordinationGuard::acquire`]: fills
+    /// the invariant lock/lease context from `ctx` and leaves the outcome-specific
+    /// fields (`fencing_token`, `lease_expires_at_ms`, `blocked_by`, `status`,
+    /// `reason`) at neutral defaults for the caller to override via `..`.
+    fn base(ctx: &LeaseContext<'_>, waited_ms: u64) -> Self {
+        Self {
+            mode: "single_writer".into(),
+            tool: ctx.tool_name.into(),
+            target_window_id: ctx.window_id,
+            lock_path: path_string(&ctx.lock_path),
+            lease_path: path_string(&ctx.lease_path),
+            lease_ttl_ms: ctx.lease_ttl_ms,
+            lock_wait_ms: ctx.lock_wait_ms,
+            waited_ms,
+            owner: ctx.session.clone(),
+            fencing_token: None,
+            lease_expires_at_ms: None,
+            blocked_by: None,
+            status: String::new(),
+            reason: None,
+        }
+    }
+
     fn to_value(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| json!({ "status": "serialization_failed" }))
     }
+}
+
+/// Decide the lease outcome once the global mutation lock is held: renew a
+/// still-valid lease we own, or mint a fresh one. Returns the success summary,
+/// or a [`CoordinationFailure`] for a foreign/mismatched/expired lease.
+fn resolve_lease(
+    ctx: &LeaseContext<'_>,
+    waited_ms: u64,
+    requested_token: Option<String>,
+) -> Result<CoordinationSummary, CoordinationFailure> {
+    let now = dunst_core::now_ms();
+    match read_lease(&ctx.lease_path).filter(|record| record.expires_at_ms > now) {
+        Some(record) => renew_existing_lease(ctx, waited_ms, requested_token, record, now),
+        None => acquire_new_lease(ctx, waited_ms, requested_token, now),
+    }
+}
+
+/// A still-valid lease exists: reject a foreign owner or a mismatched fencing
+/// token, otherwise renew it and return the `lease_renewed` summary.
+fn renew_existing_lease(
+    ctx: &LeaseContext<'_>,
+    waited_ms: u64,
+    requested_token: Option<String>,
+    record: LeaseRecord,
+    now: u64,
+) -> Result<CoordinationSummary, CoordinationFailure> {
+    if record.owner.session_id != ctx.session.session_id {
+        return Err(CoordinationFailure::new(CoordinationSummary {
+            fencing_token: requested_token.clone(),
+            lease_expires_at_ms: Some(record.expires_at_ms),
+            blocked_by: Some(LeaseOwnerSummary::from_record(&record)),
+            status: "window_lease_blocked".into(),
+            reason: Some(format!(
+                "target window {} is leased by session {} until {}",
+                ctx.window_id, record.owner.session_id, record.expires_at_ms
+            )),
+            ..CoordinationSummary::base(ctx, waited_ms)
+        }));
+    }
+    if let Some(token) = requested_token.as_deref() {
+        if token != record.fencing_token {
+            return Err(CoordinationFailure::new(CoordinationSummary {
+                fencing_token: requested_token.clone(),
+                lease_expires_at_ms: Some(record.expires_at_ms),
+                blocked_by: Some(LeaseOwnerSummary::from_record(&record)),
+                status: "fencing_token_mismatch".into(),
+                reason: Some(
+                    "fencing_token does not match the active window lease; discard the stale plan and re-read get_hit_targets".into(),
+                ),
+                ..CoordinationSummary::base(ctx, waited_ms)
+            }));
+        }
+    }
+    let renewed = LeaseRecord {
+        expires_at_ms: now.saturating_add(ctx.lease_ttl_ms),
+        updated_at_ms: now,
+        tool: ctx.tool_name.into(),
+        ..record
+    };
+    write_lease(&ctx.lease_path, &renewed)?;
+    Ok(CoordinationSummary {
+        fencing_token: Some(renewed.fencing_token),
+        lease_expires_at_ms: Some(renewed.expires_at_ms),
+        status: "lease_renewed".into(),
+        ..CoordinationSummary::base(ctx, waited_ms)
+    })
+}
+
+/// No usable existing lease: reject a supplied-but-stale fencing token, otherwise
+/// mint a fresh lease and return the `lease_acquired` summary.
+fn acquire_new_lease(
+    ctx: &LeaseContext<'_>,
+    waited_ms: u64,
+    requested_token: Option<String>,
+    now: u64,
+) -> Result<CoordinationSummary, CoordinationFailure> {
+    if requested_token.is_some() {
+        return Err(CoordinationFailure::new(CoordinationSummary {
+            fencing_token: requested_token,
+            status: "fencing_token_expired".into(),
+            reason: Some(
+                "fencing_token was supplied but no active matching window lease exists; re-read and retry without stale state".into(),
+            ),
+            ..CoordinationSummary::base(ctx, waited_ms)
+        }));
+    }
+
+    let fencing_token = format!(
+        "lease-{}-{}-{now}",
+        token_safe_session_id(&ctx.session.session_id),
+        ctx.window_id
+    );
+    let record = LeaseRecord {
+        window_id: ctx.window_id,
+        owner: ctx.session.clone(),
+        fencing_token: fencing_token.clone(),
+        acquired_at_ms: now,
+        updated_at_ms: now,
+        expires_at_ms: now.saturating_add(ctx.lease_ttl_ms),
+        tool: ctx.tool_name.into(),
+    };
+    write_lease(&ctx.lease_path, &record)?;
+    Ok(CoordinationSummary {
+        fencing_token: Some(fencing_token),
+        lease_expires_at_ms: Some(record.expires_at_ms),
+        status: "lease_acquired".into(),
+        ..CoordinationSummary::base(ctx, waited_ms)
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -353,6 +381,10 @@ fn try_lock_exclusive(file: &File) -> io::Result<()> {
     }
 }
 
+// NOTE: Off-unix this is a no-op that always "succeeds", so the `single_writer`
+// mutation guarantee is NOT enforced there — the lease file still serialises
+// intent, but two processes could hold the lock simultaneously. Acceptable
+// because the server targets macOS (unix); revisit before shipping a Windows build.
 #[cfg(not(unix))]
 fn try_lock_exclusive(_file: &File) -> io::Result<()> {
     Ok(())

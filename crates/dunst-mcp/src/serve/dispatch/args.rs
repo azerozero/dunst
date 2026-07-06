@@ -1,4 +1,5 @@
 use super::*;
+use dunst_core::AuditEntry;
 
 pub(super) fn arg(args: &Value, key: &str) -> Option<String> {
     args.get(key).and_then(Value::as_str).map(str::to_owned)
@@ -6,6 +7,14 @@ pub(super) fn arg(args: &Value, key: &str) -> Option<String> {
 
 pub(super) fn arg_bool(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(Value::as_bool)
+}
+
+/// Render an [`AuditEntry`] as a JSON value, honouring the caller's optional
+/// `include_diff` argument (default `false`). Collapses the
+/// `audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))`
+/// incantation repeated across the dispatch tools into one call.
+pub(super) fn audit_entry_with_args(entry: AuditEntry, args: &Value) -> Value {
+    audit_entry_value(entry, arg_bool(args, "include_diff").unwrap_or(false))
 }
 
 /// Parse an optional screen-point `region` object.

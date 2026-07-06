@@ -374,16 +374,22 @@ impl Engine {
         host_labels: &[String],
         reuse_policy: BrowserTabReusePolicy,
     ) -> Option<WindowSummary> {
+        // The probe attaches to each candidate to inspect its selected tab, which
+        // mutates `self.target`. A RAII guard restores the entry target on every
+        // exit (including a panic) so a failed probe never strands us on the wrong
+        // window; the success path disarms it to keep the chosen window.
         let original = self.target.clone();
+        let mut guard = TargetRestoreGuard::new(self, original);
         let mut best = None;
 
         for window in candidates {
-            if self.target.window_id != window.window_id
-                && self.attach(window.pid, window.window_id).is_err()
+            let engine = guard.engine();
+            if engine.target.window_id != window.window_id
+                && engine.attach(window.pid, window.window_id).is_err()
             {
                 continue;
             }
-            let Some(tab) = self
+            let Some(tab) = engine
                 .list_browser_tabs(None, true)
                 .into_iter()
                 .find(|tab| tab.selected)
@@ -405,17 +411,17 @@ impl Engine {
         }
 
         if let Some((_, selected)) = best {
-            if self.target.window_id != selected.window_id
-                && self.attach(selected.pid, selected.window_id).is_err()
+            let engine = guard.engine();
+            if engine.target.window_id != selected.window_id
+                && engine.attach(selected.pid, selected.window_id).is_err()
             {
-                let _ = self.attach(original.pid, original.window_id);
+                // Guard restores the original target on the early return.
                 return None;
             }
+            guard.disarm();
             Some(selected)
         } else {
-            if self.target != original {
-                let _ = self.attach(original.pid, original.window_id);
-            }
+            // Guard restores the original target when it drops.
             None
         }
     }
@@ -504,6 +510,53 @@ impl Engine {
     /// Quit an app gracefully (no foreground) by name.
     pub fn close_app(&self, app: &str) -> bool {
         dunst_platform::close_app(app)
+    }
+}
+
+/// Restores the engine's attach target on drop unless [`disarm`](Self::disarm)ed.
+///
+/// [`Engine::best_window_with_matching_selected_tab`] probes candidate windows by
+/// *attaching* to each in turn, which mutates `self.target`. This guard captures
+/// the entry target and puts it back on every exit path — early return or panic —
+/// so a failed or aborted probe can never strand the engine on the wrong window
+/// (the temporal-coupling fix). The success path disarms it to keep the window it
+/// deliberately selected.
+#[cfg(target_os = "macos")]
+struct TargetRestoreGuard<'e> {
+    engine: &'e mut Engine,
+    original: Target,
+    armed: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl<'e> TargetRestoreGuard<'e> {
+    fn new(engine: &'e mut Engine, original: Target) -> Self {
+        Self {
+            engine,
+            original,
+            armed: true,
+        }
+    }
+
+    /// The guarded engine, for driving the probe.
+    fn engine(&mut self) -> &mut Engine {
+        self.engine
+    }
+
+    /// Keep the currently-attached window; cancels the restore-on-drop.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for TargetRestoreGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed && self.engine.target != self.original {
+            let _ = self
+                .engine
+                .attach(self.original.pid, self.original.window_id);
+        }
     }
 }
 

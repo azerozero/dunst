@@ -16,44 +16,25 @@
 
 use std::collections::BTreeSet;
 
-use dunst_core::mock::MockPerceptor;
-use dunst_core::{NodeChange, Perceptor, RawAxNode, Role, SceneGraph, Target, WindowRef};
+use dunst_core::{NodeChange, RawAxNode, Role, SceneGraph, WindowRef};
 use dunst_graph::scene::synth_id;
 use dunst_graph::{build_scene_graph, diff};
 
-/// `RawAxNode` builder that can set an `ax_identifier`.
+mod common;
+
+/// `RawAxNode` builder that can set an `ax_identifier` (delegates to the shared
+/// [`common::raw_node`]).
 fn raw(
     role: &str,
     label: Option<&str>,
     ax_identifier: Option<&str>,
     children: Vec<RawAxNode>,
 ) -> RawAxNode {
-    RawAxNode {
-        ax_role: role.to_string(),
-        label: label.map(str::to_string),
-        help: None,
-        value: None,
-        ax_identifier: ax_identifier.map(str::to_string),
-        cmd_char: None,
-        cmd_modifiers: None,
-        cmd_virtual_key: None,
-        ax_actions: Vec::new(),
-        frame: None,
-        enabled: true,
-        focused: false,
-        children,
-    }
+    common::raw_node(role, label, ax_identifier, children)
 }
 
 fn fixture_graph() -> SceneGraph {
-    let perceptor = MockPerceptor::notes_fixture().expect("fixture loads");
-    let target = Target {
-        pid: 1363,
-        window_id: 105,
-    };
-    let roots = perceptor.capture(&target).expect("capture");
-    let window = perceptor.window_ref(&target).expect("window_ref");
-    build_scene_graph(roots, window, 1_000)
+    common::notes_graph(1_000)
 }
 
 // ---------------------------------------------------------------------------

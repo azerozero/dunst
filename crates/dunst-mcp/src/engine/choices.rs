@@ -316,17 +316,28 @@ impl Engine {
         {
             let mut targets = targets;
             let mut pages_scrolled = 0usize;
-            self.begin_internal_batch_context(
+            // RAII guard: the survey-scroll batch context is cleared on scope exit
+            // even if a `scroll`/`hit_targets` call panics (DRIFT-001).
+            let mut guard = BatchContextGuard::new(
+                self,
                 "batch@survey-scroll".to_string(),
                 opts.max_scroll_pages.saturating_mul(2).saturating_add(2),
                 initial.ui_epoch.fingerprint.clone(),
             );
             for _ in 0..opts.max_scroll_pages {
-                match self.scroll("down", 1, None) {
+                // Bind the scroll result before matching so the `&mut Engine`
+                // reborrow does not outlive the scrutinee into the arm below,
+                // where the guard is borrowed again for `hit_targets`.
+                let scrolled = guard.engine().scroll("down", 1, None);
+                match scrolled {
                     Ok(entry) if entry.result == ActionResult::Success => {
                         pages_scrolled += 1;
-                        let next =
-                            self.hit_targets(opts.include_latent, opts.scope, opts.limit, None);
+                        let next = guard.engine().hit_targets(
+                            opts.include_latent,
+                            opts.scope,
+                            opts.limit,
+                            None,
+                        );
                         merge_hit_targets(&mut targets, next.targets);
                     }
                     Ok(entry) => {
@@ -343,14 +354,14 @@ impl Engine {
                 }
             }
             for _ in 0..pages_scrolled {
-                if let Err(err) = self.scroll("up", 1, None) {
+                if let Err(err) = guard.engine().scroll("up", 1, None) {
                     warnings.push(format!(
                         "scroll_scan could not restore the original scroll position exactly: {err}"
                     ));
                     break;
                 }
             }
-            self.clear_internal_batch_context();
+            drop(guard);
             (initial, targets, warnings, pages_scrolled > 0)
         }
 

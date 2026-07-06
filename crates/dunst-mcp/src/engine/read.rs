@@ -501,18 +501,7 @@ impl Engine {
             });
         }
 
-        tabs.sort_by(|a, b| {
-            let ay = a.bbox.map(|b| b.y).unwrap_or(f64::MAX);
-            let by = b.bbox.map(|b| b.y).unwrap_or(f64::MAX);
-            ay.partial_cmp(&by)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    let ax = a.bbox.map(|b| b.x).unwrap_or(f64::MAX);
-                    let bx = b.bbox.map(|b| b.x).unwrap_or(f64::MAX);
-                    ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| a.id.cmp(&b.id))
-        });
+        tabs.sort_by(|a, b| bbox_reading_order(a.bbox, &a.id, b.bbox, &b.id));
         if tabs.is_empty() {
             if let Some(tab) =
                 fallback_browser_tab_from_window_title(self.scene_graph(), q.as_deref())
@@ -578,19 +567,13 @@ impl Engine {
             }
 
             if key_elements.len() < limit
-                && !chrome
-                && !page_state_suppressed_repetitive_destructive(
+                && self.page_state_is_key_element(
                     node,
+                    chrome,
+                    window_rect,
+                    menubar,
                     &suppressed_repetitive_destructive,
                 )
-                && page_state_key_element_candidate(node, window_rect, menubar)
-                && node.enabled
-                && self
-                    .affordance_graph()
-                    .affordances
-                    .get(&node.id)
-                    .map(|a| !a.actions.is_empty())
-                    .unwrap_or(false)
             {
                 key_elements.push(KeyElement {
                     id: node.id.clone(),
@@ -636,6 +619,32 @@ impl Engine {
             visible_text,
             key_elements,
         }
+    }
+
+    /// Whether `node` qualifies as a [`page_state`](Self::page_state) *key
+    /// element*: an enabled, non-chrome, non-repetitive-destructive candidate that
+    /// actually exposes an affordance. Split out of the collection loop so each
+    /// gate reads as one named concern.
+    fn page_state_is_key_element(
+        &self,
+        node: &SceneNode,
+        chrome: bool,
+        window_rect: Option<Bbox>,
+        menubar: Option<&str>,
+        suppressed_repetitive_destructive: &BTreeSet<String>,
+    ) -> bool {
+        !chrome
+            && !page_state_suppressed_repetitive_destructive(
+                node,
+                suppressed_repetitive_destructive,
+            )
+            && page_state_key_element_candidate(node, window_rect, menubar)
+            && node.enabled
+            && self
+                .affordance_graph()
+                .affordances
+                .get(&node.id)
+                .is_some_and(|a| !a.actions.is_empty())
     }
 
     /// AX-only text extraction for LLM chats and document-like pages. This is
@@ -707,17 +716,7 @@ impl Engine {
             let avis = if a.visible { 0 } else { 1 };
             let bvis = if b.visible { 0 } else { 1 };
             avis.cmp(&bvis)
-                .then_with(|| {
-                    let ay = a.bbox.map(|b| b.y).unwrap_or(f64::MAX);
-                    let by = b.bbox.map(|b| b.y).unwrap_or(f64::MAX);
-                    ay.partial_cmp(&by).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| {
-                    let ax = a.bbox.map(|b| b.x).unwrap_or(f64::MAX);
-                    let bx = b.bbox.map(|b| b.x).unwrap_or(f64::MAX);
-                    ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| a.id.cmp(&b.id))
+                .then_with(|| bbox_reading_order(a.bbox, &a.id, b.bbox, &b.id))
         });
         snippets.truncate(limit);
         snippets
