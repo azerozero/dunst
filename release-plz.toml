@@ -28,7 +28,7 @@ changelog_path = "CHANGELOG.md"
 # its changelog. NOTE: lib-only releasable commits still do NOT trigger a
 # version bump (git-only mode scopes bump detection to crates/dunst-mcp);
 # for a lib-only release, open a manual `chore(dunst-mcp): release vX.Y.Z`
-# PR with the `release` label (see PR #42).
+# PR with the `release` label (see PR #43).
 changelog_include = ["dunst-core", "dunst-graph", "dunst-platform", "dunst-vision"]
 git_release_name = "v{{ version }}"
 
