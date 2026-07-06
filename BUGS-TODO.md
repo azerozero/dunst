@@ -285,3 +285,45 @@ HID** + restore, miroir de `right_click_at_point_impl`) dans
 `click_near_text` (même recette que `scroll_at borrow_cursor`). Contournement
 utilisé avant le fix : ouvrir le select puis `press_key Down` + `Return` (le
 clavier atteint le menu-tracking), ou AppleScript System Events.
+
+## 7. Scroll clavier de fond = activation Firefox (toutes fenêtres remontées) — CORRIGÉ (2026-07-06)
+
+`scroll` (pseudo-cible `page@scroll:*`, chemin `keyboard@scroll:...`) →
+`key_web_background()` appelait `focus_without_raise()` avant CHAQUE frappe : la
+recette SLPS défocus(0x02)+focus(0x01) active l'app cible au niveau window server,
+et AppKit remonte alors TOUTES ses fenêtres au-dessus du premier plan de
+l'utilisateur (observé : toutes les fenêtres Firefox raised pendant un simple
+scroll top).
+
+**Fix** : `skylight::focus_key_only()` (poste uniquement le record focus 0x01,
+sans défocaliser le front process) utilisé par `key_web_background` à la place de
+`focus_without_raise`.
+
+**Complément (même jour)** : le symptôme persistait via les chemins souris/frappe
+de fond — `click_web_background`, `hover_web_background_impl`,
+`scroll_web_background_impl`, `type_text_background_impl` appelaient encore
+`focus_without_raise` (observé pendant une session Collective : activation à
+chaque clic/set_field_text). Les 4 sites sont passés à `focus_key_only` aussi.
+`focus_without_raise` ne reste utilisé que par le chemin volontaire de raise/focus
+(`dunst_platform::focus_without_raise`, outil focus_window).
+
+**Audit approfondi (2026-07-06, les 2 fenêtres remontaient toujours)** — deux
+causes réelles identifiées, `focus_key_only` seul ne suffisait pas :
+
+1. `set_field_text` → `set_focused_field_text` → `paste_replace_field_foreground`
+   exécutait un osascript `set frontmost … to true` : activation APP explicite à
+   chaque appel, indépendante de tout focus record. **Fix** : reroute sur le
+   chemin AX `type_text` (sélection via kAXSelectedTextRange — pas de Cmd+A,
+   donc pas de piège keycode AZERTY — puis livraison background auth-signée).
+2. Le record de focus 0x01 est posté au **PSN du process** (pas de la fenêtre) :
+   même « key-only », chaque post peut réactiver l'app entière → AppKit remonte
+   toutes ses fenêtres. **Fix** : `ensure_window_key_focus(pid, window_id)` ne
+   poste le record que si `AXFocusedWindow` ≠ fenêtre cible — one-shot par
+   changement de cible au lieu d'un effet de bord par événement.
+
+Reste connu (hors scope, à traiter si gênant) : `scan_chart` et l'outil
+`focus_window` utilisent volontairement `focus_without_raise` (activation
+attendue) ; `navigate` active Firefox par design.
+À VALIDER en live après rebuild + reload MCP : set_field_text et press_key en
+rafale ne doivent plus faire remonter les fenêtres Firefox ; la livraison
+(clics Chromium gate, Page/Home/End, frappe) doit toujours atteindre la cible.

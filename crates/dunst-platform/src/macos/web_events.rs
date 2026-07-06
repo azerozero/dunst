@@ -5,6 +5,26 @@ extern "C" {
     pub(super) fn CGEventSetLocation(event: *const c_void, location: CGPoint);
 }
 
+/// Give `window_id` key status only when it is not already the app's focused
+/// window. The SkyLight focus record is addressed to the owner's PSN — a
+/// **process-level** hint — so posting it can activate the whole target app
+/// and AppKit then raises every one of its windows over the user's
+/// foreground. Checking `AXFocusedWindow` first turns the record into a
+/// one-shot per focus change instead of a per-event side effect: in the
+/// steady state (same target window as last time) nothing is posted at all.
+pub(super) fn ensure_window_key_focus(pid: i32, window_id: u32) {
+    let already_key = app_element(pid)
+        .ok()
+        .and_then(|app| attr_ax_element(&app, "AXFocusedWindow"))
+        .and_then(|window| ax_window_id(&window))
+        == Some(window_id);
+    if already_key {
+        return;
+    }
+    skylight::focus_key_only(window_id);
+    thread::sleep(Duration::from_millis(50));
+}
+
 /// Build a CGEvent through the **NSEvent bridge** so it carries the
 /// `windowNumber` routing Chromium's user-activation gate latches onto (the
 /// plain CGEvent path is dropped). Returns a +1-owned CGEvent.
@@ -76,8 +96,10 @@ pub fn click_web_background(
     if user_idle_block_message("background click").is_some() {
         return false;
     }
-    focus_without_raise(window_id);
-    thread::sleep(Duration::from_millis(50));
+    // One-shot key focus: only posted when the window is not already the
+    // app's focused window — the process-level record otherwise re-activates
+    // the app (raising ALL its windows) on every single event.
+    ensure_window_key_focus(pid, window_id);
 
     let screen = CGPoint::new(sx, sy);
     let local = CGPoint::new(sx - ox, sy - oy);
@@ -184,8 +206,9 @@ pub(super) fn hover_web_background_impl(
         ));
     }
     ensure_user_idle_action("background hover")?;
-    focus_without_raise(window_id);
-    thread::sleep(Duration::from_millis(40));
+    // One-shot key focus (see ensure_window_key_focus): never re-activate the
+    // app when the window already holds key status.
+    ensure_window_key_focus(pid, window_id);
 
     let screen = CGPoint::new(sx, sy);
     let local = CGPoint::new(sx - ox, sy - oy);
@@ -250,8 +273,9 @@ pub(super) fn scroll_web_background_impl(
         ));
     }
     ensure_user_idle_action("background wheel scroll")?;
-    focus_without_raise(window_id);
-    thread::sleep(Duration::from_millis(40));
+    // One-shot key focus (see ensure_window_key_focus): never re-activate the
+    // app when the window already holds key status.
+    ensure_window_key_focus(pid, window_id);
 
     let screen = CGPoint::new(sx, sy);
     let local = CGPoint::new(sx - ox, sy - oy);
@@ -352,8 +376,9 @@ pub(super) fn type_text_background_impl(
         ));
     }
     ensure_user_idle_action("background type")?;
-    focus_without_raise(window_id);
-    thread::sleep(Duration::from_millis(50));
+    // One-shot key focus (see ensure_window_key_focus): never re-activate the
+    // app when the window already holds key status.
+    ensure_window_key_focus(pid, window_id);
     for_text_input_atoms(text, |atom| {
         match atom {
             TextInputAtom::Char(ch) => post_background_unicode_char(pid, ch)?,
@@ -422,6 +447,9 @@ pub(super) fn post_background_key_event(
 /// (Page Down/Up, Home, End) and other non-character keys. Fails if SkyLight
 /// is absent or if either key event cannot be created and posted.
 ///
+/// Focus is granted with the key-only SkyLight record, so the target app is
+/// NOT activated and its windows are NOT raised over the user's foreground.
+///
 /// # Errors
 ///
 /// Returns an error if the SkyLight backend is unavailable, if the user-active
@@ -436,8 +464,9 @@ pub fn key_web_background(pid: i32, window_id: u32, keycode: u16, flags: u64) ->
     }
     ensure_user_idle("background key")?;
     if window_id != 0 {
-        focus_without_raise(window_id);
-        thread::sleep(Duration::from_millis(40));
+        // One-shot key focus (see ensure_window_key_focus): never re-activate
+        // the app when the window already holds key status.
+        ensure_window_key_focus(pid, window_id);
     }
     let mods = CGEventFlags::from_bits_truncate(flags);
     for down in [true, false] {
