@@ -24,6 +24,12 @@ release_commits = "^(feat|fix|refactor|perf)(\\([^)]+\\))?:"
 [[package]]
 name = "dunst-mcp"
 changelog_path = "CHANGELOG.md"
+# The binary aggregates the four internal lib crates: include their commits in
+# its changelog. NOTE: lib-only releasable commits still do NOT trigger a
+# version bump (git-only mode scopes bump detection to crates/dunst-mcp);
+# for a lib-only release, open a manual `chore(dunst-mcp): release vX.Y.Z`
+# PR with the `release` label (see PR #42).
+changelog_include = ["dunst-core", "dunst-graph", "dunst-platform", "dunst-vision"]
 git_release_name = "v{{ version }}"
 
 # Internal library crates share the workspace version but are not released
