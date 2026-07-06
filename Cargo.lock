@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "dunst-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -283,7 +283,7 @@ dependencies = [
 
 [[package]]
 name = "dunst-graph"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "criterion",
  "dunst-core",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "dunst-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "dunst-core",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "dunst-platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "accessibility-sys",
  "core-foundation",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "dunst-vision"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "core-foundation",
  "core-graphics",
