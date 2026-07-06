@@ -21,15 +21,16 @@ jobs:
   release-pr:
     name: Create Release PR
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # macOS runner required: release-plz verifies the packaged crates with a
+    # real build, and dunst-mcp only compiles fully against the macOS
+    # frameworks (AX, CoreGraphics, SkyLight). harden-runner is Linux-only,
+    # hence absent from this job.
+    runs-on: macos-latest
+    timeout-minutes: 20
     concurrency:
       group: release-plz-pr
       cancel-in-progress: false
     steps:
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
-        with:
-          egress-policy: audit
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
