@@ -12,6 +12,9 @@ on:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
+  # Manual escape hatch: the push trigger is path-filtered to code changes,
+  # so a fix to this workflow itself can't retrigger a release evaluation.
+  workflow_dispatch:
   pull_request:
     types: [closed]
     branches:
@@ -20,7 +23,7 @@ on:
 jobs:
   release-pr:
     name: Create Release PR
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     # macOS runner required: release-plz verifies the packaged crates with a
     # real build, and dunst-mcp only compiles fully against the macOS
     # frameworks (AX, CoreGraphics, SkyLight). harden-runner is Linux-only,
