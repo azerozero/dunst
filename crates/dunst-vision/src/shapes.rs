@@ -105,6 +105,24 @@ pub fn detect_shapes(image: &CGImage, geometry: &CaptureGeometry) -> Vec<Shape> 
     dedupe_shapes(shapes)
 }
 
+/// `num / den` as `f32`, with `den` clamped to `>= 1` so a zero denominator
+/// yields `num as f32` rather than `inf`/`NaN`. Precision loss above 2^24 is
+/// irrelevant here: both operands are pixel counts / dimensions well under
+/// that range.
+fn ratio(num: usize, den: usize) -> f32 {
+    num as f32 / den.max(1) as f32
+}
+
+/// Converts a resampling coordinate to a valid source index: caps the
+/// truncating cast at `>= 0` then at `max_inclusive`. Equivalent to
+/// `(value.floor() as usize).min(max_inclusive)` for the non-negative
+/// `value`s this module always passes (resampling coordinates derived from
+/// `usize` inputs), since a truncating `as usize` cast of a non-negative
+/// float equals its floor.
+fn to_index(value: f64, max_inclusive: usize) -> usize {
+    (value.max(0.0) as usize).min(max_inclusive)
+}
+
 #[derive(Debug)]
 struct LumaImage {
     width: usize,
@@ -136,6 +154,9 @@ impl LumaImage {
         }
 
         let dst_w = TARGET_WIDTH.min(src_w).max(1);
+        // bounded: round() + max(1) keeps dst_h >= 1; shape differs from
+        // `to_index` (floor+min), so left as a direct cast rather than routed
+        // through the helper.
         let dst_h = ((src_h as f64 * dst_w as f64 / src_w as f64).round() as usize).max(1);
         let mut data = vec![0u8; dst_w * dst_h];
         let mut rg = vec![0i16; dst_w * dst_h];
@@ -145,13 +166,10 @@ impl LumaImage {
         // edge-clamped) instead of recomputing the same mul/floor for every row —
         // a loop-invariant hoist over the whole downsample grid.
         let sx_lut: Vec<usize> = (0..dst_w)
-            .map(|x| {
-                (((x as f64 + 0.5) * src_w as f64 / dst_w as f64).floor() as usize).min(src_w - 1)
-            })
+            .map(|x| to_index((x as f64 + 0.5) * src_w as f64 / dst_w as f64, src_w - 1))
             .collect();
         for y in 0..dst_h {
-            let sy =
-                (((y as f64 + 0.5) * src_h as f64 / dst_h as f64).floor() as usize).min(src_h - 1);
+            let sy = to_index((y as f64 + 0.5) * src_h as f64 / dst_h as f64, src_h - 1);
             for (x, &sx) in sx_lut.iter().enumerate() {
                 let (c0, c1, c2) = sample_channels(raw, bytes_per_row, bytes_per_pixel, sx, sy);
                 let idx = y * dst_w + x;
@@ -274,6 +292,7 @@ fn edge_map(luma: &LumaImage) -> BoolImage {
     } else {
         sum as f64 / count as f64
     };
+    // bounded: clamp(22.0, 80.0) keeps the value within u16 range before the cast.
     let threshold = mean.mul_add(1.8, 18.0).clamp(22.0, 80.0) as u16;
     let data = mags.into_iter().map(|mag| mag >= threshold).collect();
     BoolImage {
@@ -292,10 +311,9 @@ fn detect_edge_shapes(edges: &BoolImage, geometry: &CaptureGeometry, out: &mut V
         if b.w < EDGE_MIN_SIDE || b.h < EDGE_MIN_SIDE || b.area() < EDGE_MIN_AREA {
             continue;
         }
-        let aspect = b.w as f32 / b.h.max(1) as f32;
+        let aspect = ratio(b.w, b.h);
         if !LINE_ASPECT_RANGE.contains(&aspect) {
-            let confidence =
-                (0.45 + (component.pixels as f32 / b.area() as f32).min(0.35)).min(0.8);
+            let confidence = (0.45 + ratio(component.pixels, b.area()).min(0.35)).min(0.8);
             out.push(shape(
                 ShapeKind::Line,
                 b,
@@ -308,7 +326,7 @@ fn detect_edge_shapes(edges: &BoolImage, geometry: &CaptureGeometry, out: &mut V
         }
 
         let border = border_score(edges, b);
-        let fill = component.pixels as f32 / b.area() as f32;
+        let fill = ratio(component.pixels, b.area());
         if border > RECT_MIN_BORDER && fill < RECT_MAX_FILL {
             let confidence = (0.35 + border * 0.75 - fill * 0.25).clamp(0.35, 0.95);
             out.push(shape(
@@ -433,8 +451,8 @@ fn detect_bars(
             b.w >= BAR_MIN_W
                 && b.h >= BAR_MIN_H
                 && b.area() >= BAR_MIN_AREA
-                && c.pixels as f32 / b.area() as f32 > BAR_MIN_FILL
-                && b.h as f32 / b.w.max(1) as f32 > BAR_MIN_HW_RATIO
+                && ratio(c.pixels, b.area()) > BAR_MIN_FILL
+                && ratio(b.h, b.w) > BAR_MIN_HW_RATIO
         })
         .collect();
 
@@ -448,7 +466,7 @@ fn detect_bars(
             if out.len() >= MAX_SHAPES {
                 return bar_bboxes;
             }
-            let fill = c.pixels as f32 / c.bbox.area() as f32;
+            let fill = ratio(c.pixels, c.bbox.area());
             bar_bboxes.push(c.bbox);
             out.push(shape(
                 ShapeKind::Bar,
@@ -479,8 +497,8 @@ fn detect_circles(
             return;
         }
         let b = component.bbox;
-        let aspect = b.w as f32 / b.h.max(1) as f32;
-        let fill = component.pixels as f32 / b.area() as f32;
+        let aspect = ratio(b.w, b.h);
+        let fill = ratio(component.pixels, b.area());
         if b.w >= FILLED_CIRCLE_MIN_SIDE
             && b.h >= FILLED_CIRCLE_MIN_SIDE
             && FILLED_CIRCLE_ASPECT_RANGE.contains(&aspect)
@@ -531,7 +549,7 @@ fn detect_panels(
             continue;
         }
         if filled_panel_qualifies(*component, luma.width, luma.height) {
-            let fill = component.pixels as f32 / component.bbox.area().max(1) as f32;
+            let fill = ratio(component.pixels, component.bbox.area());
             out.push(shape(
                 ShapeKind::Panel,
                 component.bbox,
@@ -553,12 +571,12 @@ fn filled_panel_qualifies(c: Component, img_w: usize, img_h: usize) -> bool {
     if b.w < 24 || b.h < 16 {
         return false;
     }
-    let fill = c.pixels as f32 / b.area().max(1) as f32;
+    let fill = ratio(c.pixels, b.area());
     if fill < 0.60 {
         return false;
     }
     // Reject thin rules and tall bars; keep card-like aspect ratios.
-    let aspect = b.w as f32 / b.h as f32;
+    let aspect = ratio(b.w, b.h);
     if !(0.08..=12.0).contains(&aspect) {
         return false;
     }
@@ -654,7 +672,7 @@ fn border_score(edges: &BoolImage, b: BoxI) -> f32 {
     if border_total == 0 {
         0.0
     } else {
-        border_hits as f32 / border_total as f32
+        ratio(border_hits, border_total)
     }
 }
 
@@ -681,7 +699,7 @@ fn circle_edge_score(edges: &BoolImage, b: BoxI) -> f32 {
     if ring_total == 0 {
         0.0
     } else {
-        (ring_hits as f32 / ring_total as f32 * 1.8).min(0.85)
+        (ratio(ring_hits, ring_total) * 1.8).min(0.85)
     }
 }
 
@@ -804,6 +822,8 @@ mod panel_tests {
     fn comp(x: usize, y: usize, w: usize, h: usize, fill: f32) -> Component {
         Component {
             bbox: BoxI { x, y, w, h },
+            // bounded: test helper only; `fill` is always in [0, 1] and `w * h`
+            // is a small synthetic fixture size, so no clamp is needed.
             pixels: ((w * h) as f32 * fill) as usize,
         }
     }

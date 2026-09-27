@@ -1,5 +1,24 @@
 use super::*;
 
+/// Which scroll rung `scroll_at` resolved to use, plus the bookkeeping
+/// needed to update `scroll_strategy_cache` after the gesture runs.
+#[cfg(target_os = "macos")]
+struct ScrollRungDecision {
+    scope: ScrollStrategyKey,
+    borrow_cursor: bool,
+    remembered_strategy: bool,
+}
+
+/// The gate/audit id, argument, human-readable reasoning and risk assessment
+/// for one `scroll_at` gesture, derived from the resolved scroll rung.
+#[cfg(target_os = "macos")]
+struct ScrollGestureDescription {
+    target_id: String,
+    argument: String,
+    reasoning: &'static str,
+    risk: RiskAssessment,
+}
+
 #[cfg(test)]
 thread_local! {
     static SET_FIELD_TEXT_RESULTS: std::cell::RefCell<std::collections::VecDeque<ActionResult>> =
@@ -429,7 +448,7 @@ impl Engine {
         y: f64,
         direction: &str,
         pages: usize,
-        mut borrow_cursor: bool,
+        borrow_cursor: bool,
     ) -> dunst_core::Result<AuditEntry> {
         self.ensure_point_in_target_window(x, y, "scroll_at")?;
         let direction = normalized_scroll_direction(direction);
@@ -437,25 +456,69 @@ impl Engine {
         if matches!(direction, "top" | "bottom") {
             return self.scroll_with_background_keys(direction, count);
         }
-        let scope = self.scroll_strategy_key();
-        let remembered_strategy = !borrow_cursor
-            && self
-                .scroll_strategy_cache
-                .get(&scope)
-                .is_some_and(|memory| memory.strategy == ScrollStrategy::RealCursorWheel);
-        if remembered_strategy {
-            borrow_cursor = true;
+        let rung = self.resolve_scroll_rung(x, y, borrow_cursor)?;
+        let ScrollRungDecision {
+            scope,
+            borrow_cursor,
+            remembered_strategy,
+        } = rung;
+        let gesture = self.describe_scroll_gesture(
+            x,
+            y,
+            direction,
+            count,
+            borrow_cursor,
+            remembered_strategy,
+        );
+        if let Some(entry) = self.gate_raw_input(
+            &gesture.target_id,
+            SemanticAction::Scroll,
+            Some(gesture.argument.clone()),
+            Some(gesture.reasoning),
+            gesture.risk.clone(),
+        ) {
+            return Ok(entry);
         }
-        if borrow_cursor {
-            match self.ensure_real_cursor_scroll_point_visible(x, y) {
-                Ok(()) => {}
-                Err(_) if remembered_strategy => {
-                    self.scroll_strategy_cache.remove(&scope);
-                    borrow_cursor = false;
-                }
-                Err(err) => return Err(err),
-            }
-        }
+        let delta = match direction {
+            "up" => 720,
+            _ => -720,
+        };
+        // Snapshot the pointer shape before borrowing the real cursor, so we
+        // can tell afterwards whether the borrowed gesture left it stuck.
+        let cursor_before = if borrow_cursor {
+            dunst_platform::cursor_shape_fingerprint()
+        } else {
+            None
+        };
+        let outcome = self.perform_scroll_gesture(x, y, delta, count, borrow_cursor);
+        self.recover_cursor_if_stuck(borrow_cursor, &outcome, cursor_before);
+        let result = self.audit_raw_input(
+            gesture.target_id,
+            SemanticAction::Scroll,
+            Some(gesture.argument),
+            Some(gesture.reasoning),
+            gesture.risk,
+            outcome,
+        );
+        self.record_scroll_outcome(scope, borrow_cursor, remembered_strategy, x, y, &result);
+        result
+    }
+
+    /// Build the gate/audit id, human-readable argument and reasoning, and
+    /// risk assessment for one `scroll_at` gesture. The wording and the
+    /// extra risk reasons depend on which rung was resolved (background
+    /// wheel vs real-cursor, and whether the real-cursor rung came from a
+    /// session-learned strategy).
+    #[cfg(target_os = "macos")]
+    fn describe_scroll_gesture(
+        &self,
+        x: f64,
+        y: f64,
+        direction: &str,
+        count: usize,
+        borrow_cursor: bool,
+        remembered_strategy: bool,
+    ) -> ScrollGestureDescription {
         let target_id = if borrow_cursor {
             cursor_scroll_target_id(direction, count, x, y)
         } else {
@@ -486,26 +549,95 @@ impl Engine {
                     .to_string(),
             );
         }
-        if let Some(entry) = self.gate_raw_input(
-            &target_id,
-            SemanticAction::Scroll,
-            Some(argument.clone()),
-            Some(reasoning),
-            risk.clone(),
-        ) {
-            return Ok(entry);
+        ScrollGestureDescription {
+            target_id,
+            argument,
+            reasoning,
+            risk,
         }
-        let delta = match direction {
-            "up" => 720,
-            _ => -720,
-        };
-        // Snapshot the pointer shape before borrowing the real cursor, so we
-        // can tell afterwards whether the borrowed gesture left it stuck.
-        let cursor_before = if borrow_cursor {
-            dunst_platform::cursor_shape_fingerprint()
-        } else {
-            None
-        };
+    }
+
+    /// Update `scroll_strategy_cache` / `scroll_background_low_signal` after
+    /// a `scroll_at` gesture completes: remember a successful real-cursor
+    /// rung, note a successful background rung's signal, and forget a
+    /// remembered real-cursor strategy that just failed.
+    #[cfg(target_os = "macos")]
+    fn record_scroll_outcome(
+        &mut self,
+        scope: ScrollStrategyKey,
+        borrow_cursor: bool,
+        remembered_strategy: bool,
+        x: f64,
+        y: f64,
+        result: &dunst_core::Result<AuditEntry>,
+    ) {
+        match result {
+            Ok(entry) if borrow_cursor => {
+                self.note_real_cursor_scroll_result_at(scope, entry, Some((x, y)))
+            }
+            Ok(entry) => self.note_background_scroll_result(scope, entry),
+            Err(_) if remembered_strategy => {
+                self.scroll_strategy_cache.remove(&scope);
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// Decide which scroll rung `scroll_at` should use: the background wheel
+    /// or the real-cursor (`borrow_cursor`) fallback. Consults
+    /// `scroll_strategy_cache` for a session-learned real-cursor strategy for
+    /// this `(app, page)` scope, and — when a remembered strategy's point
+    /// turns out not to be visible under the real cursor — forgets it and
+    /// falls back to the background wheel instead of failing outright.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `borrow_cursor` is required (explicitly requested,
+    /// with no remembered strategy to fall back from) and `(x, y)` is not
+    /// visible under the real cursor.
+    #[cfg(target_os = "macos")]
+    fn resolve_scroll_rung(
+        &mut self,
+        x: f64,
+        y: f64,
+        mut borrow_cursor: bool,
+    ) -> dunst_core::Result<ScrollRungDecision> {
+        let scope = self.scroll_strategy_key();
+        let remembered_strategy = !borrow_cursor && self.scroll_strategy_cache.contains_key(&scope);
+        if remembered_strategy {
+            borrow_cursor = true;
+        }
+        if borrow_cursor {
+            match self.ensure_real_cursor_scroll_point_visible(x, y) {
+                Ok(()) => {}
+                Err(_) if remembered_strategy => {
+                    self.scroll_strategy_cache.remove(&scope);
+                    borrow_cursor = false;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(ScrollRungDecision {
+            scope,
+            borrow_cursor,
+            remembered_strategy,
+        })
+    }
+
+    /// Run the `count` wheel ticks of a scroll gesture at `(x, y)`, sleeping
+    /// between ticks and stopping at the first failure. Uses the real-cursor
+    /// wheel when `borrow_cursor`, otherwise the SkyLight-signed background
+    /// wheel scroll (window bounds resolved via vision capture, falling back
+    /// to the last-known window bounds).
+    #[cfg(target_os = "macos")]
+    fn perform_scroll_gesture(
+        &mut self,
+        x: f64,
+        y: f64,
+        delta: i32,
+        count: usize,
+        borrow_cursor: bool,
+    ) -> dunst_core::Result<()> {
         let mut outcome = Ok(());
         for _ in 0..count {
             outcome = if borrow_cursor {
@@ -534,11 +666,22 @@ impl Engine {
             }
             std::thread::sleep(std::time::Duration::from_millis(160));
         }
-        // Recover the pointer once, at the end of the gesture, but ONLY when the
-        // borrowed real-cursor scroll left it stuck in a shape it did not have
-        // before (the macOS bug that freezes e.g. an I-beam over a backgrounded
-        // web view). The heavy unstick maneuver is intrusive, so the shape
-        // fingerprint gates it: no change in shape means nothing to fix.
+        outcome
+    }
+
+    /// Recover the pointer once, at the end of a borrowed-cursor scroll
+    /// gesture, but ONLY when it left the cursor stuck in a shape it did not
+    /// have before (the macOS bug that freezes e.g. an I-beam over a
+    /// backgrounded web view). The heavy unstick maneuver is intrusive, so
+    /// the shape fingerprint gates it: no change in shape means nothing to
+    /// fix.
+    #[cfg(target_os = "macos")]
+    fn recover_cursor_if_stuck(
+        &mut self,
+        borrow_cursor: bool,
+        outcome: &dunst_core::Result<()>,
+        cursor_before: Option<u64>,
+    ) {
         if borrow_cursor && outcome.is_ok() {
             std::thread::sleep(std::time::Duration::from_millis(80));
             let after = dunst_platform::cursor_shape_fingerprint();
@@ -550,32 +693,14 @@ impl Engine {
                 let _ = retry_user_active_guard(dunst_platform::unstick_cursor_if_idle);
             }
         }
-        let result = self.audit_raw_input(
-            target_id,
-            SemanticAction::Scroll,
-            Some(argument),
-            Some(reasoning),
-            risk,
-            outcome,
-        );
-        match &result {
-            Ok(entry) if borrow_cursor => {
-                self.note_real_cursor_scroll_result_at(scope, entry, Some((x, y)))
-            }
-            Ok(entry) => self.note_background_scroll_result(scope, entry),
-            Err(_) if remembered_strategy => {
-                self.scroll_strategy_cache.remove(&scope);
-            }
-            Err(_) => {}
-        }
-        result
     }
 
-    pub(in crate::engine) fn remembered_scroll_strategy(&self) -> Option<ScrollStrategy> {
+    /// Whether the real-cursor wheel scroll fallback is remembered for the
+    /// current `(app, page)` scope. `true` means `scroll_strategy_cache` holds
+    /// an entry for this scope.
+    pub(in crate::engine) fn remembered_scroll_strategy(&self) -> bool {
         let scope = self.scroll_strategy_key();
-        self.scroll_strategy_cache
-            .get(&scope)
-            .map(|memory| memory.strategy)
+        self.scroll_strategy_cache.contains_key(&scope)
     }
 
     /// Prefer the background-wheel `scroll_at` path over Page/Home/End keys when
@@ -585,7 +710,7 @@ impl Engine {
     /// click or modal — so a scope that scrolled dead once should switch to the
     /// focus-independent wheel instead of retrying the dead key path.
     pub(in crate::engine) fn prefer_wheel_scroll(&self) -> bool {
-        self.remembered_scroll_strategy().is_some()
+        self.remembered_scroll_strategy()
             || self
                 .scroll_background_low_signal
                 .contains(&self.scroll_strategy_key())
@@ -620,10 +745,7 @@ impl Engine {
             return;
         }
         if self.scroll_background_low_signal.remove(&scope)
-            || self
-                .scroll_strategy_cache
-                .get(&scope)
-                .is_some_and(|memory| memory.strategy == ScrollStrategy::RealCursorWheel)
+            || self.scroll_strategy_cache.contains_key(&scope)
         {
             let existing_ratio = self
                 .scroll_strategy_cache
@@ -632,22 +754,14 @@ impl Engine {
             let point_ratio = point
                 .and_then(|(x, y)| self.scroll_point_ratio(x, y))
                 .or(existing_ratio);
-            self.scroll_strategy_cache.insert(
-                scope,
-                ScrollStrategyMemory {
-                    strategy: ScrollStrategy::RealCursorWheel,
-                    point_ratio,
-                },
-            );
+            self.scroll_strategy_cache
+                .insert(scope, ScrollStrategyMemory { point_ratio });
         }
     }
 
     fn remembered_scroll_point(&self) -> Option<(f64, f64)> {
         let scope = self.scroll_strategy_key();
         let memory = self.scroll_strategy_cache.get(&scope)?;
-        if memory.strategy != ScrollStrategy::RealCursorWheel {
-            return None;
-        }
         let (rx, ry) = memory.point_ratio?;
         let window = self.current_window_bounds();
         Some((window.x + window.w * rx, window.y + window.h * ry))

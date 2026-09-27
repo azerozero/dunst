@@ -5,7 +5,7 @@ use dunst_core::{
 };
 use serde_json::{json, Value};
 
-use crate::engine::{ModalDismissResult, OcrClickResult, OptionPickResult};
+use crate::engine::{truncate_chars, ModalDismissResult, OcrClickResult, OptionPickResult};
 
 use super::{
     approval_tool_enabled, build_git_dirty, build_git_sha, build_time_unix, server_version_label,
@@ -442,12 +442,16 @@ fn compact_node_change(change: &NodeChange) -> Value {
         NodeChange::Added { id, label } => json!({
             "kind": "added",
             "id": id,
-            "label": label.as_deref().map(truncate_diff_summary_value),
+            "label": label
+                .as_deref()
+                .map(|v| truncate_chars(v, DIFF_SUMMARY_VALUE_LIMIT)),
         }),
         NodeChange::Removed { id, label } => json!({
             "kind": "removed",
             "id": id,
-            "label": label.as_deref().map(truncate_diff_summary_value),
+            "label": label
+                .as_deref()
+                .map(|v| truncate_chars(v, DIFF_SUMMARY_VALUE_LIMIT)),
         }),
         NodeChange::Changed {
             id,
@@ -458,8 +462,8 @@ fn compact_node_change(change: &NodeChange) -> Value {
             "kind": "changed",
             "id": id,
             "field": field,
-            "before": truncate_diff_summary_value(before),
-            "after": truncate_diff_summary_value(after),
+            "before": truncate_chars(before, DIFF_SUMMARY_VALUE_LIMIT),
+            "after": truncate_chars(after, DIFF_SUMMARY_VALUE_LIMIT),
         }),
     }
 }
@@ -494,16 +498,4 @@ fn diff_change_id(change: &NodeChange) -> &str {
         | NodeChange::Removed { id, .. }
         | NodeChange::Changed { id, .. } => id,
     }
-}
-
-fn truncate_diff_summary_value(value: &str) -> String {
-    let mut out = String::new();
-    for (idx, ch) in value.chars().enumerate() {
-        if idx >= DIFF_SUMMARY_VALUE_LIMIT {
-            out.push_str("...");
-            return out;
-        }
-        out.push(ch);
-    }
-    out
 }

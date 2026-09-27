@@ -69,6 +69,7 @@ use raw_input_gate::{
     RawApprovalInflight, RawApprovalKey,
 };
 use runtime_support::*;
+pub(crate) use runtime_support::{panic_payload_message, truncate_chars};
 use scene_query::*;
 use window_geometry::*;
 
@@ -141,14 +142,13 @@ struct ScrollStrategyKey {
     page: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ScrollStrategy {
-    RealCursorWheel,
-}
-
+/// Session-learned memory that the real-cursor wheel scroll worked for a
+/// given `(app, page)` scope. Presence of an entry in `scroll_strategy_cache`
+/// means "remember the real-cursor wheel fallback here"; there is currently
+/// only one strategy worth remembering, so this struct no longer tags itself
+/// with a strategy enum.
 #[derive(Clone, Debug)]
 struct ScrollStrategyMemory {
-    strategy: ScrollStrategy,
     point_ratio: Option<(f64, f64)>,
 }
 

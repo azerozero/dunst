@@ -1133,7 +1133,7 @@ fn real_cursor_scroll_strategy_is_learned_only_after_low_signal_background() {
 
     eng.note_real_cursor_scroll_result(scope.clone(), &cursor_success);
     assert!(
-        eng.remembered_scroll_strategy().is_none(),
+        !eng.remembered_scroll_strategy(),
         "an isolated explicit real-cursor scroll should not become the default"
     );
 
@@ -1141,10 +1141,7 @@ fn real_cursor_scroll_strategy_is_learned_only_after_low_signal_background() {
     eng.note_background_scroll_result(scope.clone(), &background_low_signal);
     eng.note_real_cursor_scroll_result(scope, &cursor_success);
 
-    assert_eq!(
-        eng.remembered_scroll_strategy(),
-        Some(ScrollStrategy::RealCursorWheel)
-    );
+    assert!(eng.remembered_scroll_strategy());
 }
 
 #[test]

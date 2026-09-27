@@ -1,5 +1,8 @@
 use super::*;
 
+/// Max `char`s kept for a node's `value` in the compact scene JSON before truncation.
+const COMPACT_VALUE_LIMIT: usize = 200;
+
 mod browser_chrome;
 
 pub(in crate::engine) use browser_chrome::{
@@ -409,7 +412,10 @@ pub(super) fn compact_node(n: &SceneNode) -> Value {
         o.insert("label".into(), json!(l));
     }
     if let Some(v) = &n.value {
-        o.insert("value".into(), json!(truncate_compact_value(v)));
+        o.insert(
+            "value".into(),
+            json!(truncate_chars(v, COMPACT_VALUE_LIMIT)),
+        );
         o.insert("value_len".into(), json!(v.chars().count()));
     }
     o.insert(
@@ -423,19 +429,6 @@ pub(super) fn compact_node(n: &SceneNode) -> Value {
     }
     o.insert("n_children".into(), json!(n.children.len()));
     Value::Object(o)
-}
-
-fn truncate_compact_value(value: &str) -> String {
-    const LIMIT: usize = 200;
-    let mut out = String::new();
-    for (idx, ch) in value.chars().enumerate() {
-        if idx >= LIMIT {
-            out.push_str("...");
-            return out;
-        }
-        out.push(ch);
-    }
-    out
 }
 
 pub(super) struct OptionCandidate {

@@ -1,5 +1,35 @@
 use super::*;
 
+/// Best-effort description of a caught panic payload, for error messages.
+///
+/// Handles the two payload shapes `std::panic::catch_unwind` actually produces
+/// (`&'static str` and `String`); anything else falls back to the provided `fallback` string.
+pub(crate) fn panic_payload_message(
+    payload: &(dyn std::any::Any + Send),
+    fallback: &str,
+) -> String {
+    if let Some(msg) = payload.downcast_ref::<&str>() {
+        return (*msg).to_string();
+    }
+    if let Some(msg) = payload.downcast_ref::<String>() {
+        return msg.clone();
+    }
+    fallback.to_string()
+}
+
+/// Truncates `text` to at most `limit` `char`s, appending `"..."` when it was cut.
+pub(crate) fn truncate_chars(text: &str, limit: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in text.chars().enumerate() {
+        if idx >= limit {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 pub(super) fn unique_png_path(prefix: &str) -> PathBuf {
     let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = std::time::SystemTime::now()

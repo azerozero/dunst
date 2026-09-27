@@ -243,39 +243,6 @@ pub(super) fn click_at_point_cursor_impl(x: f64, y: f64) -> std::result::Result<
 
 /// # Errors
 ///
-/// Returns an error if the user-active guard is blocking, the cursor cannot be
-/// warped to the target point, the CoreGraphics event source cannot be created,
-/// or the MouseMoved CGEvent cannot be created.
-pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
-    hover_at_point_impl(pid, x, y).map_err(ActionFailure::into)
-}
-
-pub(super) fn hover_at_point_impl(
-    _pid: i32,
-    x: f64,
-    y: f64,
-) -> std::result::Result<(), ActionFailure> {
-    ensure_user_idle_action("hover_at")?;
-    // A web/canvas hover (a chart crosshair, value-at-cursor) reads the REAL
-    // cursor position, so a background `post_to_pid` move never triggers it.
-    // Warp the cursor to the point and post a GLOBAL (HID) MouseMoved so the
-    // window under the cursor sees the hover. This DOES move the visible cursor
-    // — unavoidable to reveal a value-at-cursor — but the window does NOT need
-    // focus: macOS routes mouse-moved/hover to the window under the cursor
-    // regardless of which app is frontmost.
-    let point = clamp_point_to_bounds(CGPoint::new(x, y), all_displays_bounds());
-    CGDisplay::warp_mouse_cursor_position(point)
-        .map_err(|err| ActionFailure::Execution(format!("warp cursor for hover: {err:?}")))?;
-    let source = event_source("create hover CGEventSource")?;
-    let event =
-        CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
-            .map_err(|err| ActionFailure::Execution(format!("create hover CGEvent: {err:?}")))?;
-    event.post(CGEventTapLocation::HID);
-    Ok(())
-}
-
-/// # Errors
-///
 /// Returns an error if the CoreGraphics event source cannot be created, the
 /// cursor cannot be warped to the target point, or the MouseMoved CGEvent
 /// cannot be created.

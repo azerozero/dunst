@@ -27,8 +27,5 @@ objc2-core-graphics = "0.3.2"
 objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSDictionary", "NSError", "NSString"] }
 objc2-vision = { version = "0.3.2", features = ["VNObservation", "VNRecognizeTextRequest", "VNRequestHandler", "VNRequest", "VNTypes", "objc2-core-graphics"] }
 
-[dev-dependencies]
-serde_json = { workspace = true }
-
 [lints]
 workspace = true
