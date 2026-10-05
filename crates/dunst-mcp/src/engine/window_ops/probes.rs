@@ -231,18 +231,7 @@ fn guarded_element_at_point(pid: i32, x: f64, y: f64) -> dunst_core::Result<duns
         Ok(result) => result,
         Err(payload) => Err(DunstError::Perception(format!(
             "AX hit-test panicked at ({x:.1},{y:.1}): {}",
-            panic_payload_message(payload.as_ref())
+            panic_payload_message(payload.as_ref(), "unknown panic payload")
         ))),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(msg) = payload.downcast_ref::<&'static str>() {
-        (*msg).to_string()
-    } else if let Some(msg) = payload.downcast_ref::<String>() {
-        msg.clone()
-    } else {
-        "unknown panic payload".into()
     }
 }

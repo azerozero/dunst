@@ -135,19 +135,107 @@ fn main() {
     std::process::exit(code);
 }
 
-fn run_demo() -> i32 {
-    let perceptor = match MockPerceptor::notes_fixture() {
-        Ok(p) => Box::new(p),
-        Err(e) => {
-            eprintln!("fixture load failed: {e}");
-            return 1;
-        }
+/// Build the device-free `Engine` used by the `demo` command and by the
+/// no-target `serve` fallback: the bundled Notes fixture as both perceptor
+/// and executor.
+fn fixture_engine() -> Result<Engine, String> {
+    let perceptor =
+        MockPerceptor::notes_fixture().map_err(|e| format!("fixture load failed: {e}"))?;
+    Engine::new(
+        Box::new(perceptor),
+        Box::new(RecordingExecutor::default()),
+        DEMO_TARGET,
+    )
+    .map_err(|e| format!("engine init failed: {e}"))
+}
+
+/// Demo sections 1-2: resolve "Nouvelle note" by label and click it (low
+/// risk, proceeds). Returns `false` if the element is not found, in which
+/// case the caller aborts the demo.
+fn demo_find_and_click(eng: &mut Engine) -> bool {
+    section("1. find_element(\"Nouvelle note\") + affordances");
+    let Some(n) = pick(eng, "Nouvelle note", None) else {
+        println!("  (not found — is dunst-graph implemented?)");
+        return false;
     };
-    let target = DEMO_TARGET;
-    let mut eng = match Engine::new(perceptor, Box::new(RecordingExecutor::default()), target) {
+    let id = n.id.clone();
+    let bbox = n.bbox;
+    let aff = eng.affordance_graph().affordances.get(&id).cloned();
+    println!(
+        "  -> id={id}  role={:?}  bbox={:?}",
+        role_of(eng, &id),
+        bbox
+    );
+    if let Some(a) = &aff {
+        println!(
+            "     actions={:?}  risk={:?} (approval={})",
+            a.actions, a.risk.level, a.risk.requires_approval
+        );
+    }
+    section("2. click_element(\"btn_nouvelle_note\") — low risk, proceeds");
+    match eng.click_element(&id, Some("create a new note")) {
+        Ok(entry) => println!("  -> result={:?}", entry.result),
+        Err(e) => println!("  -> error: {e}"),
+    }
+    true
+}
+
+/// Demo sections 3-4: click "Supprimer" (high risk, denied pending
+/// approval), then approve it and retry (proceeds).
+fn demo_gated_delete(eng: &mut Engine) {
+    section("3. click_element on \"Supprimer\" — high risk, DENIED pending approval");
+    let Some(n) = pick(eng, "Supprimer", None) else {
+        return;
+    };
+    let id = n.id.clone();
+    if let Some(a) = eng.affordance_graph().affordances.get(&id) {
+        println!(
+            "  risk={:?} approval={} reasons={:?}",
+            a.risk.level, a.risk.requires_approval, a.risk.reasons
+        );
+    }
+    match eng.click_element(&id, Some("user asked to delete")) {
+        Ok(entry) => {
+            println!("  -> result={:?}", entry.result);
+            if entry.result == ActionResult::PendingApproval {
+                section("4. approve(id) then retry — proceeds");
+                if let Err(e) = eng.approve(&id) {
+                    println!("  -> approve rejected: {e}");
+                }
+                match eng.click_element(&id, Some("approved by operator")) {
+                    Ok(e2) => println!("  -> result={:?}", e2.result),
+                    Err(e) => println!("  -> error: {e}"),
+                }
+            }
+        }
+        Err(e) => println!("  -> error: {e}"),
+    }
+}
+
+/// Demo sections 5-6: type into the note body, then export the audit trace.
+fn demo_type_and_trace(eng: &mut Engine) {
+    section("5. type_into(text area, \"Bonjour\")");
+    if let Some(n) = pick(eng, "Corps de la note", Some(SemanticAction::Type)) {
+        let id = n.id.clone();
+        match eng.type_into(&id, "Bonjour", Some("write greeting")) {
+            Ok(entry) => println!("  -> id={id}  result={:?}", entry.result),
+            Err(e) => println!("  -> error: {e}"),
+        }
+    }
+
+    section("6. export_trace()");
+    match eng.export_trace() {
+        Ok(json) => println!("{json}"),
+        Err(e) => println!("  -> error: {e}"),
+    }
+}
+
+/// Run the device-free Notes fixture demo end to end.
+fn run_demo() -> i32 {
+    let mut eng = match fixture_engine() {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("engine init failed: {e}");
+            eprintln!("{e}");
             return 1;
         }
     };
@@ -161,78 +249,60 @@ fn run_demo() -> i32 {
         g.window.title
     );
 
-    // 1) Resolve a benign action by LABEL, not coordinates.
-    section("1. find_element(\"Nouvelle note\") + affordances");
-    if let Some(n) = pick(&eng, "Nouvelle note", None) {
-        let id = n.id.clone();
-        let bbox = n.bbox;
-        let aff = eng.affordance_graph().affordances.get(&id).cloned();
-        println!(
-            "  -> id={id}  role={:?}  bbox={:?}",
-            role_of(&eng, &id),
-            bbox
-        );
-        if let Some(a) = &aff {
-            println!(
-                "     actions={:?}  risk={:?} (approval={})",
-                a.actions, a.risk.level, a.risk.requires_approval
-            );
-        }
-        section("2. click_element(\"btn_nouvelle_note\") — low risk, proceeds");
-        match eng.click_element(&id, Some("create a new note")) {
-            Ok(entry) => println!("  -> result={:?}", entry.result),
-            Err(e) => println!("  -> error: {e}"),
-        }
-    } else {
-        println!("  (not found — is dunst-graph implemented?)");
+    if !demo_find_and_click(&mut eng) {
         return 1;
     }
-
-    // 2) A destructive action is GATED until approved.
-    section("3. click_element on \"Supprimer\" — high risk, DENIED pending approval");
-    if let Some(n) = pick(&eng, "Supprimer", None) {
-        let id = n.id.clone();
-        if let Some(a) = eng.affordance_graph().affordances.get(&id) {
-            println!(
-                "  risk={:?} approval={} reasons={:?}",
-                a.risk.level, a.risk.requires_approval, a.risk.reasons
-            );
-        }
-        match eng.click_element(&id, Some("user asked to delete")) {
-            Ok(entry) => {
-                println!("  -> result={:?}", entry.result);
-                if entry.result == ActionResult::PendingApproval {
-                    section("4. approve(id) then retry — proceeds");
-                    if let Err(e) = eng.approve(&id) {
-                        println!("  -> approve rejected: {e}");
-                    }
-                    match eng.click_element(&id, Some("approved by operator")) {
-                        Ok(e2) => println!("  -> result={:?}", e2.result),
-                        Err(e) => println!("  -> error: {e}"),
-                    }
-                }
-            }
-            Err(e) => println!("  -> error: {e}"),
-        }
-    }
-
-    // 3) Type into the note body.
-    section("5. type_into(text area, \"Bonjour\")");
-    if let Some(n) = pick(&eng, "Corps de la note", Some(SemanticAction::Type)) {
-        let id = n.id.clone();
-        match eng.type_into(&id, "Bonjour", Some("write greeting")) {
-            Ok(entry) => println!("  -> id={id}  result={:?}", entry.result),
-            Err(e) => println!("  -> error: {e}"),
-        }
-    }
-
-    // 4) Audit trail.
-    section("6. export_trace()");
-    match eng.export_trace() {
-        Ok(json) => println!("{json}"),
-        Err(e) => println!("  -> error: {e}"),
-    }
+    demo_gated_delete(&mut eng);
+    demo_type_and_trace(&mut eng);
     0
+}
+
+/// Resolve `--app`/`--live` to a concrete `(pid, window_id)` by picking a
+/// live on-screen window, printing the same messages `run_serve` used to
+/// print inline. Returns `None` (after eprintln'ing why) when no target was
+/// requested this way, or no matching window was found.
+#[cfg(target_os = "macos")]
+fn resolve_live_target(args: &ServeArgs) -> Option<(i32, u32)> {
+    if !(args.app.is_some() || args.live) {
+        return None;
+    }
+    // Dynamic targeting: CoreGraphics returns layer-0 windows in z-order, so pick
+    // the first sizeable on-screen match. With multiple Firefox windows this means
+    // the active/frontmost eligible window, not whichever window happens to be
+    // largest.
+    let pick = dunst_vision::capture::list_windows().into_iter().find(|w| {
+        w.on_screen
+            && w.w > 200.0
+            && w.h > 200.0
+            && match args.app.as_deref() {
+                Some(app) => w.app == app,
+                None => true,
+            }
+    });
+    match pick {
+        Some(w) => {
+            eprintln!(
+                "dunst-mcp: target -> pid={} window={} {:?} (attach to re-target)",
+                w.pid, w.window_id, w.title
+            );
+            Some((w.pid, w.window_id))
+        }
+        None => {
+            eprintln!("dunst-mcp: no matching on-screen window found");
+            None
+        }
+    }
+}
+
+/// Build the live macOS `Engine` for `serve --pid P --window W`.
+fn live_engine(pid: i32, window_id: u32) -> Result<Engine, String> {
+    use dunst_platform::MacosBackend;
+    Engine::new(
+        Box::new(MacosBackend::new()),
+        Box::new(MacosBackend::new()),
+        Target { pid, window_id },
+    )
+    .map_err(|e| format!("engine init (live pid={pid} window={window_id}) failed: {e}"))
 }
 
 /// Start the MCP stdio server. With `--pid P --window W` it drives a live macOS
@@ -243,31 +313,11 @@ fn run_serve(args: ServeArgs) -> i32 {
     let mut window = args.window;
     let requested_live_target = args.app.is_some() || args.live;
 
-    // Dynamic targeting: CoreGraphics returns layer-0 windows in z-order, so pick
-    // the first sizeable on-screen match. With multiple Firefox windows this means
-    // the active/frontmost eligible window, not whichever window happens to be
-    // largest.
     #[cfg(target_os = "macos")]
-    if (pid.is_none() || window.is_none()) && (args.app.is_some() || args.live) {
-        let pick = dunst_vision::capture::list_windows().into_iter().find(|w| {
-            w.on_screen
-                && w.w > 200.0
-                && w.h > 200.0
-                && match args.app.as_deref() {
-                    Some(app) => w.app == app,
-                    None => true,
-                }
-        });
-        match pick {
-            Some(w) => {
-                eprintln!(
-                    "dunst-mcp: target -> pid={} window={} {:?} (attach to re-target)",
-                    w.pid, w.window_id, w.title
-                );
-                pid = Some(w.pid);
-                window = Some(w.window_id);
-            }
-            None => eprintln!("dunst-mcp: no matching on-screen window found"),
+    if pid.is_none() || window.is_none() {
+        if let Some((p, w)) = resolve_live_target(&args) {
+            pid = Some(p);
+            window = Some(w);
         }
     }
 
@@ -279,37 +329,19 @@ fn run_serve(args: ServeArgs) -> i32 {
     }
 
     let engine = match (pid, window) {
-        (Some(pid), Some(window_id)) => {
-            use dunst_platform::MacosBackend;
-            match Engine::new(
-                Box::new(MacosBackend::new()),
-                Box::new(MacosBackend::new()),
-                Target { pid, window_id },
-            ) {
-                Ok(e) => e,
-                Err(e) => {
-                    eprintln!("engine init (live pid={pid} window={window_id}) failed: {e}");
-                    return 1;
-                }
+        (Some(pid), Some(window_id)) => match live_engine(pid, window_id) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
             }
-        }
+        },
         _ => {
             eprintln!("dunst-mcp: no --pid/--window; serving the Notes fixture.");
-            let p = match MockPerceptor::notes_fixture() {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("fixture load failed: {e}");
-                    return 1;
-                }
-            };
-            match Engine::new(
-                Box::new(p),
-                Box::new(RecordingExecutor::default()),
-                DEMO_TARGET,
-            ) {
+            match fixture_engine() {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!("engine init failed: {e}");
+                    eprintln!("{e}");
                     return 1;
                 }
             }

@@ -170,9 +170,8 @@ pub fn click_web_background(
     post(&u)
 }
 
-/// Background web hover via SkyLight. Unlike `hover_at_point_impl`, this
-/// never warps the real cursor; it is the default hover path for target-window
-/// probes. Callers that need a real OS cursor hover must opt into the cursor
+/// Background web hover via SkyLight. This never warps the real cursor; it is
+/// the default hover path for target-window probes. Callers that need a real OS cursor hover must opt into the cursor
 /// borrow path explicitly.
 ///
 /// # Errors

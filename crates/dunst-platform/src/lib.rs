@@ -114,20 +114,6 @@ pub fn press_key(pid: i32, window_id: u32, key: &str) -> Result<()> {
     macos::press_key(pid, window_id, key)
 }
 
-/// Trigger a real cursor hover at a screen point so non-web surfaces can reveal
-/// hover state. This can move the visible cursor; web callers should prefer
-/// [`hover_web_background`] when they need a cursorless probe.
-///
-/// # Errors
-///
-/// Returns an error if the user-active guard blocks the hover, if warping the
-/// cursor to the point fails, if the CoreGraphics event source cannot be
-/// created, or if the hover mouse-moved event cannot be created.
-#[cfg(target_os = "macos")]
-pub fn hover_at_point(pid: i32, x: f64, y: f64) -> Result<()> {
-    macos::hover_at_point(pid, x, y)
-}
-
 /// Time-multiplex the single OS cursor for a synthetic hover on a non-CDP
 /// surface: save the current position, warp to `(x, y)`, and post a hover.
 /// Returns the saved position to restore with [`cursor_restore`]. The hardware

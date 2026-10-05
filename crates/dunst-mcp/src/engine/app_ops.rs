@@ -241,17 +241,12 @@ impl Engine {
         // tabs depending on browser preferences, which is the wrong primitive
         // for continuing inside an already-attached page.
         let existing_candidates = self.matching_windows_for_app(app);
-        // TODO: expose this as a public MCP option: reuse = exact | host | never.
-        let reuse_policy = BrowserTabReusePolicy::Host;
         // Reuse keys on host/path only — never the query string, whose words would
         // otherwise match an unrelated tab's title and skip opening the new URL.
         let reuse_terms = url_reuse_terms(url);
-        if let Some(selected) = self.best_existing_window_for_url(
-            &existing_candidates,
-            &reuse_terms,
-            &host_labels,
-            reuse_policy,
-        ) {
+        if let Some(selected) =
+            self.best_existing_window_for_url(&existing_candidates, &reuse_terms)
+        {
             let launch = self.launch_app_result(app, Some(url), false, true);
             return self.attach_url_window_result(
                 launch,
@@ -350,20 +345,9 @@ impl Engine {
         &mut self,
         candidates: &[WindowSummary],
         terms: &[String],
-        host_labels: &[String],
-        reuse_policy: BrowserTabReusePolicy,
     ) -> Option<WindowSummary> {
-        if matches!(reuse_policy, BrowserTabReusePolicy::Never) {
-            return None;
-        }
-        best_window_for_url(candidates, terms).or_else(|| {
-            self.best_window_with_matching_selected_tab(
-                candidates,
-                terms,
-                host_labels,
-                reuse_policy,
-            )
-        })
+        best_window_for_url(candidates, terms)
+            .or_else(|| self.best_window_with_matching_selected_tab(candidates, terms))
     }
 
     #[cfg(target_os = "macos")]
@@ -371,8 +355,6 @@ impl Engine {
         &mut self,
         candidates: &[WindowSummary],
         terms: &[String],
-        host_labels: &[String],
-        reuse_policy: BrowserTabReusePolicy,
     ) -> Option<WindowSummary> {
         // The probe attaches to each candidate to inspect its selected tab, which
         // mutates `self.target`. A RAII guard restores the entry target on every
@@ -396,8 +378,7 @@ impl Engine {
             else {
                 continue;
             };
-            let Some(score) = browser_tab_reuse_score(&tab, terms, host_labels, reuse_policy)
-            else {
+            let Some(score) = browser_tab_reuse_score(&tab, terms) else {
                 continue;
             };
             let rank = (score, window.on_screen, std::cmp::Reverse(window.window_id));
@@ -560,17 +541,6 @@ impl Drop for TargetRestoreGuard<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "Exact/Never are reserved tab-reuse policies exercised by tests; only Host is wired into open_url_and_attach_tab today (see the reuse-policy TODO at its call site)"
-)]
-enum BrowserTabReusePolicy {
-    Exact,
-    Host,
-    Never,
-}
-
 fn url_match_terms(url: &str) -> Vec<String> {
     let decoded = percent_decode_lossy(url);
     let normalized = normalize_match(&decoded);
@@ -623,15 +593,7 @@ fn best_window_for_url(windows: &[WindowSummary], terms: &[String]) -> Option<Wi
         .map(|(_, _, _, window)| window.clone())
 }
 
-fn browser_tab_reuse_score(
-    tab: &BrowserTab,
-    terms: &[String],
-    host_labels: &[String],
-    policy: BrowserTabReusePolicy,
-) -> Option<usize> {
-    if matches!(policy, BrowserTabReusePolicy::Never) {
-        return None;
-    }
+fn browser_tab_reuse_score(tab: &BrowserTab, terms: &[String]) -> Option<usize> {
     if let Some(url) = tab.url.as_deref() {
         let url = normalize_match(url);
         let score = terms
@@ -643,12 +605,12 @@ fn browser_tab_reuse_score(
         }
     }
 
+    // Host-scoped reuse: any matched term counts, including generic host
+    // labels (e.g. "github") — a title match on the host alone is a good
+    // enough signal to reuse the tab.
     let title = normalize_match(&tab.title);
     let score = terms
         .iter()
-        .filter(|term| {
-            matches!(policy, BrowserTabReusePolicy::Host) || !is_generic_url_term(term, host_labels)
-        })
         .filter(|term| title.contains(term.as_str()))
         .count();
     (score > 0).then_some(score)
@@ -918,34 +880,9 @@ mod tests {
     fn browser_tab_reuse_policy_matches_host_titles_by_default() {
         let url = "https://github.com/AlexsJones/llmfit";
         let terms = url_match_terms(url);
-        let host_labels = url_host_labels(url);
         let tab = tab("GitHub", None);
 
-        assert_eq!(
-            browser_tab_reuse_score(&tab, &terms, &host_labels, BrowserTabReusePolicy::Host),
-            Some(1)
-        );
-        assert_eq!(
-            browser_tab_reuse_score(&tab, &terms, &host_labels, BrowserTabReusePolicy::Exact),
-            None
-        );
-        assert_eq!(
-            browser_tab_reuse_score(&tab, &terms, &host_labels, BrowserTabReusePolicy::Never),
-            None
-        );
-    }
-
-    #[test]
-    fn browser_tab_reuse_exact_accepts_path_specific_title() {
-        let url = "https://github.com/AlexsJones/llmfit";
-        let terms = url_match_terms(url);
-        let host_labels = url_host_labels(url);
-        let tab = tab("GitHub - AlexsJones/llmfit", None);
-
-        assert_eq!(
-            browser_tab_reuse_score(&tab, &terms, &host_labels, BrowserTabReusePolicy::Exact),
-            Some(2)
-        );
+        assert_eq!(browser_tab_reuse_score(&tab, &terms), Some(1));
     }
 
     #[test]

@@ -28,7 +28,7 @@ use response::{
 };
 use tools::tools_list;
 
-use crate::engine::{Engine, SceneView};
+use crate::engine::{panic_payload_message, truncate_chars, Engine, SceneView};
 use dunst_core::{Bbox, SceneNode, SemanticAction, SessionIdentity};
 
 #[cfg(test)]
@@ -160,7 +160,8 @@ fn panic_tool_response(
     session: Option<&SessionIdentity>,
     payload: Box<dyn Any + Send>,
 ) -> Value {
-    let msg = panic_payload_message(payload.as_ref());
+    let msg = panic_payload_message(payload.as_ref(), "<non-string panic payload>");
+
     eprintln!("dunst-mcp: recovered panic in tools/call {tool_name}: {msg}");
     result_obj(
         id,
@@ -178,16 +179,6 @@ fn panic_tool_response(
             None,
         ),
     )
-}
-
-fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(msg) = payload.downcast_ref::<&str>() {
-        return (*msg).to_string();
-    }
-    if let Some(msg) = payload.downcast_ref::<String>() {
-        return msg.clone();
-    }
-    "<non-string panic payload>".to_string()
 }
 
 fn initialize_result(session: &SessionIdentity) -> Value {
@@ -542,18 +533,6 @@ fn find_match_node_value(node: &SceneNode, full_value: bool) -> Value {
         }
     }
     value
-}
-
-fn truncate_chars(text: &str, limit: usize) -> String {
-    let mut out = String::new();
-    for (idx, ch) in text.chars().enumerate() {
-        if idx >= limit {
-            out.push_str("...");
-            return out;
-        }
-        out.push(ch);
-    }
-    out
 }
 
 fn find_matches_value_or_fallback(

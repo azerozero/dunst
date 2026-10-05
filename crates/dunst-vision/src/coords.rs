@@ -18,8 +18,7 @@
 //! `backing_scale` are therefore unused by the transforms below; they are kept on
 //! [`CaptureGeometry`] for callers that need pixel-space (e.g. cropping the buffer
 //! Vision OCRs) and as the place to detect **non-uniform scale / letterboxing**
-//! if a future capture path ever breaks the "image == window" invariant
-//! (see [`uniform_scale`]).
+//! if a future capture path ever breaks the "image == window" invariant.
 //!
 //! ## Invariants locked here
 //! 1. **Y-flip**: Vision `y=0` is the image bottom → window's **lower** screen
@@ -132,21 +131,6 @@ pub fn clamp_unit(r: NormRect) -> NormRect {
         w: x1 - x0,
         h: y1 - y0,
     }
-}
-
-/// True if the captured image covers the window with **uniform** scale on both
-/// axes (the P1a invariant), within `eps`. A `false` result means letterboxing or
-/// anisotropic scaling — the point-space transforms above would no longer be
-/// valid and the capture geometry needs revisiting.
-pub fn uniform_scale(geom: &CaptureGeometry, eps: f64) -> bool {
-    let (win_w, win_h) = geom.window_size_pt;
-    let (img_w, img_h) = geom.image_size_px;
-    if win_w <= 0.0 || win_h <= 0.0 {
-        return false;
-    }
-    let sx = img_w / win_w;
-    let sy = img_h / win_h;
-    (sx - geom.backing_scale).abs() < eps && (sy - geom.backing_scale).abs() < eps
 }
 
 #[cfg(test)]
@@ -580,18 +564,5 @@ mod tests {
                 h: 1.0
             }
         ));
-    }
-
-    #[test]
-    fn uniform_scale_detects_letterboxing() {
-        assert!(uniform_scale(&geom(), 1e-6));
-        // Anisotropic: x scaled 2×, y scaled 1.5× → not uniform.
-        let aniso = CaptureGeometry {
-            window_origin_pt: (0.0, 0.0),
-            window_size_pt: (1000.0, 600.0),
-            image_size_px: (2000.0, 900.0),
-            backing_scale: 2.0,
-        };
-        assert!(!uniform_scale(&aniso, 1e-6));
     }
 }

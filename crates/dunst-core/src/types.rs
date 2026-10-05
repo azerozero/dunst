@@ -18,13 +18,6 @@ pub struct Bbox {
     pub h: f64,
 }
 
-impl Bbox {
-    /// Serialize as the spec's `[x, y, x2, y2]` quad (used in MCP scene output).
-    pub fn as_quad(&self) -> [f64; 4] {
-        [self.x, self.y, self.x + self.w, self.y + self.h]
-    }
-}
-
 /// Identifies the window a graph was captured from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct WindowRef {
