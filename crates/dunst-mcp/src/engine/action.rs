@@ -169,23 +169,45 @@ impl Engine {
             return Ok(self.push_entry(base));
         }
 
-        let expectations = action_expectations(action, &prepared.node, self.scene_graph());
-        let executor_result = self.execute_prepared_action(&prepared.node, action, argument);
+        let before = self.scene_graph().clone();
+        let expectations = action_expectations(action, &prepared.node, &before);
+        let execution = self.execute_prepared_action(&prepared.node, action, argument);
+        let executor_result = if execution.is_ok() {
+            ActionResult::Success
+        } else {
+            ActionResult::Failed
+        };
         self.consume_element_approvals(&gate.gated_ids, &executor_result);
-        let _ = self.refresh();
-        let graph_diff = self.diff_since();
-        let (result, graph_diff) = self.verify_action_result(
-            id,
-            action,
-            argument,
-            executor_result,
-            graph_diff,
-            expectations,
-        );
-
+        let refresh = self.refresh();
+        let (result, graph_diff) = if refresh.is_ok() {
+            self.verify_action_result(id, action, argument, executor_result, &before, expectations)
+        } else {
+            (ActionResult::Failed, GraphDiff::default())
+        };
+        let effect_verified = (action == SemanticAction::Type).then(|| {
+            refresh.is_ok()
+                && argument.is_some_and(|expected| {
+                    typed_target_value_matches_expected(
+                        id,
+                        expected,
+                        &graph_diff,
+                        self.scene_graph().get(id),
+                    )
+                })
+        });
+        let error = execution.err().or_else(|| refresh.err());
+        let reasoning = match error {
+            Some(error) => Some(format!(
+                "{}; execution/verification error: {error}",
+                reasoning.unwrap_or("action")
+            )),
+            None => base.reasoning.clone(),
+        };
         Ok(self.push_entry(AuditEntry {
             result,
             graph_diff,
+            effect_verified,
+            reasoning,
             ..base
         }))
     }
@@ -257,13 +279,8 @@ impl Engine {
         node: &SceneNode,
         action: SemanticAction,
         argument: Option<&str>,
-    ) -> ActionResult {
-        match retry_user_active_guard(|| {
-            self.executor.perform(&self.target, node, action, argument)
-        }) {
-            Ok(()) => ActionResult::Success,
-            Err(_) => ActionResult::Failed,
-        }
+    ) -> dunst_core::Result<()> {
+        retry_user_active_guard(|| self.executor.perform(&self.target, node, action, argument))
     }
 
     fn consume_element_approvals(&mut self, gated_ids: &[String], result: &ActionResult) {
@@ -282,9 +299,36 @@ impl Engine {
         action: SemanticAction,
         argument: Option<&str>,
         executor_result: ActionResult,
-        mut graph_diff: GraphDiff,
+        before: &SceneGraph,
         expectations: PostActionExpectations,
     ) -> (ActionResult, GraphDiff) {
+        let mut graph_diff = dunst_graph::audit::diff(before, self.scene_graph());
+        // Observe delayed click effects without ever replaying a click. Geometry-only
+        // animation frames are not evidence that a button's action has completed.
+        if executor_result == ActionResult::Success && action == SemanticAction::Click {
+            let started = Instant::now();
+            while started.elapsed() < CLICK_VERIFY_SETTLE_TIMEOUT {
+                let settled = if let Some(expectation) = &expectations.removal {
+                    removal_expectation_satisfied(expectation, &graph_diff, self.scene_graph())
+                } else if let Some(expectation) = &expectations.checkbox {
+                    checkbox_expectation_satisfied(expectation, self.scene_graph())
+                } else {
+                    graph_diff.changes.iter().any(|change| {
+                        !matches!(change,
+                            dunst_core::NodeChange::Changed { field, .. } if field == "bbox"
+                        )
+                    })
+                };
+                if settled {
+                    break;
+                }
+                std::thread::sleep(CLICK_VERIFY_POLL_INTERVAL);
+                if self.refresh().is_err() {
+                    break;
+                }
+                graph_diff = dunst_graph::audit::diff(before, self.scene_graph());
+            }
+        }
         let mut result = verified_action_result(
             &executor_result,
             action,
@@ -301,12 +345,13 @@ impl Engine {
         {
             result = ActionResult::Failed;
         }
-        self.verify_checkbox_expectation(
-            &executor_result,
-            &mut result,
-            &mut graph_diff,
-            expectations.checkbox.as_ref(),
-        );
+        if executor_result == ActionResult::Success
+            && expectations.checkbox.as_ref().is_some_and(|expectation| {
+                !checkbox_expectation_satisfied(expectation, self.scene_graph())
+            })
+        {
+            result = ActionResult::Failed;
+        }
         self.verify_type_settle(
             id,
             action,
@@ -315,42 +360,9 @@ impl Engine {
             &mut result,
             &mut graph_diff,
         );
+        // Polling updates `previous`; the audit must still span the entire action.
+        graph_diff = dunst_graph::audit::diff(before, self.scene_graph());
         (result, graph_diff)
-    }
-
-    fn verify_checkbox_expectation(
-        &mut self,
-        executor_result: &ActionResult,
-        result: &mut ActionResult,
-        graph_diff: &mut GraphDiff,
-        expectation: Option<&CheckboxExpectation>,
-    ) {
-        if *executor_result != ActionResult::Success
-            || *result != ActionResult::Success
-            || !expectation.is_some_and(|expectation| {
-                !checkbox_expectation_satisfied(expectation, self.scene_graph())
-            })
-        {
-            return;
-        }
-        let started = Instant::now();
-        while started.elapsed() < CLICK_VERIFY_SETTLE_TIMEOUT {
-            std::thread::sleep(CLICK_VERIFY_POLL_INTERVAL);
-            if self.refresh().is_err() {
-                break;
-            }
-            *graph_diff = self.diff_since();
-            if expectation.is_some_and(|expectation| {
-                checkbox_expectation_satisfied(expectation, self.scene_graph())
-            }) {
-                break;
-            }
-        }
-        if expectation.is_some_and(|expectation| {
-            !checkbox_expectation_satisfied(expectation, self.scene_graph())
-        }) {
-            *result = ActionResult::Failed;
-        }
     }
 
     fn verify_type_settle(
@@ -365,7 +377,7 @@ impl Engine {
         if *executor_result != ActionResult::Success
             || *result != ActionResult::Failed
             || !matches!(action, SemanticAction::Type)
-            || argument.is_none_or(|arg| arg.is_empty())
+            || argument.is_none()
         {
             return;
         }
@@ -465,7 +477,7 @@ fn verified_action_result(
     }
 
     match action {
-        SemanticAction::Type if argument.is_some_and(|arg| !arg.is_empty()) => {
+        SemanticAction::Type if argument.is_some() => {
             if typed_target_value_matches_expected(
                 id,
                 argument.unwrap_or_default(),
@@ -564,14 +576,14 @@ pub(super) fn typed_target_value_matches_expected(
     graph_diff: &GraphDiff,
     current_node: Option<&SceneNode>,
 ) -> bool {
-    current_node
-        .and_then(|node| node.value.as_deref().or(node.label.as_deref()))
-        .is_some_and(|value| value == expected)
-        || graph_diff.changes.iter().any(|change| {
-            matches!(
-                change,
-                dunst_core::NodeChange::Changed { id: changed_id, field, after, .. }
-                    if changed_id == id && matches!(field.as_str(), "value" | "label") && after == expected
-            )
-        })
+    if let Some(node) = current_node {
+        return node.value.as_deref() == Some(expected);
+    }
+    graph_diff.changes.iter().any(|change| {
+        matches!(
+            change,
+            dunst_core::NodeChange::Changed { id: changed_id, field, after, .. }
+                if changed_id == id && field == "value" && after == expected
+        )
+    })
 }

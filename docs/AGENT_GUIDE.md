@@ -318,3 +318,36 @@ default** — the 3 operator-approval tools are gated behind
 - `approve` — approve a gated element or raw target so the next action on it proceeds.
 - `preauthorize` — pre-authorize raw input in the attached window for a bounded flow.
 - `revoke_preauthorization` — drop any active raw-input pre-authorization immediately.
+
+#### Avoid per-keystroke approvals
+
+Prefer `type_into(id, text)`: it replaces a mapped field and verifies the value,
+including an empty replacement or an already-correct value. A low-risk field and
+payload need no raw-input approval. The keyboard fallback requires verified focus
+and an empty field or a verified full-field selection; it refuses unsafe appends.
+
+If raw input is necessary, ask the operator once for the task, attached window,
+raw-input scope, action budget and duration. After that grant, call
+`preauthorize({"budget":20,"ttl_ms":120000})` once, perform the authorized flow,
+then call `revoke_preauthorization`. Maximums are 100 calls and ten minutes;
+changing the attachment clears the grant. Expiry is not permission to renew it.
+Batch selection, file selection and high-risk element actions keep their own gates.
+
+Raw input can submit forms or operate browser chrome. A window grant is **not** a
+site restriction, draft-only mode or permission for unrelated sends/payments.
+The MCP host must require human confirmation for `approve` and `preauthorize`;
+the server cannot authenticate a human through an ordinary MCP tool call.
+Leave these tools disabled if the host cannot enforce that boundary. Never enable
+them autonomously to escape a pending approval.
+
+#### Focus and uncertain clicks
+
+`focus_window` and keyboard/background event fallbacks can move keyboard focus,
+including away from a sibling window. They do not change monitor arrangement.
+Do not equate background delivery with focus preservation or claim no window was
+raised without observing it.
+
+Clicks poll for delayed AX effects without replaying the action. A timeout or a
+geometry-only diff does not prove failure. Check the current page before retrying,
+especially for Send, payment and deletion. The action audit spans the state before
+execution through the final observation, not just the last animation frame.

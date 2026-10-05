@@ -234,6 +234,103 @@ fn type_into_waits_for_ax_value_to_settle() {
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, field);
+    assert_eq!(entry.effect_verified, Some(true));
+    assert!(entry.graph_diff.changes.iter().any(|change| matches!(change,
+        NodeChange::Changed { id, field: changed_field, before, after }
+            if id == &field && changed_field == "value" && before.starts_with("nce") && after == expected
+    )), "audit must span the original value, not the last polling frame");
+}
+
+#[test]
+fn type_verification_handles_noops_clearing_and_rejects_matching_labels() {
+    for (before, after, expected, success) in [
+        ("already set", "already set", "already set", true),
+        ("old", "", "", true),
+        ("old", "old", "", false),
+        ("wrong", "wrong", "Field label", false),
+    ] {
+        let roots = |value| {
+            vec![raw_node(
+                "AXWindow",
+                Some("Form"),
+                None,
+                test_bbox(0.0, 0.0, 700.0, 500.0),
+                &[],
+                vec![raw_node(
+                    "AXTextField",
+                    Some("Field label"),
+                    Some(value),
+                    test_bbox(10.0, 10.0, 200.0, 50.0),
+                    &["press"],
+                    vec![],
+                )],
+            )]
+        };
+        let (mut eng, calls) =
+            engine_from_sequence(vec![roots(before), roots(after)], "Firefox", "Form");
+        let id = id_for(&eng, "Field label");
+        let entry = eng.type_into(&id, expected, None).unwrap();
+        assert_eq!(
+            entry.result == ActionResult::Success,
+            success,
+            "{before:?} -> {expected:?}"
+        );
+        assert_eq!(entry.effect_verified, Some(success));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn click_waits_for_delayed_removal_without_replaying() {
+    let roots = remove_tag_roots(2);
+    let (mut eng, calls) = engine_from_sequence(
+        vec![roots.clone(), roots.clone(), roots, remove_tag_roots(1)],
+        "Firefox",
+        "Tags",
+    );
+    let id = "btn_remove_platform_engineering_2";
+    eng.approve(id).unwrap();
+    let entry = eng.click_element(id, None).unwrap();
+    assert_eq!(entry.result, ActionResult::Success);
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    assert!(entry
+        .graph_diff
+        .changes
+        .iter()
+        .any(|change| matches!(change,
+            NodeChange::Removed { id: removed, .. } if removed == id
+        )));
+}
+
+#[test]
+fn failed_post_action_capture_cannot_verify_a_stale_value() {
+    struct FailingCapture;
+    impl Perceptor for FailingCapture {
+        fn capture(&self, _: &Target) -> dunst_core::Result<Vec<dunst_core::RawAxNode>> {
+            Err(DunstError::Perception("capture unavailable".into()))
+        }
+        fn window_ref(&self, _: &Target) -> dunst_core::Result<WindowRef> {
+            unreachable!()
+        }
+    }
+    let (mut eng, _) = engine_with_counter();
+    let id = eng
+        .query_affordances(SemanticAction::Type)
+        .into_iter()
+        .next()
+        .unwrap();
+    let expected = eng
+        .scene_graph()
+        .get(&id)
+        .unwrap()
+        .value
+        .clone()
+        .unwrap_or_default();
+    eng.perceptor = Box::new(FailingCapture);
+    let entry = eng.type_into(&id, &expected, None).unwrap();
+    assert_eq!(entry.result, ActionResult::Failed);
+    assert_eq!(entry.effect_verified, Some(false));
+    assert!(entry.reasoning.unwrap().contains("capture unavailable"));
 }
 
 #[test]

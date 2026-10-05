@@ -353,6 +353,63 @@ fn typed_audit_summary_reports_whether_target_value_changed() {
 }
 
 #[test]
+fn typed_audit_reports_verified_noop_and_empty_replacement_without_a_diff() {
+    for text in ["already set", ""] {
+        let entry = AuditEntry {
+            ts_ms: 1,
+            target_id: "text_message".into(),
+            action: SemanticAction::Type,
+            argument: Some(text.into()),
+            risk: dunst_core::RiskAssessment::low(),
+            reasoning: None,
+            result: ActionResult::Success,
+            effect_verified: Some(true),
+            graph_diff: GraphDiff::default(),
+            caller: None,
+        };
+        let value = audit_entry_value(entry, false);
+        assert_eq!(
+            value["graph_diff_summary"]["typed_content_exact_match"],
+            true
+        );
+        assert_eq!(
+            value["graph_diff_summary"]["typed_content_change_observed"],
+            false
+        );
+        assert_eq!(value["focus_hint"]["keyboard_focus_may_change"], true);
+    }
+}
+
+#[test]
+fn ambiguous_click_result_never_recommends_blind_replay() {
+    for result in [ActionResult::Success, ActionResult::Failed] {
+        let hint_key = if result == ActionResult::Success {
+            "verification_hint"
+        } else {
+            "failure_hint"
+        };
+        let entry = AuditEntry {
+            ts_ms: 1,
+            target_id: "btn_close".into(),
+            action: SemanticAction::Click,
+            argument: None,
+            risk: dunst_core::RiskAssessment::low(),
+            reasoning: None,
+            result,
+            effect_verified: None,
+            graph_diff: GraphDiff::default(),
+            caller: None,
+        };
+        let value = audit_entry_value(entry, false);
+        assert!(value[hint_key]["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("click"));
+        assert_eq!(value["focus_hint"]["keyboard_focus_may_change"], true);
+    }
+}
+
+#[test]
 fn typed_audit_summary_rejects_partial_target_value() {
     let partial = AuditEntry {
         ts_ms: 43,

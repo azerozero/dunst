@@ -327,3 +327,138 @@ attendue) ; `navigate` active Firefox par design.
 À VALIDER en live après rebuild + reload MCP : set_field_text et press_key en
 rafale ne doivent plus faire remonter les fenêtres Firefox ; la livraison
 (clics Chromium gate, Page/Home/End, frappe) doit toujours atteindre la cible.
+
+---
+
+# Audit 2026-07-22 — pilotage Firefox multi-fenêtres (saisine médiateur, formulaire web réel)
+
+> Contexte : dépôt d'un dossier juridique sur `formulaire.mediation-assurance.org`.
+> Firefox avec 2 fenêtres, l'une couverte par iTerm + Zen en plein écran.
+> Session interrompue volontairement après corruption d'un champ (voir C1).
+
+## C1 — `set_field_text` déclenche Cmd+Shift+A (gestionnaire de modules) — PRIORITÉ 0
+
+Sur un `<input type=text>` d'un formulaire web (Firefox, AZERTY), l'appel a :
+1. **ouvert un onglet « Gestionnaire de modules complémentaires »** → le repli clavier
+   a produit **Cmd+Shift+A**, pas une sélection ;
+2. **corrompu le champ** : `LIARDCLÉMENT` est devenu `LIARDCLÉMENTE` — pas de
+   remplacement, un caractère ajouté.
+
+C'est la famille du bug §0 (keycode lettre non mappé sur AZERTY), qui était censée
+être corrigée par le reroutage sur `paste_replace_field_foreground` puis sur le
+chemin AX `type_text`. Le repli clavier subsiste et reste dangereux.
+→ Sur échec de la voie AX (`kAXSelectedTextRange` absent), **ne pas retomber sur un
+raccourci clavier** : renvoyer une erreur explicite. Un remplacement raté est moins
+coûteux qu'un raccourci imprévisible dans l'app hôte.
+→ Cas de test : champ texte simple d'un formulaire web classique, clavier AZERTY.
+
+## C2 — `type_keys` avale les tabulations — PRIORITÉ 2
+
+`type_keys("LIARD\tClément")` a produit `LIARDCLÉMENT` **dans le même champ** : la
+tabulation n'est pas convertie en frappe Tab, elle disparaît.
+Conséquence : impossible d'enchaîner les champs d'un formulaire en un appel, il faut
+un clic + une frappe par champ, soit 4 appels par champ avec le cycle d'approbation
+(voir C6). Sur un formulaire de 8 champs : 32 aller-retours.
+→ Soit convertir `\t` (et `\n`) en vraies frappes, soit le documenter et exposer un
+`fill_fields([{selector|label, text}])`.
+
+## C3 — `navigate` ignore la fenêtre attachée — PRIORITÉ 1
+
+Attaché à la fenêtre 1106, `navigate` a systématiquement chargé l'URL dans la
+fenêtre 100 (dernière fenêtre Firefox active), puis s'y est ré-attaché tout seul.
+Testé aussi avec une URL rendue unique (`&zx=a1`) pour éviter la resélection d'onglet :
+même résultat. La doc de l'outil affirme pourtant qu'il « force toujours un chargement
+neuf, sans jamais resélectionner un onglet existant ».
+→ Router l'ouverture vers `window_id` attaché, ou documenter que `navigate` cible
+l'app et non la fenêtre.
+
+## C4 — `list_browser_tabs` vide sur Firefox — PRIORITÉ 2
+
+Retourne `[]` systématiquement ; `selected_tab` retombe sur
+`tab_fallback_window_title`. Conséquence : aucun moyen de changer d'onglet par id,
+donc le seul levier reste `navigate`… qui a le défaut C3. Les deux combinés rendent
+le ciblage d'un onglet précis impossible dans une session multi-fenêtres.
+
+## C5 — `expose_target_window` impuissant face au plein écran — confirme B1
+
+`raised_within_app_only: true`, `visible_fraction: 0.0` inchangé, quand la cible est
+couverte par des fenêtres **plein écran** d'autres apps (iTerm, Zen en 2560×1326).
+`move_window_to_display(2)` déplace bien la fenêtre mais elle reste couverte par les
+fenêtres de ce second écran.
+→ Contournement trouvé et fiable : **ne pas chercher à exposer**. Le screenshot
+composité et les clics ciblés fenêtre fonctionnent à 0 % de visibilité (validé sur
+une dizaine d'actions). Voir C7.
+
+## C6 — approbation à usage unique = ×2 appels par action — aggrave O5
+
+Chaque action gatée exige : appel → `pending_approval` → `approve(target_id)` →
+rappel identique. L'approbation ne couvre ni l'action suivante ni le même
+`target_id` réutilisé. Mesuré sur ce formulaire : **~1 champ par minute**.
+→ Proposer une portée d'approbation par session/fenêtre, ou un TTL, ou un mode
+« formulaire » où l'opérateur pré-autorise une liste d'actions.
+
+## C7 — `target_visibility` décourage à tort les clics fenêtre — PRIORITÉ 3
+
+L'avertissement « target window is covered […] verify OCR/screenshot came from the
+target before using visible coordinates » apparaît même quand l'action visée est un
+clic **ciblé fenêtre**, qui fonctionne parfaitement en arrière-plan. Il m'a fait
+perdre beaucoup de temps à tenter d'exposer la fenêtre (C5) alors que les clics
+passaient déjà.
+→ Distinguer dans le message : clic ciblé fenêtre = OK même couvert ; panneau natif
+(sélecteur de fichiers, feuille d'enregistrement) = curseur réel requis.
+
+## C8 — panneaux natifs : frontière à documenter — PRIORITÉ 3
+
+Bloquant réel rencontré : impression Gmail → panneau d'impression Firefox
+(« Enregistrer au format PDF ») puis feuille d'enregistrement macOS. Ni l'un ni
+l'autre atteignable sans fenêtre visible + curseur réel. Idem pour le téléversement
+de fichiers (`<input type=file>`).
+→ Le documenter en tête d'`AGENT_GUIDE.md` comme limite dure, avec la parade :
+faire faire ces étapes-là à l'opérateur.
+
+## C9 — `get_hit_targets` dépasse la limite de tokens — confirme O3
+
+Sortie par défaut : **80 KB / 2929 lignes** sur une page Gmail, tronquée par le
+client MCP et déversée dans un fichier. Chaque cible répète bbox, zones de clic
+sûres et modes d'action.
+→ Défaut `limit` plus bas (20 ?) et champs verbeux derrière un `verbose: true`.
+
+## C10 — `read_text(region)` muet là où l'OCR pleine fenêtre voit — PRIORITÉ 3
+
+`read_text` avec une `region` de 260×120 sur une zone contenant des icônes a
+renvoyé `[]`, alors que l'OCR pleine fenêtre trouvait bien du texte à proximité.
+Mapping de région à vérifier (origine écran vs origine fenêtre ?).
+
+## Ce qui a bien marché
+
+- Screenshot composité sur fenêtre 0 % visible : impeccable, y compris multi-écrans.
+- `click_near_text` avec `offset_x/offset_y` pour viser un champ à partir de son
+  label : fiable, y compris sur un champ date segmenté.
+- `find_ocr_text` + `occurrence` pour désambiguïser deux boutons « Oui » identiques.
+- Champ date segmenté : `18/02/2026` ne remplit que l'année, **`18022026` marche**.
+  À mettre dans le guide.
+
+## C11 — `select_file` expire (12 s) et laisse un panneau natif orphelin — PRIORITÉ 1
+
+Contexte : `<input type=file>` d'un formulaire web, Firefox sur l'écran secondaire
+(fenêtre 1106 à x=2560), déclenchement par `x/y` sur le bouton IMPORTER.
+
+Résultat : `action execution failed: select_file timed out after 12000 ms`.
+Aucun fichier monté côté page. `list_windows(all=true)` montre ensuite un
+**« Open and Save Panel Service » (pid 31852, window 1287, 304×330 à 3272,733,
+`on_screen: false`)** : le panneau s'est ouvert mais n'a jamais été affiché ni
+piloté, et il survit à l'échec.
+
+Pistes :
+- délai de 12 s trop court pour l'ouverture d'un panneau sur écran secondaire ;
+- le panneau naît hors de la zone visible → le backend ne le trouve pas ;
+- pas de nettoyage sur timeout : le service reste, ce qui peut gêner l'essai suivant.
+
+Attendu : délai configurable, recherche du panneau par **pid de l'app hôte** plutôt
+que par position, et fermeture du panneau (Échap) si le timeout est atteint.
+Un message d'erreur indiquant « panneau ouvert mais introuvable » aiderait aussi —
+le timeout seul laisse penser que rien ne s'est passé.
+
+**Correction à C8** : la frontière « panneaux natifs hors de portée » était fausse,
+`select_file` est prévu pour ça. Le blocage est un bug d'implémentation, pas une
+limite de conception. Reformuler C8 en conséquence une fois C11 corrigé.

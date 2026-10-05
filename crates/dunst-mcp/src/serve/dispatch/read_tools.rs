@@ -282,6 +282,7 @@ fn dispatch_vision_tools(
                 .map_err(|e| e.to_string()),
             None => Err("find_ocr_text requires 'query'".into()),
         },
+        "detect_native_panel" => Ok(engine.detect_native_panel()),
         "detect_modal" => engine
             .detect_modal()
             .map(|result| serde_json::to_value(result).unwrap_or(Value::Null))

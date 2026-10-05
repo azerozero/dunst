@@ -574,10 +574,26 @@ impl Engine {
     }
 
     /// Make the target window AppKit-active **without raising it** (SkyLight
-    /// focus-without-raise) so a backgrounded web canvas paints. Best-effort.
+    /// focus-without-raise) so a backgrounded web canvas paints. Returns true only
+    /// if AX confirms the app's focused window; not proof of global key ownership.
     #[cfg(target_os = "macos")]
     pub fn focus_window(&self) -> bool {
-        dunst_platform::focus_without_raise(self.target.window_id)
+        // Resolve before posting: CG can retain closed native-panel windows.
+        if dunst_platform::window_focus_state(self.target.pid, self.target.window_id).is_err() {
+            return false;
+        }
+        if !dunst_platform::focus_without_raise(self.target.window_id) {
+            return false;
+        }
+        for _ in 0..5 {
+            if dunst_platform::window_focus_state(self.target.pid, self.target.window_id)
+                .is_ok_and(|state| state.confirms_focus(self.target.window_id))
+            {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
     }
 
     /// Unstick the OS cursor via a menu-bar focus cycle (macOS stuck-cursor

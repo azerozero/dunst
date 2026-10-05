@@ -39,6 +39,7 @@ pub(super) const TOOL_REGISTRY: &[RegisteredTool] = &[
     tool("read_zones", ToolRoute::Read),
     tool("find_ocr_text", ToolRoute::Read),
     tool("detect_modal", ToolRoute::Read),
+    tool("detect_native_panel", ToolRoute::Read),
     tool("extract_ocr_cards", ToolRoute::Read),
     tool("query_affordances", ToolRoute::Read),
     tool("enumerate_choices", ToolRoute::Read),

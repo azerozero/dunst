@@ -285,6 +285,11 @@ fn query_tools() -> Vec<Value> {
             ),
         ),
         tool(
+            "detect_native_panel",
+            "Read-only discovery of AX-resolvable native dialogs related to the attached process. A service panel may be CG-hidden when its matching host proxy is visible. Suggests explicit attach candidates, never switches target. Geometry is a hint, not proof of ownership; confirm the intended panel before attach. Unresolvable panels and services without a visible matching host are excluded. Use when Save/Open changes focus to a native dialog.",
+            json!({}),
+        ),
+        tool(
             "detect_modal",
             "Detect likely modal/overlay state and safe OCR close/dismiss candidates. Use before clicking behind a popup. If no close candidate is returned, do not guess raw coordinates.",
             json!({}),
@@ -505,7 +510,7 @@ fn pointer_and_chart_tools() -> Vec<Value> {
         ),
         tool(
             "focus_window",
-            "Make the target window AppKit-active WITHOUT raising it or switching Spaces (SkyLight focus-without-raise) so a backgrounded web canvas (e.g. a chart) paints, without foregrounding. Returns true if the SkyLight SPIs applied.",
+            "Request AppKit focus without raising or switching Spaces (SkyLight). WARNING: moves keyboard focus and can interrupt a sibling window of the same app; background does not mean focus-preserving. Does not change monitor arrangement. The focused result reports whether the SPI call applied, not verified foreground state.",
             json!({}),
         ),
         tool(
@@ -711,11 +716,11 @@ fn approval_tools() -> Vec<Value> {
             ),
             tool(
                 "preauthorize",
-                "Pre-authorize raw input in the ATTACHED window for a bounded flow, so subsequent gated raw actions (OCR clicks, scrolls, key input) execute immediately instead of each doing a pending_approval -> approve -> replay round-trip. This cuts MCP<->LLM round-trips 3:1 on multi-step flows. BOUNDED on three axes: scoped to the current window_id, a spend budget (default 20, max 100), and a TTL (default 120000 ms, max 600000). Auto-drops on window change, budget exhaustion, or expiry. Geometry/coverage safety checks still apply; only the per-action approval is skipped. Revoke early with revoke_preauthorization. Same controlled-session gate as approve.",
+                "OPERATOR ONLY: after explicit human authorization of this task, window, budget and duration, pre-authorize raw input in the ATTACHED window for a bounded flow, so subsequent gated raw actions (OCR clicks, scrolls, key input) execute immediately instead of each doing a pending_approval -> approve -> replay round-trip. This cuts MCP<->LLM round-trips 3:1 on multi-step flows. BOUNDED on three axes: scoped to the current window_id, a spend budget (default 20, max 100), and a TTL (default 120000 ms, max 600000). Auto-drops on window change, budget exhaustion, or expiry. Geometry/coverage safety checks still apply; only raw keyboard/pointer approval is skipped, NOT batch/file/high-risk element gates. Raw input can submit forms: this is not a draft-only sandbox or a site restriction. Never self-grant or renew without operator consent. Revoke when the task ends. The MCP host must enforce human approval for granting tools; this server cannot distinguish an agent from an operator.",
                 schema(
                     json!({
-                        "budget": { "type": "integer", "description": "max raw actions to pre-authorize, 1-100 (default 20)" },
-                        "ttl_ms": { "type": "integer", "description": "lifetime in ms, 1000-600000 (default 120000)" }
+                        "budget": { "type": "integer", "minimum": 1, "maximum": 100, "description": "max raw actions to pre-authorize, 1-100 (default 20)" },
+                        "ttl_ms": { "type": "integer", "minimum": 1000, "maximum": 600000, "description": "lifetime in ms, 1000-600000 (default 120000)" }
                     }),
                     &[],
                 ),

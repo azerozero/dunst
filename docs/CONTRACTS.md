@@ -64,14 +64,17 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   `engine::tests::attach_clears_raw_approval_grants`.
 - **Raw pre-authorization is bounded on three axes.** `preauthorize` installs an
   operator grant that lets subsequent gated *raw* actions run without a per-action
-  `approve`, but only while all three bounds hold: the attached `window_id`, a spend
+  `approve`, but only while all three bounds hold: the attached `(pid, window_id)`, a spend
   budget (each raw action consumes one unit), and a TTL. It drops on window change,
   budget exhaustion, expiry, or `revoke_preauthorization`, and skips only the approval
-  gate — geometry/target-window safety checks still run. Gated behind
+  gate — geometry/target-window safety checks still run. It never clears batch,
+  file-selection or high-risk element gates. Gated behind
   `DUNST_MCP_ENABLE_APPROVE_TOOL=1`, like `approve`.
   — `engine::tests::preauthorization_runs_a_bounded_burst_of_raw_actions_then_regates`,
   `engine::tests::preauthorization_is_scoped_to_the_attached_window`,
-  `engine::tests::revoke_preauthorization_restores_gating`.
+  `engine::tests::revoke_preauthorization_restores_gating`,
+  `engine::tests::preauthorization_rejects_expiry_and_same_window_in_another_process`,
+  `engine::tests::preauthorization_does_not_approve_batches_files_or_high_risk_elements`.
 - **Batch selections are approved as one unit.** `apply_selections` records
   exactly one `PendingApproval` for a `batch@selections:<hash>:<n>` target whose
   preview carries per-step risk and an aggregate `max_risk`; a single operator
@@ -155,6 +158,23 @@ the same change. Crates: `dunst-core`, `-graph`, `-mcp`, `-vision`.
   hover-reveal not raising the window are all unverified. `dunst-platform`
   `pointer_events` has no test module, and the `tools/list` schema test that was
   cited here proves none of them.
+
+## Action verification
+
+- **Typing verifies values, not labels or merely a diff.** Empty replacements and
+  already-correct values are verified too. `effect_verified` carries the readback
+  result even when nothing changed. Missing post-action perception cannot report
+  a verified success.
+  — `engine::tests::type_verification_handles_noops_clearing_and_rejects_matching_labels`,
+  `engine::tests::failed_post_action_capture_cannot_verify_a_stale_value`,
+  `serve::tests::typed_audit_reports_verified_noop_and_empty_replacement_without_a_diff`.
+- **Settling does not replay actions or discard the initial state.** Clicks wait
+  for delayed effects; audit diffs span pre-action to final state. An AX timeout
+  (`CannotComplete`) is not a stale-handle retry signal: it may follow a completed
+  action.
+  — `engine::tests::click_waits_for_delayed_removal_without_replaying`,
+  `engine::tests::type_into_waits_for_ax_value_to_settle`,
+  `macos::ax_backend::tests::timed_out_actions_are_not_replayed_as_stale_handles`.
 
 ## Scene-graph projection (WP-J)
 

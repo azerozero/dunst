@@ -33,6 +33,7 @@ mod choices;
 mod element_actions;
 mod file_select;
 mod input;
+mod native_panel;
 mod ocr_read;
 mod query_support;
 mod raw_input;
@@ -212,6 +213,11 @@ impl Engine {
     /// accessibility tree.
     pub fn refresh(&mut self) -> dunst_core::Result<()> {
         let roots = self.perceptor.capture(&self.target)?;
+        self.install_snapshot(roots);
+        Ok(())
+    }
+
+    fn install_snapshot(&mut self, roots: Vec<dunst_core::RawAxNode>) {
         let graph = scene::build_scene_graph(roots, self.window.clone(), dunst_core::now_ms());
         let aff = derive_affordances(&graph, &self.risk);
         self.previous = self.current.take();
@@ -230,7 +236,6 @@ impl Engine {
         self.last_refresh_at = Some(Instant::now());
         *self.ocr_cache.borrow_mut() = None;
         *self.screenshot_cache.borrow_mut() = None;
-        Ok(())
     }
 
     /// Re-perceive only if the current AX graph is older than the read-cache TTL.
@@ -284,18 +289,24 @@ impl Engine {
     /// Returns an error if the new target's window cannot be resolved, or if the
     /// following [`refresh`](Self::refresh) fails to capture the scene.
     pub fn attach(&mut self, pid: i32, window_id: u32) -> dunst_core::Result<()> {
+        // Validate and perceive before replacing the current target. WindowServer
+        // may still list a closed service panel that AX can no longer resolve.
+        let mut target = Target { pid, window_id };
+        let window = self.perceptor.window_ref(&target)?;
+        if target.window_id == 0 && window.window_id != 0 {
+            target.window_id = window.window_id;
+        }
+        let roots = self.perceptor.capture(&target)?;
         self.approvals.clear();
         self.raw_approvals.clear();
         self.raw_approval_inflight.clear();
         self.active_batch = None;
         self.pending_gate_ids.clear();
         self.raw_preauth = None;
-        self.target = Target { pid, window_id };
-        self.window = self.perceptor.window_ref(&self.target)?;
-        if self.target.window_id == 0 && self.window.window_id != 0 {
-            self.target.window_id = self.window.window_id;
-        }
-        self.refresh()
+        self.target = target;
+        self.window = window;
+        self.install_snapshot(roots);
+        Ok(())
     }
 
     /// Attach by `window_id` alone, resolving the owning pid via `list_windows`.
@@ -316,9 +327,16 @@ impl Engine {
         // attaches to a live WindowServer id, perception and actions must switch
         // to the macOS backend; otherwise the target tuple changes but the AX
         // graph still comes from the fixture.
-        self.perceptor = Box::new(dunst_platform::MacosBackend::new());
+        let previous_perceptor = std::mem::replace(
+            &mut self.perceptor,
+            Box::new(dunst_platform::MacosBackend::new()),
+        );
+        if let Err(error) = self.attach(pid, window_id) {
+            self.perceptor = previous_perceptor;
+            return Err(error);
+        }
         self.executor = Box::new(dunst_platform::MacosBackend::new());
-        self.attach(pid, window_id)
+        Ok(())
     }
 
     /// Non-macOS stub.
@@ -490,6 +508,7 @@ impl Engine {
         let ttl_ms = ttl_ms.clamp(1_000, MAX_PREAUTH_TTL_MS);
         let window_id = self.target.window_id;
         self.raw_preauth = Some(RawPreauthorization {
+            pid: self.target.pid,
             window_id,
             remaining: budget,
             expires_at: Instant::now() + Duration::from_millis(ttl_ms),
@@ -507,7 +526,11 @@ impl Engine {
     pub fn raw_preauthorization_remaining(&self) -> Option<(u32, usize, u64)> {
         let pre = self.raw_preauth.as_ref()?;
         let now = Instant::now();
-        if pre.window_id != self.target.window_id || now >= pre.expires_at || pre.remaining == 0 {
+        if pre.pid != self.target.pid
+            || pre.window_id != self.target.window_id
+            || now >= pre.expires_at
+            || pre.remaining == 0
+        {
             return None;
         }
         Some((
@@ -531,6 +554,7 @@ struct RawApprovalGrant {
 /// per-action approval until it is spent. See [`Engine::preauthorize_raw_input`].
 #[derive(Clone)]
 struct RawPreauthorization {
+    pid: i32,
     window_id: u32,
     remaining: usize,
     expires_at: Instant,

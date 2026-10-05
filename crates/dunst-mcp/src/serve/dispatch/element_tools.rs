@@ -92,15 +92,17 @@ pub(super) fn dispatch(
             if !approval_tool_enabled() {
                 Err("preauthorize is disabled; set DUNST_MCP_ENABLE_APPROVE_TOOL=1 for controlled operator sessions".into())
             } else {
-                let budget = args.get("budget").and_then(Value::as_u64).unwrap_or(20) as usize;
-                let ttl_ms = args.get("ttl_ms").and_then(Value::as_u64).unwrap_or(120_000);
+                let (budget, ttl_ms) = match preauthorization_limits(args) {
+                    Ok(limits) => limits,
+                    Err(error) => return Some(Err(error)),
+                };
                 let (window_id, budget, ttl_ms) = engine.preauthorize_raw_input(budget, ttl_ms);
                 Ok(json!({
                     "preauthorized": true,
                     "window_id": window_id,
                     "budget": budget,
                     "ttl_ms": ttl_ms,
-                    "note": "raw input in this window now runs without a per-action approve until budget/TTL is spent; revoke with revoke_preauthorization"
+                    "note": "Operator grant active for raw keyboard/pointer input in this window until budget/TTL is spent. Does not authorize batches, file selection, high-risk element actions, or unrelated external commitments. Do not renew without operator consent; revoke with revoke_preauthorization"
                 }))
             }
         }
@@ -120,4 +122,44 @@ pub(super) fn dispatch(
         },
         _ => return None,
     })
+}
+
+fn preauthorization_limits(args: &Value) -> Result<(usize, u64), String> {
+    let bounded = |key: &str, default, min, max| match args.get(key) {
+        None => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .filter(|n| (min..=max).contains(n))
+            .ok_or_else(|| format!("'{key}' must be an integer in {min}..={max}")),
+    };
+    Ok((
+        bounded("budget", 20, 1, 100)? as usize,
+        bounded("ttl_ms", 120_000, 1_000, 600_000)?,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preauthorization_rejects_invalid_limits_instead_of_granting_defaults() {
+        assert_eq!(preauthorization_limits(&json!({})).unwrap(), (20, 120_000));
+        assert_eq!(
+            preauthorization_limits(&json!({"budget":100,"ttl_ms":600000})).unwrap(),
+            (100, 600_000)
+        );
+        for args in [
+            json!({"budget":0}),
+            json!({"budget":101}),
+            json!({"budget":-1}),
+            json!({"budget":"20"}),
+            json!({"budget":null}),
+            json!({"budget":1.5}),
+            json!({"ttl_ms":999}),
+            json!({"ttl_ms":600001}),
+        ] {
+            assert!(preauthorization_limits(&args).is_err(), "{args}");
+        }
+    }
 }

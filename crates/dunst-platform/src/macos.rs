@@ -107,6 +107,8 @@ mod skylight;
 pub(crate) use skylight::cursor_shape_fingerprint;
 mod text_input;
 mod web_events;
+mod window_focus;
+pub(crate) use window_focus::window_focus_state;
 
 use ax_actions::*;
 use ax_backend::*;

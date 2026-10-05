@@ -302,7 +302,7 @@ fn test_session(session_id: &str) -> SessionIdentity {
 fn set_test_coordination_dir() {
     std::env::set_var(
         "DUNST_MCP_COORDINATION_DIR",
-        format!("/tmp/dunst-mcp-tests-{}", std::process::id()),
+        std::env::temp_dir().join(format!("dunst-mcp-tests-{}", std::process::id())),
     );
 }
 
