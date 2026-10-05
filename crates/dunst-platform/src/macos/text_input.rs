@@ -5,12 +5,18 @@ pub(super) fn type_text(
     target: &Target,
     text: &str,
 ) -> std::result::Result<(), ActionFailure> {
-    if let Some(outcome) = type_text_by_replacing_selection(element, target, text)? {
-        return outcome;
+    if target.window_id == 0 || ax_window_id(element) != Some(target.window_id) {
+        return Err(ActionFailure::Execution(
+            "text field does not belong to the attached window".into(),
+        ));
+    }
+    let before = attr_string(element, kAXValueAttribute);
+    if before.as_deref() == Some(text) {
+        return Ok(());
     }
 
+    // Prefer a direct replacement: it needs neither keyboard focus nor selection.
     if attr_settable(element, kAXValueAttribute) {
-        let before = attr_string(element, kAXValueAttribute);
         let err = set_string_attr_raw(element, kAXValueAttribute, text);
         if err == kAXErrorSuccess {
             match wait_for_string_attr(element, kAXValueAttribute, text) {
@@ -23,11 +29,12 @@ pub(super) fn type_text(
                     )));
                 }
                 Some(_) => {}
-                None => return Ok(()),
+                None => {
+                    return Err(ActionFailure::Execution(
+                        "AX set-value could not be verified; keyboard fallback suppressed".into(),
+                    ))
+                }
             }
-            return Err(ActionFailure::Execution(
-                "AX set-value reported success but the field did not change; keyboard fallback suppressed to avoid appending text".into(),
-            ));
         } else if is_stale_ax_error(err) {
             return Err(ActionFailure::Ax {
                 operation: "set AX string attribute",
@@ -36,10 +43,77 @@ pub(super) fn type_text(
         }
     }
 
-    // AX set-value replaces text; synthetic Unicode keystrokes append to the focused editor.
-    set_bool_attr(element, kAXFocusedAttribute, true)?;
-    std::thread::sleep(std::time::Duration::from_millis(80));
-    post_window_bound_text(target, text)
+    if let Some(outcome) = type_text_by_replacing_selection(element, target, text)? {
+        return outcome;
+    }
+
+    // An empty field needs no select-all (Firefox may expose no writable range).
+    // Never turn a replacement into an append to an existing/unknown value.
+    if !can_type_without_selection(attr_string(element, kAXValueAttribute).as_deref()) {
+        return Err(ActionFailure::Execution(
+            "cannot verify a full-field selection; keyboard append suppressed".into(),
+        ));
+    }
+    focus_text_element(element, target)?;
+    if !can_type_without_selection(attr_string(element, kAXValueAttribute).as_deref()) {
+        return Err(ActionFailure::Execution(
+            "field changed before typing".into(),
+        ));
+    }
+    post_window_bound_text(target, text)?;
+    verify_text_value(element, text)
+}
+
+fn can_type_without_selection(value: Option<&str>) -> bool {
+    value == Some("")
+}
+
+fn verify_text_value(element: &AxElement, text: &str) -> std::result::Result<(), ActionFailure> {
+    if wait_for_string_attr(element, kAXValueAttribute, text).as_deref() == Some(text) {
+        Ok(())
+    } else {
+        Err(ActionFailure::Execution(
+            "typed value could not be verified exactly".into(),
+        ))
+    }
+}
+
+fn text_element_has_focus(element: &AxElement, target: &Target) -> bool {
+    let Ok(app) = app_element(target.pid) else {
+        return false;
+    };
+    let focused_window =
+        attr_ax_element(&app, AX_FOCUSED_WINDOW_ATTRIBUTE).and_then(|window| ax_window_id(&window));
+    let focused = attr_ax_element(&app, AX_FOCUSED_UI_ELEMENT_ATTRIBUTE);
+    focused_window == Some(target.window_id)
+        && focused.is_some_and(|focused| {
+            // SAFETY: both AX elements are live, retained CF objects.
+            unsafe {
+                core_foundation_sys::base::CFEqual(element.as_ptr().cast(), focused.as_ptr().cast())
+                    != 0
+            }
+        })
+}
+
+fn focus_text_element(
+    element: &AxElement,
+    target: &Target,
+) -> std::result::Result<(), ActionFailure> {
+    ensure_user_idle_action("element-bound typing")?;
+    ensure_window_key_focus(target.pid, target.window_id);
+    let _ = set_bool_attr(element, kAXFocusedAttribute, true);
+    thread::sleep(Duration::from_millis(80));
+    if !text_element_has_focus(element, target) {
+        // Reuse the field click ladder with freshly read geometry, not a stale scene bbox.
+        focus_text_field(element, target)?;
+    }
+    if text_element_has_focus(element, target) {
+        Ok(())
+    } else {
+        Err(ActionFailure::Execution(
+            "target field focus could not be verified; no text posted".into(),
+        ))
+    }
 }
 
 pub(super) fn type_text_by_replacing_selection(
@@ -50,12 +124,12 @@ pub(super) fn type_text_by_replacing_selection(
     let Some(len) = text_character_count(element) else {
         return Ok(None);
     };
-    if !attr_settable(element, kAXSelectedTextRangeAttribute) {
+    if len == 0 || !attr_settable(element, kAXSelectedTextRangeAttribute) {
         return Ok(None);
     }
 
     let before = attr_string(element, kAXValueAttribute);
-    set_bool_attr(element, kAXFocusedAttribute, true)?;
+    focus_text_element(element, target)?;
     let range = CFRange::init(0, len);
     let err = set_axvalue_attr_raw(
         element,
@@ -74,7 +148,33 @@ pub(super) fn type_text_by_replacing_selection(
     }
 
     std::thread::sleep(std::time::Duration::from_millis(80));
-    post_window_bound_text(target, text)?;
+    let selected = attr_value(element, kAXSelectedTextRangeAttribute);
+    let mut actual = CFRange::init(0, 0);
+    let selection_matches = selected.is_some_and(|value| {
+        // SAFETY: the retained AXValue is type-checked; actual is a valid out pointer.
+        unsafe {
+            AXValueGetType(value.as_CFTypeRef() as AXValueRef) == kAXValueTypeCFRange
+                && AXValueGetValue(
+                    value.as_CFTypeRef() as AXValueRef,
+                    kAXValueTypeCFRange,
+                    (&mut actual as *mut CFRange).cast(),
+                )
+                && actual.location == 0
+                && actual.length == len
+        }
+    });
+    if !selection_matches || !text_element_has_focus(element, target) {
+        return Err(ActionFailure::Execution(
+            "full-field selection or focus could not be verified; no text posted".into(),
+        ));
+    }
+    if text.is_empty() {
+        // A verified full selection can be cleared with a layout-independent key.
+        key_web_background(target.pid, target.window_id, KeyCode::DELETE, 0)
+            .map_err(|err| ActionFailure::Execution(err.to_string()))?;
+    } else {
+        post_window_bound_text(target, text)?;
+    }
     Ok(Some(match wait_for_string_attr(element, kAXValueAttribute, text) {
         Some(value) if value == text => Ok(()),
         Some(value)
@@ -97,7 +197,7 @@ pub(super) fn type_text_by_replacing_selection(
         Some(_) => Err(ActionFailure::Execution(
             "keyboard replacement posted but the field did not change".into(),
         )),
-        None => Ok(()),
+        None => Err(ActionFailure::Execution("replacement value could not be read back".into())),
     }))
 }
 
@@ -148,7 +248,8 @@ pub(super) fn text_character_count(element: &AxElement) -> Option<CFIndex> {
     attr_number(element, kAXNumberOfCharactersAttribute)
         .map(|n| n.max(0.0) as CFIndex)
         .or_else(|| {
-            attr_string(element, kAXValueAttribute).map(|value| value.chars().count() as CFIndex)
+            attr_string(element, kAXValueAttribute)
+                .map(|value| value.encode_utf16().count() as CFIndex)
         })
 }
 
@@ -211,6 +312,13 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keyboard_without_selection_requires_known_empty_value() {
+        assert!(super::can_type_without_selection(Some("")));
+        assert!(!super::can_type_without_selection(Some("existing text")));
+        assert!(!super::can_type_without_selection(None));
+    }
+
     use super::{
         for_text_input_atoms, text_contains_line_break, ActionFailure, TextInputAtom,
         TEXT_NEWLINE_KEY_FLAGS,

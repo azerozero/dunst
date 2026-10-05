@@ -44,6 +44,61 @@ pub fn platform_capabilities() -> PlatformCapabilities {
     capabilities::current_platform_capabilities()
 }
 
+/// Read-only AX evidence for one exact native window.
+#[derive(Debug, Clone, Copy)]
+pub struct WindowFocusState {
+    /// Whether AX identifies this window as a dialog or sheet.
+    pub is_dialog: bool,
+    /// The app's focused AX window, not proof of global keyboard ownership.
+    pub focused_window_id: Option<u32>,
+}
+
+impl WindowFocusState {
+    /// True only when AX reports this exact, non-placeholder window as focused.
+    pub fn confirms_focus(self, window_id: u32) -> bool {
+        window_id != 0 && self.focused_window_id == Some(window_id)
+    }
+}
+
+#[cfg(test)]
+mod window_focus_tests {
+    use super::WindowFocusState;
+
+    #[test]
+    fn focus_requires_exact_ax_confirmation() {
+        for (observed, target, expected) in [
+            (Some(42), 42, true),
+            (Some(43), 42, false),
+            (None, 42, false),
+            (Some(0), 0, false),
+        ] {
+            let state = WindowFocusState {
+                is_dialog: true,
+                focused_window_id: observed,
+            };
+            assert_eq!(state.confirms_focus(target), expected);
+        }
+    }
+}
+
+/// Resolve an exact window and inspect its AX dialog and focus attributes.
+///
+/// # Errors
+/// Returns an error when AX is unavailable or the window cannot be resolved.
+pub fn window_focus_state(pid: i32, window_id: u32) -> Result<WindowFocusState> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::window_focus_state(pid, window_id)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (pid, window_id);
+        Err(dunst_core::DunstError::Perception(
+            "window focus inspection requires macOS".into(),
+        ))
+    }
+}
+
 /// AX-backed perception + action for macOS.
 #[derive(Debug, Default)]
 pub struct MacosBackend {

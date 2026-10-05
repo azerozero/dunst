@@ -63,15 +63,26 @@ pub(super) fn audit_entry_value(entry: AuditEntry, include_diff: bool) -> Value 
             );
         }
         obj.insert("graph_diff_summary".into(), summary);
+        if entry.result != ActionResult::PendingApproval
+            && matches!(
+                entry.action,
+                SemanticAction::Type | SemanticAction::Click | SemanticAction::Focus
+            )
+        {
+            obj.insert("focus_hint".into(), json!({
+                "keyboard_focus_may_change": true,
+                "note": "AX focus or background event fallback may change keyboard focus, including a sibling window's focus. Background does not guarantee focus preservation."
+            }));
+        }
         if entry.result == ActionResult::PendingApproval {
             let raw_target = raw_input_target(&entry.target_id);
             let approve_available = approval_tool_enabled();
             let next_step = if !approve_available {
-                "The approve tool is disabled on this server (approve_available=false): this gated action cannot be approved in-band. Enable it via enable_with and restart the dunst-mcp server, or switch to ui_fallback_hint and drive visible elements by id."
+                "The approve tool is disabled: this action requires an operator grant. Do not enable approval tools autonomously; use element-bound actions or ask the operator to configure a controlled session."
             } else if raw_target {
                 "Use approve only after explicit operator authorization for this raw input. Otherwise switch to ui_fallback_hint and drive visible elements by id."
             } else {
-                "If this element-bound action was intended, call approve with this target_id, then retry the exact same tool call once."
+                "Only after explicit operator authorization for this action, call approve with this target_id and retry once. Intent inferred by the agent is not operator authorization."
             };
             let mut hint = json!({
                 "next_step": next_step,
@@ -89,6 +100,14 @@ pub(super) fn audit_entry_value(entry: AuditEntry, include_diff: bool) -> Value 
                         ),
                     );
                 }
+            }
+            if raw_target && approve_available && !entry.target_id.starts_with("file@") {
+                hint["bounded_flow"] = json!({
+                    "tool": "preauthorize",
+                    "next_step": "For a repeated task, request ONE explicit operator grant covering the attached window, raw-input scope, action budget and duration; then preauthorize once. Never renew it autonomously or treat it as permission for unrelated sends, purchases or deletion.",
+                    "defaults": { "budget": 20, "ttl_ms": 120000 },
+                    "revoke_tool": "revoke_preauthorization"
+                });
             }
             obj.insert("approval_hint".into(), hint);
             if raw_target {
@@ -197,7 +216,7 @@ fn raw_input_fallback_hint(entry: &AuditEntry) -> Value {
 
 fn typed_content_observation_relevant(entry: &AuditEntry) -> bool {
     entry.action == SemanticAction::Type
-        && entry.argument.as_deref().is_some_and(|arg| !arg.is_empty())
+        && entry.argument.is_some()
         && !entry.target_id.starts_with("keyboard@")
 }
 
@@ -212,6 +231,9 @@ fn typed_content_change_observed(entry: &AuditEntry) -> bool {
 }
 
 fn typed_content_exact_match(entry: &AuditEntry) -> bool {
+    if let Some(verified) = entry.effect_verified {
+        return verified;
+    }
     let Some(expected) = entry.argument.as_deref() else {
         return false;
     };
@@ -219,7 +241,7 @@ fn typed_content_exact_match(entry: &AuditEntry) -> bool {
         matches!(
             change,
             NodeChange::Changed { id, field, after, .. }
-                if id == &entry.target_id && matches!(field.as_str(), "value" | "label") && after == expected
+                if id == &entry.target_id && field == "value" && after == expected
         )
     })
 }
@@ -227,7 +249,7 @@ fn typed_content_exact_match(entry: &AuditEntry) -> bool {
 fn failed_action_hint(entry: &AuditEntry) -> Option<Value> {
     match entry.action {
         SemanticAction::Type if !entry.target_id.starts_with("keyboard@") => Some(json!({
-            "reason": "The element-bound type action completed at the platform layer, but the target element did not expose the exact requested value afterward.",
+            "reason": "The type action failed or its exact value could not be verified. See reasoning for any platform error; partial effects are possible.",
             "next_step": "Do not click save/submit. Re-read the field with find_element or text_snapshot. If the value is partial/truncated/unchanged, use an explicit operator-approved paste path or a product/API-level edit path.",
             "verification": "graph_diff_summary.typed_content_exact_match must be true before saving"
         })),
@@ -266,6 +288,10 @@ fn failed_action_hint(entry: &AuditEntry) -> Option<Value> {
             "reason": "The element-bound checkbox click completed at the platform layer, but the checkbox value did not change after re-perception.",
             "next_step": "Do not save yet. Re-read the checkbox with find_element visible_only=false. If the value is still unchanged, expose the checkbox in the viewport or retry only through a stable element id.",
             "verification": "the target checkbox value should change between 0/1 or false/true after the click"
+        })),
+        SemanticAction::Click => Some(json!({
+            "reason": "The click failed or its effect could not be verified; a timeout does not prove that nothing happened.",
+            "next_step": "Re-read the current page and check the intended result before retrying. Never replay send, purchase, or delete solely because the click returned failed."
         })),
         _ => None,
     }
@@ -333,7 +359,7 @@ fn success_action_hint(entry: &AuditEntry) -> Option<Value> {
 
     Some(json!({
         "reason": "The platform click returned success, but no meaningful AX graph change was observed afterward.",
-        "next_step": "Treat this as unverified. Re-read the target UI before taking the next mutating step; do not assume that a modal opened, a form saved, or a disabled control changed.",
+        "next_step": "Treat this as unverified. Re-read the target UI before taking the next mutating step; do not assume that a modal opened, a form saved, or a disabled control changed. Do not blindly click again: the action may have succeeded without an AX-visible change.",
         "verification": "use page_state, find_element, verify_state, or wait_for_text_stable to confirm the intended state change"
     }))
 }

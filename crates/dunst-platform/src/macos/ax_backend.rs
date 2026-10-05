@@ -321,16 +321,25 @@ pub(super) fn click_element_action(
     target: &Target,
     node: &SceneNode,
 ) -> std::result::Result<(), ActionFailure> {
-    if !matches!(node.role, Role::TextField | Role::TextArea) {
+    if !matches!(node.role, Role::TextField | Role::TextArea) && node.ax_role != "AXComboBox" {
         return perform_ax_action(element, kAXPressAction);
     }
+    focus_text_field(element, target)
+}
 
+pub(super) fn focus_text_field(
+    element: &AxElement,
+    target: &Target,
+) -> std::result::Result<(), ActionFailure> {
     match perform_ax_action(element, kAXPressAction) {
         Ok(()) => {
             thread::sleep(Duration::from_millis(50));
             if attr_bool(element, kAXFocusedAttribute).unwrap_or(false) {
                 return Ok(());
             }
+        }
+        Err(err) if matches!(&err, ActionFailure::Ax { err, .. } if *err == kAXErrorCannotComplete) => {
+            return Err(err)
         }
         Err(err) if err.is_stale() => return Err(err),
         Err(_) => {}
@@ -342,9 +351,9 @@ pub(super) fn click_element_action(
         return Ok(());
     }
 
-    let bbox = node
-        .bbox
-        .ok_or_else(|| ActionFailure::Execution("text field click fallback needs a bbox".into()))?;
+    let bbox = frame(element).ok_or_else(|| {
+        ActionFailure::Execution("text field click fallback needs a live bbox".into())
+    })?;
     let (origin_x, origin_y) = target_window_origin(target)?;
     let x = bbox.x + bbox.w / 2.0;
     let y = bbox.y + bbox.h / 2.0;
@@ -547,7 +556,9 @@ impl ActionFailure {
         matches!(
             self,
             Self::Ax { err, .. }
-                if *err == kAXErrorInvalidUIElement || *err == kAXErrorCannotComplete
+                // CannotComplete is a timeout: the action may already have run.
+                // Only a definitely invalid handle is safe to resolve and retry.
+                if *err == kAXErrorInvalidUIElement
         )
     }
 }
@@ -566,6 +577,20 @@ impl From<ActionFailure> for DunstError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timed_out_actions_are_not_replayed_as_stale_handles() {
+        assert!(!ActionFailure::Ax {
+            operation: "press",
+            err: kAXErrorCannotComplete
+        }
+        .is_stale());
+        assert!(ActionFailure::Ax {
+            operation: "press",
+            err: kAXErrorInvalidUIElement
+        }
+        .is_stale());
+    }
 
     #[test]
     fn core_graphics_exposes_hid_system_state() {

@@ -44,6 +44,10 @@ fn approve_tool_is_disabled_by_default() {
         "approve must be disabled by default: {resp}"
     );
     assert!(text(&resp).contains("disabled"));
+    let resp = call(&mut e, "preauthorize", json!({"budget":20,"ttl_ms":120000}));
+    assert!(is_error(&resp));
+    assert!(text(&resp).contains("disabled"));
+    assert!(e.raw_preauthorization_remaining().is_none());
 }
 
 #[test]

@@ -235,7 +235,20 @@ impl Engine {
         if self.consume_raw_approval(target_id) || self.approvals.contains(target_id) {
             return None;
         }
-        if self.consume_raw_preauthorization() {
+        // This shared gate also handles selection batches. A raw-input budget
+        // must not approve an entire batch (including its high-risk elements).
+        if [
+            "keyboard@",
+            "screen@",
+            "cursor@",
+            "wheel@",
+            "ocr@",
+            "hover-reveal@",
+        ]
+        .iter()
+        .any(|prefix| target_id.starts_with(prefix))
+            && self.consume_raw_preauthorization()
+        {
             return None;
         }
         self.pending_gate_ids.insert(target_id.to_string());
@@ -261,7 +274,12 @@ impl Engine {
         let window_id = self.target.window_id;
         let now = Instant::now();
         let live = match &self.raw_preauth {
-            Some(pre) => pre.window_id == window_id && now < pre.expires_at && pre.remaining > 0,
+            Some(pre) => {
+                pre.pid == self.target.pid
+                    && pre.window_id == window_id
+                    && now < pre.expires_at
+                    && pre.remaining > 0
+            }
             None => return false,
         };
         if !live {

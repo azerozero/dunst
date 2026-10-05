@@ -4,6 +4,39 @@ use crate::engine::raw_input_gate::KEYBOARD_WILDCARD_GRANT_EVENTS;
 use crate::engine::window_ops::{expose_delta, reconciled_raise_result};
 
 #[test]
+fn failed_attach_preserves_target_and_snapshot() {
+    struct ClosedPanel(bool);
+    impl Perceptor for ClosedPanel {
+        fn window_ref(&self, target: &Target) -> dunst_core::Result<WindowRef> {
+            if self.0 {
+                return Err(DunstError::Perception("closed panel".into()));
+            }
+            Ok(WindowRef {
+                pid: target.pid,
+                window_id: target.window_id,
+                app_name: "Panel".into(),
+                title: "Save".into(),
+            })
+        }
+        fn capture(&self, _: &Target) -> dunst_core::Result<Vec<dunst_core::RawAxNode>> {
+            Err(DunstError::Perception("closed during capture".into()))
+        }
+    }
+    for fail_window_ref in [true, false] {
+        let (mut engine, _) = engine_with_counter();
+        let target = engine.target();
+        let snapshot = serde_json::to_value(engine.scene_graph()).unwrap();
+        engine.perceptor = Box::new(ClosedPanel(fail_window_ref));
+        assert!(engine.attach(999, 999).is_err());
+        assert_eq!(engine.target(), target);
+        assert_eq!(
+            serde_json::to_value(engine.scene_graph()).unwrap(),
+            snapshot
+        );
+    }
+}
+
+#[test]
 fn user_active_guard_retry_runs_once_before_returning() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let attempts_in_closure = attempts.clone();
@@ -1005,6 +1038,43 @@ fn preauthorization_is_scoped_to_the_attached_window() {
         .is_some(),
         "raw action in a different window than the grant must still gate"
     );
+}
+
+#[test]
+fn preauthorization_rejects_expiry_and_same_window_in_another_process() {
+    let (mut eng, _) = engine_with_counter();
+    eng.preauthorize_raw_input(5, 120_000);
+    eng.raw_preauth.as_mut().unwrap().expires_at = Instant::now();
+    assert!(eng.raw_preauthorization_remaining().is_none());
+    assert!(!eng.consume_raw_preauthorization());
+    eng.preauthorize_raw_input(5, 120_000);
+    eng.target.pid += 1;
+    assert!(eng.raw_preauthorization_remaining().is_none());
+    assert!(!eng.consume_raw_preauthorization());
+}
+
+#[test]
+fn preauthorization_does_not_approve_batches_files_or_high_risk_elements() {
+    let (mut eng, calls) = engine_with_counter();
+    eng.preauthorize_raw_input(5, 120_000);
+    for target in ["batch@selections:abc:3", "file@select:abc"] {
+        assert!(eng
+            .gate_raw_input(
+                target,
+                SemanticAction::Click,
+                None,
+                None,
+                Engine::raw_input_risk(Vec::new())
+            )
+            .is_some());
+    }
+    let id = id_for(&eng, "Supprimer");
+    assert_eq!(
+        eng.click_element(&id, None).unwrap().result,
+        ActionResult::PendingApproval
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(eng.raw_preauthorization_remaining().unwrap().1, 5);
 }
 
 #[test]

@@ -86,7 +86,12 @@ pub(super) fn dispatch(
                 .map_err(|e| e.to_string()),
             None => Err("hover_at requires numeric 'x' and 'y'".into()),
         },
-        "focus_window" => Ok(json!({ "focused": engine.focus_window() })),
+        "focus_window" => Ok(json!({
+            "focused": engine.focus_window(),
+            "keyboard_focus_may_change": true,
+            "verification": "AXFocusedWindow of target process (not global keyboard ownership)",
+            "note": "focused=true requires AX confirmation, not just event delivery. Can take focus from a sibling window. If false, inspect detect_native_panel; no automatic retargeting."
+        })),
         "unstick_cursor" => Ok(json!({ "unstuck": engine.unstick_cursor() })),
         "right_click_at" => match point(args) {
             Some((x, y)) => engine
